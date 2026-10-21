@@ -1,0 +1,26 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin.ftf",
+  "plugin": "com.wgaccel.mixin.ftf.FtfMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "TileGeneratorMixin",
+    "WorldFiltersMixin",
+    "TileCacheMixin",
+    "BiomeSelectionMixin",
+    "BiomeDecorationMixin",
+    "BiomeCoverageMixin",
+    "BiomeRolesMixin",
+    "BiomeRegionMixin",
+    "BiomeStageMixin",
+    "ErosionFilterMixin",
+    "CliffRelaxationMixin",
+    "TileNoiseGeneratorMixin",
+    "TileNoiseHeightmapMixin",
+    "TileNoisePopulatorMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

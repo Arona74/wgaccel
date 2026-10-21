@@ -1,0 +1,45 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="MIT"
+
+[[mods]]
+modId="wgaccel"
+version="0.5.6+mc1.21.1"
+displayName="Worldgen Accelerator"
+logoFile="logo.png"
+description='''Faster chunk generation with FreeTerraForged. Fills FreeTerraForged's 3D terrain only up to the ground
+(the same blocks, config fillToGround), keeps more of its terrain tiles cached (config tileCacheTiles) and skips its repeated work while choosing biomes (config fasterBiomeChoice). Measures the time of every
+generation stage, every placed feature (trees, ores, snow) and structure, entities and block entities joining the
+world, chunks a second, CPU per thread group and garbage collection, written to the log every 10 seconds
+(/wgaccel for the totals, /wgaccel reset to start a new measurement).'''
+
+[[mixins]]
+config="wgaccel.mixins.json"
+
+# Only applies when FreeTerraForged is installed (its tiles and filters timed).
+[[mixins]]
+config="wgaccel.ftf.mixins.json"
+
+[[mixins]]
+config="wgaccel.check.mixins.json"
+
+[[dependencies.wgaccel]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.wgaccel]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.21.1]"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.wgaccel]]
+    modId="freeterraforged"
+    type="optional"
+    versionRange="*"
+    ordering="AFTER"
+    side="BOTH"

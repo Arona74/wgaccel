@@ -1,0 +1,39 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ChunkStatusTasksMixin",
+    "NoiseBasedChunkGeneratorMixin",
+    "ChunkSerializerMixin",
+    "RegionFileStorageMixin",
+    "PlacedFeatureMixin",
+    "ChunkGeneratorMixin",
+    "StructureStartMixin",
+    "LevelChunkMixin",
+    "NoiseChunkMixin",
+    "NoiseChunkProbeMixin",
+    "SurfaceSystemProbeMixin",
+    "OreFeatureMixin",
+    "BulkSectionAccessMixin",
+    "access.BeardifierAccessor",
+    "access.HeightmapAccessor",
+    "access.NoiseChunkAccessor",
+    "access.NoiseBasedChunkGeneratorInvoker",
+    "access.ChunkAccessAccessor",
+    "access.NormalNoiseAccessor",
+    "access.PerlinNoiseAccessor",
+    "access.ImprovedNoiseAccessor",
+    "access.NoiseBasedAquiferAccessor",
+    "access.FluidStatusAccessor",
+    "access.LevelChunkSectionAccessor",
+    "access.SurfaceContextAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "client": [
+    "client.LevelLoadingScreenMixin"
+  ]
+}

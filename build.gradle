@@ -1,0 +1,226 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.140'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+}
+
+configurations {
+    shade
+    implementation.extendsFrom shade
+}
+
+dependencies {
+    // Optional at run time: FreeTerraForged's tiles are read for the ground height (copy its jar into libs/ to build).
+    compileOnly files(project.findProperty('ftfJar') ?: 'libs/freeterraforged-1.0.0010.jar')
+    // The CUDA driver API and NVRTC from Java: LWJGL's CUDA module, matching Minecraft 1.21.1's LWJGL 3.3.3 (its core
+    // comes with the game). Its classes are copied into the mod's own jar without its module descriptor (see jar
+    // below): as a nested module it required org.lwjgl, which a dedicated server does not have, and the server would
+    // not start; now a server without LWJGL starts and the mod leaves the GPU off (gpu/Lwjgl).
+    shade('org.lwjgl:lwjgl-cuda:3.3.3') {
+        transitive = false
+    }
+}
+
+jar {
+    from({ configurations.shade.collect { zipTree(it) } }) {
+        exclude 'META-INF/**'
+    }
+}
+
+// The game instance's logs folder, where the mod saves the sources and chunks the offline checks read: -Plogs=<folder>,
+// or logs=<folder> in the user's own ~/.gradle/gradle.properties.
+def gameLogs = project.findProperty('logs') ?: 'run/logs'
+tasks.withType(JavaExec).configureEach {
+    systemProperty 'wgaccel.logs', gameLogs
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// A standalone check of the GPU route, outside the game: `gradlew.bat cudaCheck` lists the GPU, compiles a kernel with
+// NVRTC at run time and compares its float results with Java's, bit for bit. LWJGL 3.3.3 is Minecraft 1.21.1's.
+repositories {
+    mavenCentral()
+}
+
+sourceSets {
+    cudacheck {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+    }
+}
+
+dependencies {
+    cudacheckImplementation 'org.lwjgl:lwjgl:3.3.3'
+    cudacheckImplementation 'org.lwjgl:lwjgl-cuda:3.3.3'
+    cudacheckRuntimeOnly 'org.lwjgl:lwjgl:3.3.3:natives-windows'
+    // FreeTerraForged's NoiseUtil (its noise tables) loads on its own, without Minecraft.
+    cudacheckImplementation files('libs/freeterraforged-1.0.0010.jar')
+}
+
+tasks.register('cudaCheck', JavaExec) {
+    group = 'verification'
+    description = 'Runs the standalone CUDA check (GPU, NVRTC, bit-identical floats).'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.CudaCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// Generated noise trees outside the game: `gradlew.bat cudaTreeCheck` builds stand-in trees of every FreeTerraForged
+// noise kind, generates their CUDA, compiles it with NVRTC and runs it (catches codegen mistakes before a world load).
+tasks.register('cudaTreeCheck', JavaExec) {
+    group = 'verification'
+    description = 'Generates, compiles and runs CUDA for stand-in noise trees of every kind.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.TreeCodegenCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// FreeTerraForged's tile erosion filter outside the game: `gradlew.bat cudaErosionCheck` runs a plain-Java copy of it and
+// the GPU kernels on a made-up tile and compares them bit for bit.
+tasks.register('cudaErosionCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compares the GPU erosion filter with a Java copy of the FreeTerraForged one on a made-up tile.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.ErosionFilterCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// Vanilla's NormalNoise outside the game: `gradlew.bat cudaVanillaNoiseCheck` runs Minecraft's own noise classes against
+// the GPU kernels and compares them bit for bit.
+tasks.register('cudaVanillaNoiseCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compares the GPU version of vanilla NormalNoise with the Minecraft classes.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.VanillaNoiseCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// Generated density functions outside the game: `gradlew.bat cudaDensityCheck` builds stand-in trees of every vanilla
+// density function kind the overworld uses (real NormalNoises), generates their CUDA, compiles it and runs it.
+tasks.register('cudaDensityCheck', JavaExec) {
+    group = 'verification'
+    description = 'Generates, compiles and runs CUDA for stand-in density function trees of every kind.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.DensityCodegenCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// The real noise fill outside the game: `gradlew.bat cudaFillBench` compiles the instance's logs/wgaccel-noise-fill.cu,
+// checks the chunks the game saved beside it (wgaccel-noise-fill-sample-N.bin) byte for byte and times the kernels.
+tasks.register('cudaFillBench', JavaExec) {
+    group = 'verification'
+    description = 'Runs the game-made noise fill code on the GPU against the chunks the game saved, and times it.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.FillBench'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+    if (project.hasProperty('fillSource')) {
+        systemProperty 'wgaccel.fillSource', project.property('fillSource')
+    }
+    if (project.hasProperty('cache')) {
+        systemProperty 'wgaccel.cache', project.property('cache')
+    }
+}
+
+// A game-made CUDA source compiled outside the game: `gradlew.bat cudaCompileCheck -Pcu=<path to a .cu>`.
+tasks.register('cudaCompileCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compiles a saved CUDA source with NVRTC and the mod options.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.CompileCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+    args project.findProperty('cu') ?: 'missing.cu'
+}
+
+// I3: the surface prepass's warp column walk against the old one-thread walk on made-up columns.
+tasks.register('cudaPrepassCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compares the warp surface prepass with the one-thread one on made-up columns.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.PrepassCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// I3: the strata noise per chunk with different block shapes, on the game's saved strata source.
+tasks.register('cudaStrataShapeBench', JavaExec) {
+    group = 'verification'
+    description = 'Times the strata columns kernel with different block shapes.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.StrataShapeBench'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// I3: a high-priority launch's wait next to busy low-priority streams, with -Pconnections=8 (default) or 32.
+tasks.register('cudaQueueBench', JavaExec) {
+    group = 'verification'
+    description = 'Times a high-priority launch next to busy streams for a CUDA_DEVICE_MAX_CONNECTIONS value.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.QueueBench'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+    systemProperty 'connections', project.findProperty('connections') ?: '8'
+    systemProperty 'preload', project.findProperty('preload') ?: 'false'
+}
+
+tasks.register('cudaSurfaceInputsCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compiles the surface input kernel with stand-in constants.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.SurfaceInputsCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+tasks.register('cudaBiomeBench', JavaExec) {
+    group = 'verification'
+    description = 'Checks and times the biome kernels on chunks saved from the game (-Plogs=<instance logs folder>).'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.BiomeBench'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+    args = [gameLogs]
+}
+
+tasks.register('cudaBeardifierCheck', JavaExec) {
+    group = 'verification'
+    description = 'The GPU Beardifier against the Minecraft methods, bit for bit.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.BeardifierCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
