@@ -1,6 +1,6 @@
 package com.wgaccel.gpu;
 
-import static org.lwjgl.cuda.CU.*;
+import static com.wgaccel.gpu.GpuApi.*;
 
 import java.nio.ByteBuffer;
 import java.nio.DoubleBuffer;
@@ -393,7 +393,7 @@ public final class FillGpu {
       ints.put(beardOffset, job.beard);
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.cellsDevice, lane.cellsHost, 8L * cellsCount, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.intsDevice, lane.intsHost, 4L * intsCount, lane.stream), "copy in");
-      boolean timed = lane.fills++ % 16 == 0;
+      boolean timed = lane.fills++ % 16 == 0 && GpuBackend.TIMING;
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
       }
@@ -582,7 +582,7 @@ public final class FillGpu {
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.cellsDevice, lane.cellsHost, 8L * cellsTotal, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.intsDevice, lane.intsHost, 4L * intsTotal, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.paramsDevice, lane.paramsHost, 8L * PARAMS * n, lane.stream), "copy in");
-      boolean timed = lane.fills++ % 16 == 0;
+      boolean timed = lane.fills++ % 16 == 0 && GpuBackend.TIMING;
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
       }

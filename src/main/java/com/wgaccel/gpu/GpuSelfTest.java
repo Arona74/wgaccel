@@ -50,7 +50,7 @@ public final class GpuSelfTest {
       try (MemoryStack stack = MemoryStack.stackPush()) {
          check(cuInit(0), "cuInit");
          IntBuffer device = stack.mallocInt(1);
-         check(cuDeviceGet(device, 0), "cuDeviceGet");
+         check(cuDeviceGet(device, GpuDevice.index()), "cuDeviceGet");
          IntBuffer value = stack.mallocInt(1);
          check(cuDeviceGetAttribute(value, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device.get(0)), "cuDeviceGetAttribute");
          int major = value.get(0);
@@ -115,7 +115,7 @@ public final class GpuSelfTest {
       return new int[] {50, 52, 53, 60, 61, 62, 70, 72, 75, 80, 86, 87, 89, 90};
    }
 
-   private static final String SOURCE = """
+   static final String SOURCE = """
       extern "C" __global__ void terrainLike(const float* a, const float* b, float* out, int n) {
           int i = blockIdx.x * blockDim.x + threadIdx.x;
           if (i >= n) return;
@@ -216,11 +216,15 @@ public final class GpuSelfTest {
             || cause instanceof ExceptionInInitializerError || cause instanceof NoClassDefFoundError;
       }
 
+      if (GpuBackend.HIP) {
+         return text + " | backend HIP (" + GpuBackend.reason + "); hipRTC: " + Hip.hiprtcState;
+      }
+
       return nvrtc ? text + " | NVRTC: " + nvrtcState : text.toString();
    }
 
    /** The same expression in Java (strict IEEE floats; square root as FreeTerraForged does it, through double). */
-   private static float terrainLike(float x, float y) {
+   static float terrainLike(float x, float y) {
       float r = x * y + y / x;
       r = r - (float)Math.sqrt((double)(x + y));
       r = r + Math.min(x, y) * 0.37F - Math.max(x, y) * 0.11F;
@@ -235,7 +239,8 @@ public final class GpuSelfTest {
       check(cuInit(0), "cuInit");
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer device = stack.mallocInt(1);
-         check(cuDeviceGet(device, 0), "cuDeviceGet");
+         check(cuDeviceGet(device, GpuDevice.index()), "cuDeviceGet");
+         lines.add("device " + GpuDevice.index() + " (" + GpuDevice.reason + ")");
          ByteBuffer name = stack.malloc(256);
          check(cuDeviceGetName(name, device.get(0)), "cuDeviceGetName");
          IntBuffer major = stack.mallocInt(1);
@@ -342,7 +347,7 @@ public final class GpuSelfTest {
                check(cuDriverGetVersion(value), "cuDriverGetVersion");
                int driver = value.get(0);
                IntBuffer device = stack.mallocInt(1);
-               check(cuDeviceGet(device, 0), "cuDeviceGet");
+               check(cuDeviceGet(device, GpuDevice.index()), "cuDeviceGet");
                check(cuDeviceGetAttribute(value, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device.get(0)), "cuDeviceGetAttribute");
                int major = value.get(0);
                check(cuDeviceGetAttribute(value, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device.get(0)), "cuDeviceGetAttribute");
@@ -457,7 +462,7 @@ public final class GpuSelfTest {
 
    static void check(int result, String what) {
       if (result != CUDA_SUCCESS) {
-         throw new IllegalStateException(what + " failed: CUDA error " + result);
+         throw new IllegalStateException(what + " failed: " + (GpuBackend.HIP ? "HIP error " + result + " (" + Hip.hipGetErrorString(result) + ")" : "CUDA error " + result));
       }
    }
 

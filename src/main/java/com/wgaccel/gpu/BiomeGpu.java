@@ -1,6 +1,6 @@
 package com.wgaccel.gpu;
 
-import static org.lwjgl.cuda.CU.*;
+import static com.wgaccel.gpu.GpuApi.*;
 
 import java.nio.ByteBuffer;
 import org.lwjgl.PointerBuffer;
@@ -466,7 +466,7 @@ public final class BiomeGpu {
          lane.ensureExtra((long)n * extras);
       }
 
-      boolean timed = lane.runs++ % 4 == 0;
+      boolean timed = lane.runs++ % 4 == 0 && GpuBackend.TIMING;
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
       }
@@ -769,7 +769,7 @@ public final class BiomeGpu {
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.atDevice, lane.atHost, 12L * n, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.cellsDevice, lane.cellsHost, 8L * job.cells.length, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.minimumDevice, lane.minimumHost, 4L * 16, lane.stream), "copy in");
-      boolean timed = lane.runs++ % 16 == 0;
+      boolean timed = lane.runs++ % 16 == 0 && GpuBackend.TIMING;
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
       }

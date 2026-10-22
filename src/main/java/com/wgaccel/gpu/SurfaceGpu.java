@@ -1,6 +1,6 @@
 package com.wgaccel.gpu;
 
-import static org.lwjgl.cuda.CU.*;
+import static com.wgaccel.gpu.GpuApi.*;
 
 import com.wgaccel.Config;
 import java.nio.ByteBuffer;
@@ -394,7 +394,7 @@ public final class SurfaceGpu {
          params.put(PARAMS * c, p);
       }
 
-      boolean timed = lane.batches++ % 16 == 0;
+      boolean timed = lane.batches++ % 16 == 0 && GpuBackend.TIMING;
       long submitted = System.nanoTime();
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
@@ -619,7 +619,7 @@ public final class SurfaceGpu {
       long heights = lane.intsDevice + 4L * 256;
       long minBase = lane.intsDevice + 4L * 512;
       long grid = lane.intsDevice + 4L * 768;
-      boolean timed = lane.runs++ % 16 == 0;
+      boolean timed = lane.runs++ % 16 == 0 && GpuBackend.TIMING;
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
       }

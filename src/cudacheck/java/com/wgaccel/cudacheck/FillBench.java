@@ -145,8 +145,13 @@ public final class FillBench {
 
       double aloneMs = (System.nanoTime() - alone) / 1.0e6 / runs;
       double[] kernels = gpu.kernelMillis();
-      System.out.printf(Locale.ROOT, "alone: %.2f ms per chunk (GPU: corners %.2f, columns %.2f, block states %.2f, copy out %.2f)%n", aloneMs, kernels[0],
-         kernels[1], kernels[2], kernels[3]);
+      if (kernels == null) {
+         // Not timed (GpuBackend.TIMING off under HIP).
+         System.out.printf(Locale.ROOT, "alone: %.2f ms per chunk%n", aloneMs);
+      } else {
+         System.out.printf(Locale.ROOT, "alone: %.2f ms per chunk (GPU: corners %.2f, columns %.2f, block states %.2f, copy out %.2f)%n", aloneMs, kernels[0],
+            kernels[1], kernels[2], kernels[3]);
+      }
       int threads = 14;
       ExecutorService pool = Executors.newFixedThreadPool(threads);
       List<Future<?>> futures = new ArrayList<>();
@@ -171,6 +176,85 @@ public final class FillBench {
       pool.shutdown();
       System.out.printf(Locale.ROOT, "%d threads: %.0f chunks/s on the GPU (%.2f ms per chunk of GPU time)%n", threads, threads * (runs / 4) / seconds,
          seconds * 1000.0 / (threads * (runs / 4)));
+      together(gpu, samples, 1);
+      together(gpu, samples, threads);
+   }
+
+   /**
+    * As the game runs it: threads at once, half of them as the look-ahead's (its lowest stream priority, batches of 8),
+    * half as chunks waited for (the highest, one chunk at a time), every result compared with the game's codes. On a
+    * Radeon 680M (HIP) a look-ahead chunk came back different in game while the same job alone gave the game's blocks.
+    */
+   private static void together(FillGpu gpu, List<Sample> samples, int threads) throws Exception {
+      java.util.concurrent.atomic.AtomicInteger chunks = new java.util.concurrent.atomic.AtomicInteger();
+      java.util.concurrent.atomic.AtomicInteger different = new java.util.concurrent.atomic.AtomicInteger();
+      java.util.concurrent.atomic.AtomicInteger batchDifferent = new java.util.concurrent.atomic.AtomicInteger();
+      ExecutorService pool = Executors.newFixedThreadPool(threads);
+      List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+         int offset = t;
+         boolean ahead = t % 2 == 0;
+         futures.add(pool.submit(() -> {
+            if (ahead) {
+               // Before the thread's first fill: its lane's stream gets the look-ahead's priority.
+               com.wgaccel.gpu.GpuStreams.background();
+            }
+
+            for (int r = 0; r < 40; r++) {
+               if (ahead) {
+                  List<FillGpu.Job> jobs = new ArrayList<>();
+                  List<byte[]> outs = new ArrayList<>();
+                  List<Sample> expected = new ArrayList<>();
+                  for (int i = 0; i < 8; i++) {
+                     Sample sample = samples.get((r * 8 + i + offset) % samples.size());
+                     jobs.add(sample.job);
+                     outs.add(new byte[sample.codes.length]);
+                     expected.add(sample);
+                  }
+
+                  gpu.fillBatch(jobs, outs);
+                  for (int i = 0; i < jobs.size(); i++) {
+                     chunks.incrementAndGet();
+                     if (!Arrays.equals(outs.get(i), expected.get(i).codes)) {
+                        different.incrementAndGet();
+                        if (batchDifferent.incrementAndGet() <= 12 && threads == 1) {
+                           int bytes = 0;
+                           for (int k = 0; k < outs.get(i).length; k++) {
+                              bytes += outs.get(i)[k] != expected.get(i).codes[k] ? 1 : 0;
+                           }
+
+                           StringBuilder batch = new StringBuilder();
+                           for (Sample s : expected) {
+                              batch.append(s.name.replace("wgaccel-noise-fill-sample-", "").replace(".bin", "")).append(' ');
+                           }
+
+                           System.out.printf(Locale.ROOT, "  batch %d, position %d (%s, %,d cells high): %,d codes differ; batch [%s]%n", r, i, expected.get(i).name,
+                              expected.get(i).job.cellCountY, bytes, batch.toString().trim());
+                        }
+                     }
+                  }
+               } else {
+                  Sample sample = samples.get((r + offset) % samples.size());
+                  byte[] out = new byte[sample.codes.length];
+                  gpu.fill(sample.job, out);
+                  chunks.incrementAndGet();
+                  if (!Arrays.equals(out, sample.codes)) {
+                     different.incrementAndGet();
+                  }
+               }
+            }
+
+            return null;
+         }));
+      }
+
+      for (Future<?> future : futures) {
+         future.get();
+      }
+
+      pool.shutdown();
+      System.out.printf(Locale.ROOT, "%d threads at once (look-ahead batches on the lowest priority, single chunks on the highest): %,d chunks, %s%n", threads,
+         chunks.get(), different.get() == 0 ? "all IDENTICAL to the game's" : different.get() + " DIFFER (" + batchDifferent.get() + " of them from batches)");
    }
 
    private static Sample read(Path path) throws Exception {

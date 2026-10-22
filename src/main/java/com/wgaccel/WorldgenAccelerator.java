@@ -120,6 +120,8 @@ public final class WorldgenAccelerator {
       com.wgaccel.gpu.BiomeCheck.reset();
       com.wgaccel.gpu.GpuPrepare.reset();
       GpuSelfTest.cubinCache = Config.GPU_CUBIN_CACHE.get();
+      // Before the GPU is first used below (it is chosen then, once per game).
+      com.wgaccel.gpu.GpuDevice.configured = Config.GPU_DEVICE.get();
       com.wgaccel.gpu.GpuStreams.priorities = Config.GPU_STREAM_PRIORITIES.get();
       com.wgaccel.gpu.GpuStreams.erosionStream = Config.GPU_EROSION_PRIORITY.get();
       com.wgaccel.gpu.GpuStreams.serviceThreads = Config.GPU_SERVICE_THREADS.get();
@@ -157,11 +159,21 @@ public final class WorldgenAccelerator {
          return;
       }
 
-      int capability = GpuSelfTest.deviceCapability;
-      String card = capability == 0 ? "" : String.format(java.util.Locale.ROOT, " (this one: %s, compute %d.%d)", GpuSelfTest.deviceName, capability / 10,
-         capability % 10);
-      event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] The GPU parts are tested only on an NVIDIA "
-         + "RTX 3080. On other cards" + card + " they may not work or may crash the game; every GPU result is checked against the CPU's and a part "
+      String tested;
+      if (com.wgaccel.gpu.GpuBackend.HIP) {
+         // The AMD route (HIP): checked outside the game on a Radeon 680M (gfx1035) only.
+         String arch = com.wgaccel.gpu.HipSelfTest.architecture;
+         String card = arch == null ? "" : " (this one: " + com.wgaccel.gpu.HipSelfTest.deviceName + ", " + arch + ")";
+         tested = "The GPU parts on AMD cards (HIP) are experimental, checked only on a Radeon 680M. On this card" + card;
+      } else {
+         int capability = GpuSelfTest.deviceCapability;
+         String card = capability == 0 ? "" : String.format(java.util.Locale.ROOT, " (this one: %s, compute %d.%d)", GpuSelfTest.deviceName, capability / 10,
+            capability % 10);
+         tested = "The GPU parts are tested only on an NVIDIA RTX 3080. On other cards" + card;
+      }
+
+      event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] " + tested
+         + " they may not work or may crash the game; every GPU result is checked against the CPU's and a part "
          + "that differs turns itself off. Turn this message off with gpuTestedWarning = false (config/wgaccel-common.toml, [gpu]).").withStyle(net.minecraft.ChatFormatting.YELLOW));
    }
 
@@ -183,7 +195,8 @@ public final class WorldgenAccelerator {
    /** Never fails the game: a missing driver, CUDA Toolkit or library only logs that the GPU is unavailable. */
    private static void gpuSelfTest() {
       try {
-         for (String line : GpuSelfTest.run()) {
+         LOG.info("WGA GPU backend: {} ({})", com.wgaccel.gpu.GpuBackend.name(), com.wgaccel.gpu.GpuBackend.reason);
+         for (String line : com.wgaccel.gpu.GpuBackend.HIP ? com.wgaccel.gpu.HipSelfTest.run() : GpuSelfTest.run()) {
             LOG.info("WGA GPU self-test: {}", line);
          }
       } catch (Throwable failure) {

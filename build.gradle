@@ -42,6 +42,16 @@ jar {
     }
 }
 
+// The version the game shows (neoforge.mods.toml) is mod_version from gradle.properties, as the jar's name is: written by
+// hand there it stayed at 0.5.6 while the jar went on to 0.11.5.
+processResources {
+    def properties = [mod_version: mod_version]
+    inputs.properties properties
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand properties
+    }
+}
+
 // The game instance's logs folder, where the mod saves the sources and chunks the offline checks read: -Plogs=<folder>,
 // or logs=<folder> in the user's own ~/.gradle/gradle.properties.
 def gameLogs = project.findProperty('logs') ?: 'run/logs'
@@ -50,6 +60,10 @@ tasks.withType(JavaExec).configureEach {
     // Offline checks for another GPU architecture: -PgpuArch=61 (GTX 10xx), 75 (RTX 20xx), ... (a newer card runs older PTX).
     if (project.findProperty('gpuArch')) {
         systemProperty 'wgaccel.gpuArch', project.findProperty('gpuArch')
+    }
+    // The checks that go through gpu/Gpu on an AMD card: -PgpuBackend=hip (e.g. `gradlew.bat cudaErosionCheck -PgpuBackend=hip`).
+    if (project.findProperty('gpuBackend')) {
+        systemProperty 'wgaccel.gpuBackend', project.findProperty('gpuBackend')
     }
 }
 
@@ -86,6 +100,18 @@ tasks.register('cudaCheck', JavaExec) {
     def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
     environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
     systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+// The same on an AMD card: `gradlew.bat hipCheck` uses the driver's HIP runtime and the AMD HIP SDK's hipRTC (found as
+// the mod finds it: -Dwgaccel.hiprtc, HIP_PATH, C:/Program Files/AMD/ROCm/*, PATH), then compiles the fixed kernel sources.
+tasks.register('hipCheck', JavaExec) {
+    group = 'verification'
+    description = 'Runs the standalone HIP check on an AMD card (GPU, hipRTC, bit-identical floats).'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.HipCheck'
+    if (project.findProperty('hipArch')) {
+        systemProperty 'wgaccel.hipArch', project.findProperty('hipArch')
+    }
 }
 
 // Generated noise trees outside the game: `gradlew.bat cudaTreeCheck` builds stand-in trees of every FreeTerraForged

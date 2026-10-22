@@ -43,6 +43,20 @@ public final class GpuStreams {
    public static long create() {
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer pointer = stack.mallocPointer(1);
+         if (GpuBackend.HIP) {
+            IntBuffer least = stack.mallocInt(1);
+            IntBuffer greatest = stack.mallocInt(1);
+            if (priorities && Hip.hipDeviceGetStreamPriorityRange(least, greatest) == Hip.hipSuccess) {
+               int tier = TIER.get();
+               int priority = tier == 0 ? greatest.get(0) : tier == 2 ? least.get(0) : (least.get(0) + greatest.get(0)) / 2;
+               Hip.check(Hip.hipStreamCreateWithPriority(pointer, Hip.hipStreamNonBlocking, priority), "hipStreamCreateWithPriority");
+            } else {
+               Hip.check(Hip.hipStreamCreateWithFlags(pointer, Hip.hipStreamNonBlocking), "hipStreamCreateWithFlags");
+            }
+
+            return pointer.get(0);
+         }
+
          if (priorities) {
             IntBuffer least = stack.mallocInt(1);
             IntBuffer greatest = stack.mallocInt(1);

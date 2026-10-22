@@ -44,6 +44,7 @@ public final class Config {
    public static final Setting<Boolean> GPU_BIOMES_VANILLA;
    public static final Setting<Boolean> GPU_AREA_STEP;
    public static final Setting<Boolean> GPU_TESTED_WARNING;
+   public static final Setting<Integer> GPU_DEVICE;
    public static final Setting<Boolean> GPU_SURFACE_KINDS_FROM_CODES;
    public static final Setting<GpuFilterMode> GPU_LOOK_AHEAD;
    public static final Setting<Integer> GPU_LOOK_AHEAD_CHUNKS;
@@ -194,17 +195,23 @@ public final class Config {
             "The presets leave this one alone (being measured): always the value written here.")
          .define("fastBlockPredicates", false)).under(CPU_IMPROVEMENTS, false);
       builder.pop();
-      builder.comment("GPU improvements: world generation work done on an NVIDIA card (CUDA). Every GPU result is checked against the",
-         "CPU's now and then; a part that differs turns itself off.").push("gpu");
+      builder.comment("GPU improvements: world generation work done on an NVIDIA card (CUDA) or, experimental, an AMD card (HIP). Every GPU",
+         "result is checked against the CPU's now and then; a part that differs turns itself off.").push("gpu");
       GPU_IMPROVEMENTS = Setting.custom(builder
          .comment("All GPU improvements on or off at once (false: the GPU is never touched; the CPU section still applies).")
          .define("gpuImprovements", true));
       GPU_TESTED_WARNING = Setting.custom(builder
-         .comment("A chat message to each player joining a world: the GPU parts are tested only on an NVIDIA RTX 3080 and may not work,",
-            "or may crash the game, on older or newer cards (GTX 10xx and newer are supported). false: no message.")
+         .comment("A chat message to each player joining a world: the GPU parts are tested only on an NVIDIA RTX 3080 (and, through HIP,",
+            "an AMD Radeon 680M) and may not work, or may crash the game, on other cards (NVIDIA GTX 10xx and newer are supported).",
+            "false: no message.")
          .define("gpuTestedWarning", true));
+      GPU_DEVICE = Setting.custom(builder
+         .comment("Which GPU to use when the PC has more than one, as the log's \"WGA GPU self-test: device\" line lists them (0, 1, ...).",
+            "-1: automatic, the card with the most compute units, a separate card before an integrated one (a desktop Ryzen's own",
+            "small Radeon beside the graphics card is skipped). Read when the GPU is first used: a change takes a restart of the game.")
+         .defineInRange("gpuDevice", -1, -1, 15));
       GPU_MODE = Setting.of(builder
-         .comment("The GPU (CUDA through LWJGL and NVRTC, NVIDIA only). OFF: never touched. SELFTEST: when a world starts,",
+         .comment("The GPU (NVIDIA: CUDA and NVRTC; AMD on Windows: HIP and hipRTC; both through LWJGL). OFF: never touched. SELFTEST: when a world starts,",
             "compile and run a small kernel and check its maths is bit-identical to Java's, then log the result; world",
             "generation itself does not use the GPU yet. CHECK: the self-test, plus FreeTerraForged's noise worked out on the GPU",
             "and compared bit for bit with its own results at world load (logged as WGA GPU noise check).")

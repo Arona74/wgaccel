@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="wgaccel"
-version="0.5.6+mc1.21.1"
+version="${mod_version}"
 displayName="Worldgen Accelerator"
 logoFile="logo.png"
 description='''Faster chunk generation with FreeTerraForged. Fills FreeTerraForged's 3D terrain only up to the ground
