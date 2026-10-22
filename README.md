@@ -2,7 +2,7 @@
 
 Faster world generation for Minecraft 1.21.1 (NeoForge), built first for **FreeTerraForged**. The world comes out the
 same, block for block: every speed-up is checked against Minecraft's and FreeTerraForged's own results while you
-play, and any part whose answer differs turns itself off and the game carries on with the normal code.
+play, and a part whose answer differs turns itself off and the game carries on with the normal code.
 
 On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster** (radius 1000: 2:23 -> 0:46).
 
@@ -57,7 +57,10 @@ busy. If the card is busy (it also draws the game), a chunk simply goes the CPU 
 
 **The checks.** Every 64th chunk (and every 256th ore or block read) is also worked out the normal way and compared;
 the first difference turns that part off, with a warning in the log and in chat. That's how the mod stays exact with
-mods it has never seen.
+mods it has never seen. One exception: the GPU surface check only reports differences in the log (`WGA GPU surface
+check`), because mods whose features reach into a neighbouring chunk while its surface is being made (Still Life, for
+one) cause the occasional difference there that isn't the GPU's (it happens without this mod too, as a race between
+threads).
 
 ## What runs on the CPU and what on the GPU
 

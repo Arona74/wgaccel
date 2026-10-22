@@ -94,6 +94,8 @@ public final class GpuNoiseFill {
       private LevelChunkSection[] sections;
       /** Made by the look-ahead (from a stand-in chunk), not in the chunk's own noise step (the codes check's report). */
       private boolean fromAhead;
+      /** From the look-ahead, made from the chunk's own noise chunk at its biome step (structure chunks), not a stand-in. */
+      private boolean real;
       private long[] oceanFloor;
       private long[] worldSurface;
       private ShortList[] marks;
@@ -822,6 +824,8 @@ public final class GpuNoiseFill {
          boolean check = ELIGIBLE.getAndIncrement() % CHECK_EVERY == 0;
          Pending pending = new Pending(chunk, minCellY, cellCountY, cellWidth, cellHeight, result.codes, check, 0L, 0L);
          pending.fromAhead = true;
+         pending.real = result.real;
+         pending.program = this.p;
          if (check && !snapshot(pending)) {
             SKIP_OTHER.increment();
             return null;
@@ -1028,6 +1032,61 @@ public final class GpuNoiseFill {
    }
 
    private static volatile Class<?> tileOwner;
+
+   private static final AtomicInteger DIFFER_SAMPLES = new AtomicInteger();
+
+   /**
+    * After a fill difference: the chunk's inputs made again from its own noise chunk, run on the GPU again and compared
+    * with the blocks that were used (and, for a stand-in's result, a fresh stand-in's inputs with the real ones), so the
+    * log says whether the inputs or the GPU code differ. The real job is saved as wgaccel-noise-fill-sample-10N.bin for
+    * cudaFillBench. Diagnostics only: anything failing here is just reported.
+    */
+   private static String diagnose(Pending pending) {
+      Program p = pending.program;
+      if (p == null) {
+         return "";
+      }
+
+      ChunkAccess chunk = pending.chunk;
+      StringBuilder out = new StringBuilder();
+      try {
+         NoiseChunk noise = ((com.wgaccel.mixin.access.ChunkAccessAccessor)chunk).wgaccel$noiseChunk();
+         if (noise == null) {
+            return "; (no noise chunk to diagnose)";
+         }
+
+         Scratch scratch = new Scratch();
+         if (!inputs(p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), pending.minCellY, pending.cellCountY, pending.cellWidth,
+            pending.cellHeight, scratch.job, scratch)) {
+            return "; (its aquifer has something the GPU does not know)";
+         }
+
+         int blocks = 256 * pending.cellCountY * pending.cellHeight;
+         byte[] again = new byte[Math.max(pending.codes.length, blocks)];
+         p.gpu.fill(scratch.job, again);
+         int differ = 0;
+         for (int i = 0; i < blocks; i++) {
+            differ += again[i] != pending.codes[i] ? 1 : 0;
+         }
+
+         out.append(String.format(Locale.ROOT, "; the GPU again from the chunk's own inputs: %,d of %,d codes differ from the ones used", differ, blocks));
+         if (pending.fromAhead && !pending.real) {
+            FillGpu.Job made = standIn(p, chunk.getPos(), pending.minCellY, new Scratch());
+            String difference = made == null ? "the stand-in's aquifer has an unknown fluid" : difference(scratch.job, made);
+            out.append("; a new stand-in's inputs: ").append(difference == null ? "the same as the chunk's" : difference);
+         }
+
+         int index = DIFFER_SAMPLES.getAndIncrement();
+         if (index < 4) {
+            writeSample(p, scratch.job, again, blocks, 100 + index);
+            out.append("; saved as wgaccel-noise-fill-sample-").append(100 + index).append(".bin");
+         }
+      } catch (Throwable failure) {
+         out.append("; (diagnosing failed: ").append(failure).append(')');
+      }
+
+      return out.toString();
+   }
 
    /** CHECK: the stand-in's inputs for this chunk against the real ones just made (the job). */
    private static void checkStandIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, FillGpu.Job real) {
@@ -1589,9 +1648,17 @@ public final class GpuNoiseFill {
          CHECKED_BLOCKS.add(256L * pending.cellCountY * pending.cellHeight);
          if (!differences.isEmpty()) {
             DIFFERENT.increment();
+            String origin = !pending.fromAhead ? "its own noise step" : pending.real ? "the structure-chunk job made at its biome step"
+               : "the look-ahead's stand-in chunk";
             if (LOGGED_DIFFERENCES.incrementAndGet() <= 12) {
-               WorldgenAccelerator.LOG.warn("WGA GPU noise fill check: chunk {} differs: {}", chunk.getPos(), String.join("; ", differences));
+               WorldgenAccelerator.LOG.warn("WGA GPU noise fill check: chunk {} differs (the GPU's blocks came from {}): {}{}", chunk.getPos(), origin,
+                  String.join("; ", differences), diagnose(pending));
             }
+
+            // A difference turns the GPU fill off for this game (the checked chunk itself keeps the CPU's blocks).
+            failed = true;
+            com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: chunk {} came out different from the game's (see the log); chunks fill on the CPU from now on",
+               chunk.getPos());
          }
 
          report();
