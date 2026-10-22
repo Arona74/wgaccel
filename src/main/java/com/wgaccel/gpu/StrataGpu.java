@@ -12,16 +12,31 @@ import net.minecraft.world.level.block.state.BlockState;
  * and from the column's WORLD_SURFACE_WG height down each layer's depth is height minus Math.round(depth / sum * height)
  * in turn. The noises are FreeTerraForged's own trees through {@link NoiseCodegen} (bit-identical); a column where a
  * pow result lay too near a float rounding boundary is marked unsure (left to the CPU). Kernel strataColumns.
+ * <p>
+ * FreeTerraForged 1.0.0013 (deleteTiles) samples per 4 x 4 quart instead (its Source has quartRatios): the set and the
+ * depth noises at the quart's centre (chunk origin + quart * 4 + 2), each depth times 1 / sum (all 1 / count when the sum
+ * is not above 0), the index also kept from going below 0; the column's own height as before. 22 Oct 2026, RX 9070 XT:
+ * the per-column code gave 4 of 48 checked chunks different rock layers there.
  */
 public final class StrataGpu {
    private final String source;
    private final String productionSource;
    private final int maxLayers;
+   private final boolean quarts;
 
    public StrataGpu(Object strataSource, SurfaceCodegen states) throws ReflectiveOperationException {
       NoiseCodegen codegen = new NoiseCodegen(pairs(NoiseUtil.GRAD_2D_24), pairs(NoiseUtil.CELL_2D), (float[])noiseUtil("SIN"), (Float)noiseUtil("radToIndex"));
       String selector = codegen.function(SurfaceCodegen.field(strataSource, "selector"));
       List<?> sets = (List<?>)SurfaceCodegen.field(strataSource, "strata");
+      this.quarts = quarts(strataSource);
+      // The column's sample point and the layers' share of the height, as the rule makes them (see the class comment).
+      String sampleX = this.quarts ? "(float)(minX + ((lx >> 2) << 2) + 2)" : "(float)(minX + lx)";
+      String sampleZ = this.quarts ? "(float)(minZ + ((lz >> 2) << 2) + 2)" : "(float)(minZ + lz)";
+      String lowest = this.quarts ? "index = max(0, index);" : "";
+      String share = this.quarts
+         ? "float inv = sum > 0.0f ? 1.0f / sum : 0.0f;\n             float even = 1.0f / (float)n;\n             "
+         : "";
+      String part = this.quarts ? "(sum > 0.0f ? d[i] * inv : even)" : "d[i] / sum";
       StringBuilder kernel = new StringBuilder();
       int max = 1;
       StringBuilder cases = new StringBuilder();
@@ -70,17 +85,18 @@ public final class StrataGpu {
              if (t >= 256) return;
              int lx = t / 16;
              int lz = t - lx * 16;
-             float fx = (float)(minX + lx);
-             float fz = (float)(minZ + lz);
+             float fx = %s;
+             float fz = %s;
              int u = 0;
              float sel = %s(fx, fz, 0, u);
              int index = st_f2i(sel * (float)%d);
              index = min(%d, index);
+             %s
              float d[%d];
              int m[%d];
              int n = 0;
              switch (index) {
-         """.formatted(selector, sets.size(), sets.size() - 1, max, max));
+         """.formatted(sampleX, sampleZ, selector, sets.size(), sets.size() - 1, lowest, max, max));
       kernel.append(cases);
       kernel.append("""
                  default: n = -1;
@@ -91,14 +107,14 @@ public final class StrataGpu {
              int height = heights[t];
              float sum = 0.0f;
              for (int i = 0; i < n; i++) sum += d[i];
-             int y = height;
+             %2$sint y = height;
              for (int i = 0; i < n; i++) {
-                 y -= st_round(d[i] / sum * (float)height);
+                 y -= st_round(%3$s * (float)height);
                  depthOut[t * %1$d + i] = (float)y;
                  stateOut[t * %1$d + i] = m[i];
              }
          }
-         """.formatted(max));
+         """.formatted(max, share, part));
       this.source = codegen.source(List.of()) + kernel;
       // Production (G3.4): the same in three steps so the layers' depth noises (the bulk) run one thread per column and
       // layer instead of one per column: strataSelect (per column: the selector, the set, its layer count and the
@@ -109,12 +125,15 @@ public final class StrataGpu {
          extern "C" __global__ void strataSelect(int minX, int minZ, int* indexOut, int* countOut, int* unsureOut) {
              int t = blockIdx.x * blockDim.x + threadIdx.x;
              if (t >= 256) return;
-             float fx = (float)(minX + t / 16);
-             float fz = (float)(minZ + t %% 16);
+             int lx = t / 16;
+             int lz = t %% 16;
+             float fx = %7$s;
+             float fz = %8$s;
              int u = 0;
              float sel = %1$s(fx, fz, 0, u);
              int index = st_f2i(sel * (float)%2$d);
              index = min(%3$d, index);
+             %9$s
              int n = -1;
              switch (index) {
          %4$s
@@ -132,8 +151,10 @@ public final class StrataGpu {
                  unsureLayer[i] = 0;
                  return;
              }
-             float fx = (float)(minX + t / 16);
-             float fz = (float)(minZ + t %% 16);
+             int lx = t / 16;
+             int lz = t %% 16;
+             float fx = %7$s;
+             float fz = %8$s;
              int u = 0;
              float d = 0.0f;
              int m = 0;
@@ -156,13 +177,13 @@ public final class StrataGpu {
              float* d = depthOut + t * %5$d;
              float sum = 0.0f;
              for (int i = 0; i < n; i++) sum += d[i];
-             int y = height;
+             %10$sint y = height;
              for (int i = 0; i < n; i++) {
-                 y -= st_round(d[i] / sum * (float)height);
+                 y -= st_round(%11$s * (float)height);
                  d[i] = (float)y;
              }
          }
-         """.formatted(selector, sets.size(), sets.size() - 1, counts, max, layerCases);
+         """.formatted(selector, sets.size(), sets.size() - 1, counts, max, layerCases, sampleX, sampleZ, lowest, share, part);
       this.productionSource = codegen.source(List.of()) + production;
    }
 
@@ -177,6 +198,22 @@ public final class StrataGpu {
 
    public int maxLayers() {
       return this.maxLayers;
+   }
+
+   /** Whether the rule samples per quart (FreeTerraForged 1.0.0013), for the log. */
+   public boolean quarts() {
+      return this.quarts;
+   }
+
+   /** FreeTerraForged 1.0.0013's StrataRule.Source keeps its per-quart ratios in quartRatios; 1.0.0010's has no such field. */
+   private static boolean quarts(Object strataSource) {
+      for (Field field : strataSource.getClass().getDeclaredFields()) {
+         if (field.getName().equals("quartRatios")) {
+            return true;
+         }
+      }
+
+      return false;
    }
 
    private static Object record(Object target, String name) throws ReflectiveOperationException {

@@ -37,6 +37,8 @@ public class BiomeInputs {
 
    private static volatile Method endDepthMethod;
    private static volatile Method minimumMethod;
+   /** The surface context's envelope and the context, from the last read with banding (for {@link #minimumSurfaces}). */
+   private static volatile Object[] lastEnvelope;
 
    /** Reads everything for the chunk from its noise chunk and the climate sampler in use. */
    public void read(ChunkAccess chunk, Object sampler, List<Object> cellSamplers) throws ReflectiveOperationException {
@@ -136,13 +138,35 @@ public class BiomeInputs {
          minimumMethod = minimum;
       }
 
-      int quartX = this.chunkX >> 2;
-      int quartZ = this.chunkZ >> 2;
+      lastEnvelope = new Object[] {envelope, context};
+      minimumSurfaces(envelope, context, minimum, this.chunkX, this.chunkZ, this.minimumSurface);
+   }
+
+   private static void minimumSurfaces(Object envelope, Object context, Method minimum, int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
+      int quartX = chunkX >> 2;
+      int quartZ = chunkZ >> 2;
       for (int qx = 0; qx < 4; qx++) {
          for (int qz = 0; qz < 4; qz++) {
-            this.minimumSurface[qx * 4 + qz] = (Integer)minimum.invoke(envelope, context, quartX + qx, quartZ + qz);
+            out[qx * 4 + qz] = (Integer)minimum.invoke(envelope, context, quartX + qx, quartZ + qz);
          }
       }
+   }
+
+   /**
+    * The chunk's 16 envelope minimums as FreeTerraForged gives them now, on this thread, or false when no read with banding
+    * has run yet. FreeTerraForged 1.0.0013's later builds give a quart another answer depending on when and on which
+    * thread it is asked (BiomeSurfaceEnvelope: a per-thread table before a shared one, filled ahead from chunk grids with
+    * the full minimum, on demand with a sampled one), so a result made ahead is used only if these are still the same.
+    */
+   public static boolean minimumSurfaces(int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
+      Object[] last = lastEnvelope;
+      Method minimum = minimumMethod;
+      if (last == null || minimum == null) {
+         return false;
+      }
+
+      minimumSurfaces(last[0], last[1], minimum, chunkX, chunkZ, out);
+      return true;
    }
 
    private static Method method(Class<?> type, String name) {

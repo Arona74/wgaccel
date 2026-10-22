@@ -10,10 +10,12 @@ import java.lang.reflect.Modifier;
  * <ul>
  *   <li>chunk cells ({@link FtfChunkCells}): ChunkFilterGrid.generateChunkCells exists and ChunkFilterGrid keeps no cache of
  *   its own (its only static field is the thread's working grid, THREAD_LOCAL): a fixed version that keeps cells across
- *   chunk objects has another static field, and ours stays off;</li>
+ *   chunk objects has another static field, and ours stays off; so does one whose generateChunkCells also fills the
+ *   surface envelope's cache (BiomeSurfaceEnvelope.prepopulateFromChunkGrid), which kept cells would skip;</li>
  *   <li>the surface envelope ({@link FtfSurfaceEnvelope}): BiomeSurfaceEnvelope's cache ("values") is an OwnerThreadCache
  *   (one per thread, so the biome look-ahead and the chunk's own biome step work every value out twice); any other cache
- *   type and ours stays off.</li>
+ *   type, an OwnerThreadCache with a table shared by all threads, or a cache FreeTerraForged fills ahead
+ *   (prepopulateFromChunkGrid, 1.0.0013's later builds) and ours stays off.</li>
  * </ul>
  */
 public final class FtfSlowPaths {
@@ -57,6 +59,17 @@ public final class FtfSlowPaths {
                }
             }
 
+            // FreeTerraForged 1.0.0013's later builds: generateChunkCells also fills the surface envelope's cache from the
+            // chunk's grid (the full 10 x 10 minimum, where an answer made on demand samples every other block and can be
+            // a block higher). Handing out kept cells skips that, so more quarts would get the sampled answer than with
+            // FreeTerraForged alone (the user, 22 Oct 2026: the world stays FreeTerraForged's own; ours stays off).
+            Class<?> envelope = Class.forName("etcodehome.freeterraforged.world.worldgen.biome.BiomeSurfaceEnvelope");
+            for (java.lang.reflect.Method method : envelope.getDeclaredMethods()) {
+               if (method.getName().equals("prepopulateFromChunkGrid")) {
+                  return "generateChunkCells also fills the surface envelope's cache";
+               }
+            }
+
             return null;
          });
          cells = value;
@@ -73,12 +86,40 @@ public final class FtfSlowPaths {
             return false;
          }
 
-         value = check("surface envelope", () -> {
-            Class<?> type = Class.forName("etcodehome.freeterraforged.world.worldgen.biome.BiomeSurfaceEnvelope");
-            Field values = type.getDeclaredField("values");
-            return values.getType().getSimpleName().equals("OwnerThreadCache") ? null : "its cache is a " + values.getType().getSimpleName();
-         });
-         envelope = value;
+         synchronized (FtfSlowPaths.class) {
+            // Once, not once per thread (the 22 Oct 2026 run logged it from 11 threads at once).
+            value = envelope;
+            if (value != null) {
+               return value;
+            }
+
+            value = check("surface envelope", () -> {
+               Class<?> type = Class.forName("etcodehome.freeterraforged.world.worldgen.biome.BiomeSurfaceEnvelope");
+               Field values = type.getDeclaredField("values");
+               if (!values.getType().getSimpleName().equals("OwnerThreadCache")) {
+                  return "its cache is a " + values.getType().getSimpleName();
+               }
+
+               // FreeTerraForged 1.0.0013's later builds: the cache has a table all threads share (what ours did), and
+               // ChunkFilterGrid fills it ahead from the chunk's grid (the full 10 x 10 minimum, where minimumSurfaceY
+               // now samples every other block), so a quart's answer depends on which came first; ours then found 199
+               // where FreeTerraForged's own gave 200 (22 Oct 2026, RX 9070 XT). Either way ours stays off.
+               for (Field field : values.getType().getDeclaredFields()) {
+                  if (field.getName().equals("shared")) {
+                     return "its cache is shared by all threads already";
+                  }
+               }
+
+               for (java.lang.reflect.Method method : type.getDeclaredMethods()) {
+                  if (method.getName().equals("prepopulateFromChunkGrid")) {
+                     return "it fills its cache ahead from the chunk grids";
+                  }
+               }
+
+               return null;
+            });
+            envelope = value;
+         }
       }
 
       return value;

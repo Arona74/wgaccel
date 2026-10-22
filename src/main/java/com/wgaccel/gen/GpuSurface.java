@@ -207,11 +207,13 @@ public final class GpuSurface {
       SurfaceInputs inputs = new SurfaceInputs(system, biomes, zoomSeed);
       String strataSource;
       int strataMax;
+      String strataSampled = "";
       Object strata = strataRule(rules);
       if (strata != null) {
          StrataGpu code = new StrataGpu(strataSourceOf(strata, system, random, biomes, context), codegen);
          strataSource = code.productionSource();
          strataMax = code.maxLayers();
+         strataSampled = code.quarts() ? ", sampled per quart (FreeTerraForged 1.0.0013)" : ", sampled per column";
       } else {
          strataSource = """
             extern "C" __global__ void strataSelect(int minX, int minZ, int* indexOut, int* countOut, int* unsureOut) {
@@ -253,7 +255,7 @@ public final class GpuSurface {
       SurfaceGpu gpu = new SurfaceGpu(GpuService.context(), strataSource, strataMax, source, codegen.noiseData(), codegen.permutations(), inputs.noiseData(),
          inputs.permutations(), inputs.simplexData(), inputs.simplexPermutations(), inputs.temperature(), inputs.modifier());
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU surface: rule tree of %s, %d block states, strata %s, CUDA source %,d KB", codegen.kinds(),
-         states, strata == null ? "none" : "up to " + strataMax + " layers", source.length() / 1024));
+         states, strata == null ? "none" : "up to " + strataMax + " layers" + strataSampled, source.length() / 1024));
       int batch = Config.GPU_SURFACE_BATCH_CHUNKS.get();
       com.wgaccel.gpu.SurfaceBatcher batcher = batch > 0 ? new com.wgaccel.gpu.SurfaceBatcher(gpu, batch, Config.GPU_SURFACE_BATCH_THREADS.get(), 200L) : null;
       return new Program(random, system, rules, biomes, zoomSeed, defaultBlock, table, gpu, batcher);

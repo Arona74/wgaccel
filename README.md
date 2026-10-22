@@ -72,7 +72,7 @@ threads).
 | Step | GPU (NVIDIA, or AMD on Windows) | CPU |
 | --- | --- | --- |
 | FreeTerraForged's terrain tiles (1.0.0010) | the tile noise (terrain populators), the erosion filter | a bigger tile cache (`tileCacheTiles`) |
-| FreeTerraForged's chunk cells (1.0.0013 "deleteTiles") | | made once per chunk instead of three times (`ftfSharedChunkCells`) |
+| FreeTerraForged's chunk cells (1.0.0013 "deleteTiles") | | made once per chunk instead of three times (`ftfSharedChunkCells`; earlier 1.0.0013 builds only, it turns itself off on later ones) |
 | Biomes | climate sampling, the biome table search, FreeTerraForged's biome decoration (cave biomes, rivers) | faster biome choice: FreeTerraForged's repeated look-ups reused (`fasterBiomeChoice`) |
 | 3D terrain (noise fill) | density, aquifers, ore veins, structure terrain (Beardifier) | fill only up to the ground (`fillToGround`) |
 | Surface | the surface rules (grass, sand, snow, FreeTerraForged's strata) | direct block reads (`fastSurfaceReads`) |
@@ -111,7 +111,7 @@ The same on a dedicated server (same PC, the card free): 0:47.
 | --- | --- | --- | --- |
 | FreeTerraForged + Terralith + Biomes O' Plenty + Regions Unexplored, overworld r1000 | 2:49 | 0:57 | 2.9x |
 | FreeTerraForged 1.0.0010 (22 Oct unstable, a 1,152-block world), overworld r2000 (63,001 chunks) | not measured | 3:14 (325 chunks/s) | |
-| FreeTerraForged 1.0.0013 "deleteTiles", overworld r1000: before and after the mod's fixes for its new chunk cells (with `gpuAreaStep` on) | 60-90 chunks/s | 1:53 (152 chunks/s) | about 2x |
+| FreeTerraForged 1.0.0013 "deleteTiles" (an earlier build), overworld r1000: before and after the mod's fixes for its new chunk cells (with `gpuAreaStep` on) | 60-90 chunks/s | 1:53 (152 chunks/s) | about 2x |
 | FreeTerraForged 1.0.0010 with the 4 x 4 area step (`gpuAreaStep`, off by default) | 0:46 | 0:44 | 1.05x |
 | Vanilla overworld, radius 2000 (63,001 chunks), with `gpuAreaStep` on (it turns the GPU on in vanilla) | 2:15 | 1:22 | 1.65x |
 | Vanilla overworld, radius 2000, default settings (CPU parts only in vanilla) | 2:15 | 1:58 | 1.14x |
@@ -150,7 +150,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | --- | --- | --- |
 | Minecraft | 1.21.1 | |
 | NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | no Fabric version |
-| FreeTerraForged | **1.0.0010 from the `1.21.1_unstable` branch** (22 Oct 2026), and **1.0.0013 from the `deleteTiles` branch** | both checked; older 1.0.0010 builds work too. The GPU tile parts are for 1.0.0010 (tiles); 1.0.0013 has no tiles and gets its own CPU fixes. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
+| FreeTerraForged | **1.0.0010 from the `1.21.1_unstable` branch** (22 Oct 2026); **1.0.0013 from the `deleteTiles` branch: experimental support for now** | 1.0.0010 checked; older 1.0.0010 builds work too. The GPU tile parts are for 1.0.0010 (tiles); 1.0.0013 has no tiles, and the branch still changes often. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
 | C2ME | 0.4.0-alpha.0.123 (recommended) | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
 | C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off |
 | Lithium | 0.15.4 | works, recommended |

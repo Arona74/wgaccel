@@ -44,9 +44,10 @@ public final class BiomesAhead {
    /**
     * A chunk's result: per quart column (qx * 4 + qz) its temperature, humidity, continentalness, erosion, weirdness and
     * projected continentalness (the same up the whole column: 2D CellSampler fields; a chunk where they are not is the
-    * CPU's), per cell (as GpuBiomes numbers them) its depth and chosen biome's number (-1: a tie, the CPU's).
+    * CPU's), per cell (as GpuBiomes numbers them) its depth and chosen biome's number (-1: a tie, the CPU's), and the
+    * BiomeSurfaceEnvelope minimums it was made from (the chunk's biome step reads them again: {@link GpuBiomes#begin}).
     */
-   record Result(int quartY, int quartHeight, int[] columns, int[] cells, int[] decorated, int[] extra, int[] extraDecorated, int[] provider) {
+   record Result(int quartY, int quartHeight, int[] columns, int[] cells, int[] decorated, int[] extra, int[] extraDecorated, int[] provider, int[] minimumSurface) {
    }
 
    private static volatile BiomesAhead current;
@@ -91,6 +92,9 @@ public final class BiomesAhead {
    final LongAdder waited = new LongAdder();
    final LongAdder waitedInTime = new LongAdder();
    final LongAdder mismatched = new LongAdder();
+   /** Results not used: the surface envelope's minimums at the chunk's biome step were not the ones the result was made from. */
+   final LongAdder inputsChanged = new LongAdder();
+   final java.util.concurrent.atomic.AtomicInteger inputsLogged = new java.util.concurrent.atomic.AtomicInteger();
    final LongAdder dropped = new LongAdder();
    final LongAdder skipped = new LongAdder();
    final LongAdder inputNanos = new LongAdder();
@@ -443,7 +447,7 @@ public final class BiomesAhead {
             Result result = pack(heights.get(j)[0], heights.get(j)[1], n, climatePool.get(j), projectedPool.get(j), chosenPool.get(j), tiedPool.get(j),
                decorating ? java.util.Arrays.copyOf(decoratedPool.get(j), n) : null, extras, extraCCPool.get(j), extraChosenPool.get(j),
                decorating && p.gpu().decoratesExtras() ? java.util.Arrays.copyOf(extraDecoratedPool.get(j), extras * n) : null,
-               p.gpu().multi() ? providersOf.get(jobs.get(j)) : null);
+               p.gpu().multi() ? providersOf.get(jobs.get(j)) : null, jobs.get(j).minimumSurface);
             if (result == null) {
                this.states.remove(key, QUEUED);
                this.skipped.increment();
@@ -474,7 +478,7 @@ public final class BiomesAhead {
 
    /** Null when a value does not fit an int or a column's climate is not the same at every height (the chunk is then the CPU's). */
    private static Result pack(int quartY, int quartHeight, int n, long[] climate, long[] projected, int[] chosen, int[] tied, int[] decorated, int extras,
-         long[] extraCC, int[] extraChosen, int[] extraDecorated, int[] provider) {
+         long[] extraCC, int[] extraChosen, int[] extraDecorated, int[] provider, int[] minimumSurface) {
       int[] columns = new int[16 * 6];
       int[] cells = new int[2 * n];
       for (int i = 0; i < n; i++) {
@@ -515,15 +519,15 @@ public final class BiomesAhead {
          }
       }
 
-      return new Result(quartY, quartHeight, columns, cells, decorated, extra, extraDecorated, provider == null ? null : provider.clone());
+      return new Result(quartY, quartHeight, columns, cells, decorated, extra, extraDecorated, provider == null ? null : provider.clone(), minimumSurface.clone());
    }
 
    String summary() {
       long m = Math.max(1, this.made.sum());
       return String.format(Locale.ROOT,
-         "; ahead: %,d noticed, %,d made in %,d launches (inputs %.2f ms and GPU %.2f ms per chunk on its own threads; %s), %,d used, %,d not ready (the CPU's; %,d waited for, %,d of them in time), %,d other height, %,d dropped, %,d skipped, %,d waiting",
+         "; ahead: %,d noticed, %,d made in %,d launches (inputs %.2f ms and GPU %.2f ms per chunk on its own threads; %s), %,d used, %,d not ready (the CPU's; %,d waited for, %,d of them in time), %,d other height, %,d not used: surface envelope changed since made, %,d dropped, %,d skipped, %,d waiting",
          this.noticed.sum(), this.made.sum(), this.batches.sum(), this.inputNanos.sum() / 1.0e6 / m, this.gpuNanos.sum() / 1.0e6 / m, GpuBiomes.program() == null ? "-" : GpuBiomes.program().gpu().batchTimings(), this.used.sum(), this.late.sum(),
-         this.waited.sum(), this.waitedInTime.sum(), this.mismatched.sum(), this.dropped.sum(), this.skipped.sum(), this.readyCount.get());
+         this.waited.sum(), this.waitedInTime.sum(), this.mismatched.sum(), this.inputsChanged.sum(), this.dropped.sum(), this.skipped.sum(), this.readyCount.get());
    }
 
    /** For the memory report: what the biome look-ahead holds now. */

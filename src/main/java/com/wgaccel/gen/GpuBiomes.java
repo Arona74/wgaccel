@@ -278,8 +278,53 @@ public final class GpuBiomes {
             return;
          }
 
+         // The identical-world rule, as the fill look-ahead's: the result is used only if the surface envelope's
+         // minimums it was made from are still the ones FreeTerraForged gives now (22 Oct 2026, FreeTerraForged
+         // 1.0.0013, RX 9070 XT: chunk [35, 65]'s quart (142, 40, 262) had depth 3790 in the game, 0 from a result made
+         // ahead: lush caves against desert).
+         if (result.minimumSurface() != null && !sameEnvelope(look, chunk, result.minimumSurface())) {
+            current.active = false;
+            return;
+         }
+
          unpack(current, result);
       }
+   }
+
+   private static final ThreadLocal<int[]> ENVELOPE_NOW = ThreadLocal.withInitial(() -> new int[16]);
+
+   private static boolean sameEnvelope(BiomesAhead look, ChunkAccess chunk, int[] made) {
+      boolean banded = false;
+      for (int value : made) {
+         banded |= value != Integer.MAX_VALUE;
+      }
+
+      if (!banded) {
+         return true;
+      }
+
+      int[] now = ENVELOPE_NOW.get();
+      try {
+         if (!BiomeInputs.minimumSurfaces(chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), now)) {
+            return false;
+         }
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return false;
+      }
+
+      for (int i = 0; i < 16; i++) {
+         if (now[i] != made[i]) {
+            look.inputsChanged.increment();
+            if (look.inputsLogged.incrementAndGet() <= 8) {
+               WorldgenAccelerator.LOG.info("WGA GPU biomes ahead: chunk {}'s surface envelope changed since its result was made (quart column {}: {} now, {} made); its biomes the usual way",
+                  chunk.getPos(), i, now[i], made[i]);
+            }
+
+            return false;
+         }
+      }
+
+      return true;
    }
 
    private static void unpack(Current current, BiomesAhead.Result result) {
