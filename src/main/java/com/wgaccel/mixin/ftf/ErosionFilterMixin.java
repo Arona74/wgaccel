@@ -13,6 +13,7 @@ import org.spongepowered.asm.mixin.Pseudo;
 public abstract class ErosionFilterMixin {
    @WrapMethod(method = "apply(Letcodehome/freeterraforged/world/worldgen/densityfunction/tile/filter/Filterable;III)V")
    private void wgaccel$gpu(Filterable map, int regionX, int regionZ, int iterationsPerChunk, Operation<Void> original) {
-      ErosionFilterGpu.apply(this, map, () -> original.call(map, regionX, regionZ, iterationsPerChunk));
+      ErosionFilterGpu.apply(this, map.getBacking(), map.getBlockSize().total(), map.getBlockX(), map.getBlockZ(),
+         () -> original.call(map, regionX, regionZ, iterationsPerChunk));
    }
 }

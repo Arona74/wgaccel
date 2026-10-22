@@ -302,6 +302,20 @@ public final class Gpu implements AutoCloseable {
       }
    }
 
+   /**
+    * G6c: as {@link #copyIn}, not waited for: it runs in order with the kernels queued after it ({@link #enqueue}), and
+    * the buffer must stay as it is until the next wait ({@link #finish} or a download).
+    */
+   public void enqueueCopyIn(long device, Buffer buffer) {
+      this.current();
+      if (GpuBackend.HIP) {
+         Hip.check(Hip.hipMemcpyHtoDAsync(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream), "copy in");
+         return;
+      }
+
+      GpuSelfTest.check(ncuMemcpyHtoDAsync(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream), "copy in");
+   }
+
    /** Copies one device buffer into another. */
    public void copy(long from, long to, long bytes) {
       this.current();
@@ -459,6 +473,61 @@ public final class Gpu implements AutoCloseable {
             freeDevice(device);
          }
       }
+   }
+
+   /** Kernel handles by name, looked up once ({@link #enqueue}). */
+   private final java.util.Map<String, Long> functions = new java.util.HashMap<>();
+
+   /**
+    * G6c: as {@link #run} with only Integer, Float, Double or Long arguments, but not waited for: kernels queued this way
+    * run in order on this Gpu's stream, and the next copy (which waits) or {@link #finish} waits for them all. An erosion
+    * grid batch was 11 launches each waited for (2.17 ms a batch on the 23 Oct 2026 run, mostly the waiting).
+    */
+   public void enqueue(String kernel, int gridX, int gridY, Object... arguments) {
+      this.current();
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         Long function = this.functions.get(kernel);
+         if (function == null) {
+            PointerBuffer found = stack.mallocPointer(1);
+            if (GpuBackend.HIP) {
+               Hip.check(Hip.hipModuleGetFunction(found, this.module, stack.ASCII(kernel)), "hipModuleGetFunction " + kernel);
+            } else {
+               GpuSelfTest.check(cuModuleGetFunction(found, this.module, stack.ASCII(kernel)), "cuModuleGetFunction " + kernel);
+            }
+
+            function = found.get(0);
+            this.functions.put(kernel, function);
+         }
+
+         PointerBuffer params = stack.mallocPointer(arguments.length);
+         for (int i = 0; i < arguments.length; i++) {
+            Object argument = arguments[i];
+            if (argument instanceof Integer value) {
+               params.put(i, MemoryUtil.memAddress(stack.ints(value)));
+            } else if (argument instanceof Float value) {
+               params.put(i, MemoryUtil.memAddress(stack.floats(value)));
+            } else if (argument instanceof Double value) {
+               params.put(i, MemoryUtil.memAddress(stack.doubles(value)));
+            } else if (argument instanceof Long address) {
+               params.put(i, stack.pointers(address).address());
+            } else {
+               throw new IllegalArgumentException("enqueue takes values and device addresses only, not " + argument);
+            }
+         }
+
+         // The launch copies the argument values, so the stack may be released before the kernel runs.
+         if (GpuBackend.HIP) {
+            Hip.check(Hip.hipModuleLaunchKernel(function, gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, 0L), "hipModuleLaunchKernel " + kernel);
+         } else {
+            GpuSelfTest.check(cuLaunchKernel(function, gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, null), "cuLaunchKernel " + kernel);
+         }
+      }
+   }
+
+   /** Waits for everything queued on this Gpu's stream ({@link #enqueue}). */
+   public void finish() {
+      this.current();
+      this.sync("finish");
    }
 
    /** Runs a one-thread-per-result kernel whose last argument is its float output; returns the results (the caller frees them). */

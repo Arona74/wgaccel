@@ -141,7 +141,10 @@ public final class ErosionFilterCheck {
             different == 0 ? "BIT-IDENTICAL" : different + " DIFFER", notSure, gpuMs, cpuMs);
       }
 
-      v2(n, height, mask, emod, edge, river, blockX, blockZ, p, random);
+      v2(n, height, mask, emod, edge, river, blockX, blockZ, p, random, ErosionKernels.Variant.OCT_21);
+      // FreeTerraForged 1.0.0013's filter (its chunk grids): the same with its constants and NoiseUtil's table sin / cos.
+      v2(n, height, mask, emod, edge, river, blockX, blockZ, p, random, ErosionKernels.Variant.FTF_1_0_0013);
+      batched(n, height, mask, emod, edge, river, blockX, blockZ, p);
       cliff(n, height, mask, emod, edge, river, blockX, blockZ);
    }
 
@@ -302,9 +305,150 @@ public final class ErosionFilterCheck {
       return (n & 0x7FFFFFFF) / (float)0x7FFFFFFF;
    }
 
-   /** S6: FreeTerraForged's 21 Oct erosion filter (Java copy below) against {@link ErosionKernels#runV2}, the same tile. */
-   private static void v2(int n, float[] height, boolean[] mask, float[] emod, float[] edge, float[] river, int blockX, int blockZ, float[] p, Random random)
+   /**
+    * G6c: four 40 x 40 grids cut from the tile (as 1.0.0013's chunk grids), each through ErosionKernels.runV2 alone and
+    * all four through the batched evb kernels in one go (the way ErosionGridBatch runs them); every result compared.
+    */
+   private static void batched(int n, float[] height, boolean[] mask, float[] emod, float[] edge, float[] river, int blockX, int blockZ, float[] p)
          throws Exception {
+      int g = 40;
+      int nn = g * g;
+      int grids = 4;
+      int[][] corners = {{0, 0}, {60, 17}, {n - g, n - g}, {33, 101}};
+      int count = grids * nn;
+      float[][] in = new float[7][count];
+      int[] bx = new int[grids];
+      int[] bz = new int[grids];
+      for (int j = 0; j < grids; j++) {
+         bx[j] = blockX + corners[j][0];
+         bz[j] = blockZ + corners[j][1];
+         for (int z = 0; z < g; z++) {
+            for (int x = 0; x < g; x++) {
+               int from = (corners[j][1] + z) * n + corners[j][0] + x;
+               int to = j * nn + z * g + x;
+               in[0][to] = height[from];
+               in[1][to] = (from % 7) * 0.001F;
+               in[2][to] = (from % 5) * 0.1F - 0.2F;
+               in[3][to] = emod[from];
+               in[4][to] = edge[from];
+               in[5][to] = river[from];
+               in[6][to] = mask[from] ? 1 : 0;
+            }
+         }
+      }
+
+      ErosionKernels.Variant v = ErosionKernels.Variant.FTF_1_0_0013;
+      try (Gpu gpu = new Gpu(ErosionKernels.SOURCE, "erosion_batch_check.cu")) {
+         gpu.useStream(com.wgaccel.gpu.GpuStreams.create());
+         // One by one, the single-grid kernels.
+         float[][] single = new float[4][count];
+         ErosionKernels.Buffers d = new ErosionKernels.Buffers(gpu, nn);
+         gpu.copyIn(d.params, MemoryUtil.memAllocFloat(p.length).put(0, p));
+         long oneStart = System.nanoTime();
+         for (int j = 0; j < grids; j++) {
+            gpu.copyIn(d.height, floats(Arrays.copyOfRange(in[0], j * nn, (j + 1) * nn)));
+            gpu.copyIn(d.heightErosion, floats(Arrays.copyOfRange(in[1], j * nn, (j + 1) * nn)));
+            gpu.copyIn(d.sediment, floats(Arrays.copyOfRange(in[2], j * nn, (j + 1) * nn)));
+            gpu.copyIn(d.modifier, floats(Arrays.copyOfRange(in[3], j * nn, (j + 1) * nn)));
+            gpu.copyIn(d.edge, floats(Arrays.copyOfRange(in[4], j * nn, (j + 1) * nn)));
+            gpu.copyIn(d.river, floats(Arrays.copyOfRange(in[5], j * nn, (j + 1) * nn)));
+            IntBuffer m = MemoryUtil.memAllocInt(nn);
+            for (int i = 0; i < nn; i++) {
+               m.put(i, (int)in[6][j * nn + i]);
+            }
+
+            gpu.copyIn(d.mask, m);
+            ErosionKernels.runV2(gpu, d, g, SEED, OCTAVES, bx[j], bz[j], v);
+            FloatBuffer o = MemoryUtil.memAllocFloat(nn);
+            IntBuffer u = MemoryUtil.memAllocInt(nn);
+            gpu.download(d.outHeight, o);
+            o.get(0, single[0], j * nn, nn);
+            gpu.download(d.outHeightErosion, o);
+            o.get(0, single[1], j * nn, nn);
+            gpu.download(d.outSediment, o);
+            o.get(0, single[2], j * nn, nn);
+            gpu.download(d.unsure, u);
+            for (int i = 0; i < nn; i++) {
+               single[3][j * nn + i] = u.get(i);
+            }
+         }
+
+         double oneMs = (System.nanoTime() - oneStart) / 1.0e6;
+         // All at once, the batched kernels (separate buffers here; ErosionGridBatch packs them into one).
+         long h = gpu.upload(floats(in[0]));
+         long he = gpu.upload(floats(in[1]));
+         long sed = gpu.upload(floats(in[2]));
+         long mod = gpu.upload(floats(in[3]));
+         long ed = gpu.upload(floats(in[4]));
+         long rv = gpu.upload(floats(in[5]));
+         IntBuffer maskAll = MemoryUtil.memAllocInt(count);
+         for (int i = 0; i < count; i++) {
+            maskAll.put(i, (int)in[6][i]);
+         }
+
+         long mk = gpu.upload(maskAll);
+         long bxs = gpu.upload(MemoryUtil.memAllocInt(grids).put(0, bx));
+         long bzs = gpu.upload(MemoryUtil.memAllocInt(grids).put(0, bz));
+         long env = gpu.allocate(4L * count);
+         long tmp = gpu.allocate(4L * count);
+         long sx = gpu.allocate(4L * count);
+         long sz = gpu.allocate(4L * count);
+         long zone = gpu.allocate(4L * count);
+         long oh = gpu.allocate(4L * count);
+         long ohe = gpu.allocate(4L * count);
+         long os = gpu.allocate(4L * count);
+         long un = gpu.allocate(4L * count);
+         int blocks = (count + 255) / 256;
+         long batchStart = System.nanoTime();
+         gpu.enqueue("ev2Envelope", blocks, 1, count, h, env);
+         gpu.enqueue("evbWindowRows", blocks, 1, grids, g, 3, 1, env, tmp);
+         gpu.enqueue("evbWindowCols", blocks, 1, grids, g, 3, 1, tmp, env);
+         gpu.enqueue("evbSlopes", blocks, 1, grids, g, h, d.params, sx, sz);
+         gpu.enqueue("ev2Gate", blocks, 1, count, sx, sz, zone);
+         gpu.enqueue("evbWindowRows", blocks, 1, grids, g, 2, 0, zone, tmp);
+         gpu.enqueue("evbWindowCols", blocks, 1, grids, g, 2, 0, tmp, zone);
+         gpu.enqueue("evbBlurRows", blocks, 1, grids, g, 2, zone, tmp);
+         gpu.enqueue("evbBlurCols", blocks, 1, grids, g, 2, tmp, zone);
+         gpu.enqueue("evbMain", blocks, 1, grids, g, SEED, OCTAVES, bxs, bzs, d.params, h, env, sx, sz, zone, mk, mod, ed, rv, he, sed, oh, ohe, os, un,
+            v.slopeStart(), v.range(), v.depthPerSlope(), v.margin(), 1);
+         gpu.enqueue("eroFinish", blocks, 1, count, d.params, h, un, oh, ohe);
+         gpu.finish();
+         double batchMs = (System.nanoTime() - batchStart) / 1.0e6;
+         FloatBuffer o = MemoryUtil.memAllocFloat(count);
+         IntBuffer u = MemoryUtil.memAllocInt(count);
+         int different = 0;
+         long[] outs = {oh, ohe, os};
+         for (int k = 0; k < 3; k++) {
+            gpu.download(outs[k], o);
+            for (int i = 0; i < count; i++) {
+               if (!same(o.get(i), single[k][i]) && different++ < 8) {
+                  System.out.printf(Locale.ROOT, "batched grids: grid %d cell %d field %d: %s / alone %s%n", i / nn, i % nn, k, o.get(i), single[k][i]);
+               }
+            }
+         }
+
+         gpu.download(un, u);
+         for (int i = 0; i < count; i++) {
+            if (u.get(i) != (int)single[3][i] && different++ < 8) {
+               System.out.printf(Locale.ROOT, "batched grids: grid %d cell %d unsure %d / alone %d%n", i / nn, i % nn, u.get(i), (int)single[3][i]);
+            }
+         }
+
+         System.out.printf(Locale.ROOT, "batched 1.0.0013 grids: %d grids of 40 x 40 at once against one by one: %s; kernels %.2f ms for all (one by one with copies %.2f ms)%n",
+            grids, different == 0 ? "IDENTICAL" : different + " DIFFER", batchMs, oneMs);
+      }
+   }
+
+   /** S6: FreeTerraForged's 21 Oct erosion filter (Java copy below) against {@link ErosionKernels#runV2}, the same tile. */
+   private static void v2(int n, float[] height, boolean[] mask, float[] emod, float[] edge, float[] river, int blockX, int blockZ, float[] p, Random random,
+         ErosionKernels.Variant variant) throws Exception {
+      String name = variant.tableTrig() ? "1.0.0013 filter" : "21 Oct filter";
+      if (variant.tableTrig()) {
+         java.lang.reflect.Field sin = etcodehome.freeterraforged.world.worldgen.noise.NoiseUtil.class.getDeclaredField("SIN");
+         sin.setAccessible(true);
+         System.out.println("sine table: " + (java.util.Arrays.equals((float[])sin.get(null), ErosionKernels.SIN) ? "the same as FreeTerraForged's NoiseUtil.SIN"
+            : "DIFFERENT from FreeTerraForged's NoiseUtil.SIN"));
+      }
       int count = n * n;
       float[] startSediment = new float[count];
       float[] startErosion = new float[count];
@@ -317,7 +461,7 @@ public final class ErosionFilterCheck {
       float[] heightErosion = startErosion.clone();
       float[] sediment = startSediment.clone();
       long cpuStart = System.nanoTime();
-      referenceV2(n, cellHeight, mask, emod, edge, river, heightErosion, sediment, blockX, blockZ);
+      referenceV2(n, cellHeight, mask, emod, edge, river, heightErosion, sediment, blockX, blockZ, variant);
       double cpuMs = (System.nanoTime() - cpuStart) / 1.0e6;
       try (Gpu gpu = new Gpu(ErosionKernels.SOURCE, "erosion_v2_check.cu")) {
          gpu.useStream(com.wgaccel.gpu.GpuStreams.create());
@@ -338,7 +482,7 @@ public final class ErosionFilterCheck {
          float gpuMs = 0;
          for (int round = 0; round < 3; round++) {
             long run = System.nanoTime();
-            ErosionKernels.runV2(gpu, d, n, SEED, OCTAVES, blockX, blockZ);
+            ErosionKernels.runV2(gpu, d, n, SEED, OCTAVES, blockX, blockZ, variant);
             gpuMs = (System.nanoTime() - run) / 1.0e6F;
          }
 
@@ -364,20 +508,20 @@ public final class ErosionFilterCheck {
             sedimentChanged += sediment[i] != startSediment[i] ? 1 : 0;
             if (!same(outHeight.get(i), cellHeight[i]) || !same(outHeightErosion.get(i), heightErosion[i]) || !same(outSediment.get(i), sediment[i])) {
                if (different++ < 8) {
-                  System.out.printf(Locale.ROOT, "21 Oct: cell (%d, %d): height %s / java %s, heightErosion %s / %s, sediment %s / %s%n", i % n, i / n,
+                  System.out.printf(Locale.ROOT, "%s: cell (%d, %d): height %s / java %s, heightErosion %s / %s, sediment %s / %s%n", name, i % n, i / n,
                      outHeight.get(i), cellHeight[i], outHeightErosion.get(i), heightErosion[i], outSediment.get(i), sediment[i]);
                }
             }
          }
 
-         System.out.printf(Locale.ROOT, "21 Oct filter: %,d cells (%,d heights and %,d sediments changed): %s; %d unsure; GPU %.2f ms per tile, Java %.1f ms%n",
-            count, changed, sedimentChanged, different == 0 ? "BIT-IDENTICAL" : different + " DIFFER", notSure, gpuMs, cpuMs);
+         System.out.printf(Locale.ROOT, "%s: %,d cells (%,d heights and %,d sediments changed): %s; %d unsure; GPU %.2f ms per tile, Java %.1f ms%n",
+            name, count, changed, sedimentChanged, different == 0 ? "BIT-IDENTICAL" : different + " DIFFER", notSure, gpuMs, cpuMs);
       }
    }
 
    /** FreeTerraForged's 21 Oct Erosion.apply (MIT, ReTerraForged), its cells as arrays. */
    private static void referenceV2(int tileSize, float[] cellHeight, boolean[] erosionMask, float[] emod, float[] edge, float[] river, float[] heightErosion,
-         float[] cellSediment, int worldBlockX, int worldBlockZ) {
+         float[] cellSediment, int worldBlockX, int worldBlockZ, ErosionKernels.Variant variant) {
       int length = tileSize * tileSize;
       float[] pre = cellHeight.clone();
       float[] heights = cellHeight.clone();
@@ -434,7 +578,7 @@ public final class ErosionFilterCheck {
 
       windowMin(gateSlope, gateTmp, tileSize, 2);
       boxBlur(gateSlope, gateTmp, tileSize, 2);
-      float slopeGateRange = Math.max(1e-5f, 0.6f - 0.15f);
+      float slopeGateRange = variant.range();
       for (int z = 0; z < tileSize; ++z) {
          int row = z * tileSize;
          float worldZ = (float)(worldBlockZ + z);
@@ -454,14 +598,14 @@ public final class ErosionFilterCheck {
             float slopeLen = (float)Math.sqrt(curSlopeX * curSlopeX + curSlopeZ * curSlopeZ + 1e-10f);
             float heightFade = clamp((baseHeight - 0.5f) * 2.0f, -1.0f, 1.0f);
             float ridgeMapCombiMask = Math.min(0.98f, easeOut(slopeLen * 0.01f * SLOPE_ONSET_RIDGE));
-            float rawT = clamp((slopeLen - 0.15f) / slopeGateRange, 0.0f, 1.0f);
+            float rawT = clamp((slopeLen - variant.slopeStart()) / slopeGateRange, 0.0f, 1.0f);
             if (rawT <= 0.0f) {
                cellSediment[idx] = clamp(cellSediment[idx] + heightFade * (1.0f - ridgeMapCombiMask), -1.0f, 1.0f);
                continue;
             }
 
             float smoothSlope = gateSlope[idx];
-            float ampT = clamp((smoothSlope - 0.15f) / slopeGateRange, 0.0f, 1.0f);
+            float ampT = clamp((smoothSlope - variant.slopeStart()) / slopeGateRange, 0.0f, 1.0f);
             float flatGate = ampT * ampT * (3.0f - 2.0f * ampT);
             float erosionFactor = modify(cellHeight[idx], emod[idx], edge[idx], river[idx]);
             if (erosionFactor == 0.0F) {
@@ -484,7 +628,7 @@ public final class ErosionFilterCheck {
                float normGullyX = gullyLen > 1e-10f ? gullySlopeX / gullyLen : 0.0f;
                float normGullyZ = gullyLen > 1e-10f ? gullySlopeZ / gullyLen : 0.0f;
                samplePhacelleNoise(worldX * freq, worldZ * freq, normGullyX, normGullyZ, PHACELLE_SCALE, PHACELLE_OFFSET, PHACELLE_NORMALIZATION, SEED + octave,
-                  phacelleOut);
+                  phacelleOut, variant.tableTrig());
                float phacelleX = phacelleOut[0];
                float phacelleY = phacelleOut[1];
                float phacelleZ = phacelleOut[2];
@@ -519,11 +663,11 @@ public final class ErosionFilterCheck {
 
             float sedimentModifier = Math.max(0.2f, 1.0F - cellSediment[idx]);
             float capSlope = Math.min(smoothSlope, 3.0f);
-            float maxDepth = 0.5f * capSlope * SCALE_BLOCKS;
+            float maxDepth = variant.depthPerSlope() * capSlope * SCALE_BLOCKS;
             float gatedBlocks = clamp(accumulatedHeightDelta * flatGate * sedimentModifier, -maxDepth, maxDepth);
             float limitedBlocks = gatedBlocks;
             if (limitedBlocks > 0.0f) {
-               float headroom = (envHi[idx] - baseHeight) * wh + 0.5f;
+               float headroom = (envHi[idx] - baseHeight) * wh + variant.margin();
                limitedBlocks = limitedBlocks * headroom / (limitedBlocks + headroom);
             }
 
@@ -631,6 +775,11 @@ public final class ErosionFilterCheck {
             buf[z * size + x] = sum * inv;
          }
       }
+   }
+
+   /** FreeTerraForged's NoiseUtil.sin: SIN[(int)(r * radToIndex) & SIN_MASK]. */
+   private static float tableSin(float r) {
+      return ErosionKernels.SIN[(int)(r * ErosionKernels.RAD_TO_INDEX) & 4095];
    }
 
    private static FloatBuffer floats(float[] values) {
@@ -934,6 +1083,12 @@ public final class ErosionFilterCheck {
 
    private static void samplePhacelleNoise(float px, float pz, float normDirX, float normDirZ, float freq, float offset, float normalization, int seed,
          float[] result) {
+      samplePhacelleNoise(px, pz, normDirX, normDirZ, freq, offset, normalization, seed, result, false);
+   }
+
+   /** tableTrig: FreeTerraForged 1.0.0013's (far cell points skipped; NoiseUtil's table sin / cos, as ErosionKernels.SIN holds it). */
+   private static void samplePhacelleNoise(float px, float pz, float normDirX, float normDirZ, float freq, float offset, float normalization, int seed,
+         float[] result, boolean tableTrig) {
       float sideDirX = -normDirZ * freq * TAU;
       float sideDirZ = normDirX * freq * TAU;
       offset *= TAU;
@@ -953,6 +1108,23 @@ public final class ErosionFilterCheck {
             float vecX = pFracX - (float)i - hashX;
             float vecZ = pFracZ - (float)j - hashZ;
             float sqrDist = vecX * vecX + vecZ * vecZ;
+            if (tableTrig) {
+               if (sqrDist >= 2.25f) {
+                  continue;
+               }
+
+               float weight = (float)Math.exp((double)(-sqrDist * 2.0F)) - 0.01111F;
+               if (weight <= 0.0f) {
+                  continue;
+               }
+
+               weightSum += weight;
+               float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;
+               phaseDirX += tableSin(waveInput + 1.5708f) * weight;
+               phaseDirZ += tableSin(waveInput) * weight;
+               continue;
+            }
+
             float weight = Math.max(0.0F, (float)Math.exp((double)(-sqrDist * 2.0F)) - 0.01111F);
             weightSum += weight;
             float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;

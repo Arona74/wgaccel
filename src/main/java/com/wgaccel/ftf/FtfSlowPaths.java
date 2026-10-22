@@ -20,6 +20,8 @@ import java.lang.reflect.Modifier;
  */
 public final class FtfSlowPaths {
    private static volatile Boolean cells;
+   /** generateChunkCells fills the surface envelope's cache: only our stand-ins may share cells ({@link #standInCells}). */
+   private static volatile boolean cellsFillEnvelope;
    private static volatile Boolean envelope;
 
    private FtfSlowPaths() {
@@ -66,7 +68,8 @@ public final class FtfSlowPaths {
             Class<?> envelope = Class.forName("etcodehome.freeterraforged.world.worldgen.biome.BiomeSurfaceEnvelope");
             for (java.lang.reflect.Method method : envelope.getDeclaredMethods()) {
                if (method.getName().equals("prepopulateFromChunkGrid")) {
-                  return "generateChunkCells also fills the surface envelope's cache";
+                  cellsFillEnvelope = true;
+                  return "generateChunkCells also fills the surface envelope's cache; only our look-aheads' stand-ins share cells";
                }
             }
 
@@ -76,6 +79,17 @@ public final class FtfSlowPaths {
       }
 
       return value;
+   }
+
+   /**
+    * Whether our look-aheads' stand-ins may share chunk cells among themselves: always when {@link #chunkCells} applies,
+    * and also when it is off only because generateChunkCells fills the surface envelope's cache. The real chunk then
+    * makes its own cells through FreeTerraForged's call (so its cache is filled as with FreeTerraForged alone); only the
+    * fill and biome look-aheads' second stand-in of a chunk gets the first one's (the 23 Oct 2026 profile: of 54,186
+    * grids, 37,662 were our stand-ins', 1.15 per chunk from the fill look-ahead and 1.25 from the biome look-ahead).
+    */
+   public static boolean standInCells() {
+      return chunkCells() || cellsFillEnvelope;
    }
 
    public static boolean surfaceEnvelope() {

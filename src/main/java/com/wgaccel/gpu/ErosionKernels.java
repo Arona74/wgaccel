@@ -14,7 +14,15 @@ package com.wgaccel.gpu;
  * 20 minRelief, 21 invRange.
  */
 public final class ErosionKernels {
-   public static final String SOURCE = NoiseKernels.NOISE_UTIL + NoiseKernels.JAVA_MATH + """
+   /**
+    * FreeTerraForged's NoiseUtil.SIN table (4,096 entries, its static initialiser's own Java), for the 1.0.0013 filter's
+    * NoiseUtil.sin / cos; made here so the module needs no FreeTerraForged ({@link ErosionFilterGpu} compares it with
+    * FreeTerraForged's own table before using it).
+    */
+   public static final float[] SIN = sinTable();
+   public static final float RAD_TO_INDEX = 4096 / 6.2831855f;
+
+   public static final String SOURCE = NoiseKernels.NOISE_UTIL + NoiseKernels.JAVA_MATH + sinSource() + """
       #define TAU 6.2831855f
       __device__ __forceinline__ float ero_modify(const float* P, float height, float em, float edge, float river) {
           float strengthModifier = 1.0f;
@@ -134,8 +142,10 @@ public final class ErosionKernels {
       __device__ __forceinline__ float ero_smooth_start(float t, float smoothing) {
           return t >= smoothing ? t - 0.5f * smoothing : 0.5f * t * t / java_maxf(smoothing, 1.0E-5f);
       }
+      // tableTrig (FreeTerraForged 1.0.0013): a cell point farther than 1.5 is skipped (its weight is never above 0) and
+      // NoiseUtil's table sin / cos replace the double cos / sin; otherwise the 21 Oct filter's own.
       __device__ void ero_phacelle(float px, float pz, float normDirX, float normDirZ, float freq, float offset, float normalization, int seed,
-                                   float* result, int& u) {
+                                   float* result, int& u, int tableTrig) {
           float sideDirX = -normDirZ * freq * TAU;
           float sideDirZ = normDirX * freq * TAU;
           offset *= TAU;
@@ -155,6 +165,16 @@ public final class ErosionKernels {
                   float vecX = pFracX - (float)i - hashX;
                   float vecZ = pFracZ - (float)j - hashZ;
                   float sqrDist = vecX * vecX + vecZ * vecZ;
+                  if (tableTrig) {
+                      if (sqrDist >= 2.25f) continue;
+                      float weight = java_cast_checked(exp((double)(-sqrDist * 2.0f)), u) - 0.01111f;
+                      if (weight <= 0.0f) continue;
+                      weightSum += weight;
+                      float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;
+                      phaseDirX += ero_sin(waveInput + 1.5708f) * weight;
+                      phaseDirZ += ero_sin(waveInput) * weight;
+                      continue;
+                  }
                   float weight = java_maxf(0.0f, java_cast_checked(exp((double)(-sqrDist * 2.0f)), u) - 0.01111f);
                   weightSum += weight;
                   float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;
@@ -216,7 +236,7 @@ public final class ErosionKernels {
                       float gullyLen = (float)sqrt((double)(gullySlopeX * gullySlopeX + gullySlopeZ * gullySlopeZ));
                       float normGullyX = gullyLen > 1.0E-10f ? gullySlopeX / gullyLen : 0.0f;
                       float normGullyZ = gullyLen > 1.0E-10f ? gullySlopeZ / gullyLen : 0.0f;
-                      ero_phacelle(worldX * freq, worldZ * freq, normGullyX, normGullyZ, P[7], P[8], P[9], ftf_add(seed, octave), out, u);
+                      ero_phacelle(worldX * freq, worldZ * freq, normGullyX, normGullyZ, P[7], P[8], P[9], ftf_add(seed, octave), out, u, 0);
                       float phacelleX = out[0];
                       float phacelleY = out[1];
                       float phacelleZ = out[2];
@@ -359,33 +379,30 @@ public final class ErosionKernels {
           float len = (float)sqrt((double)(sx * sx + sz * sz + 1.0E-10f));
           gate[i] = isfinite(len) ? len : 0.0f;
       }
-      // The per-cell step of the 21 Oct filter; an unsure cell gets its state unchanged and unsure = 1.
-      extern "C" __global__ void ev2Main(int n, int seed, int octaves, int worldBlockX, int worldBlockZ, const float* P, const float* h, const float* env,
+      // The per-cell step of the 21 Oct filter; an unsure cell gets its state unchanged and unsure = 1. The slope gate's
+      // start and range, the depth cap per slope, the envelope margin and the trig are the filter's own (Variant).
+      __device__ __forceinline__ void ev2_cell(int idx, int x, int z, int seed, int octaves, int worldBlockX, int worldBlockZ, const float* P, const float* h, const float* env,
                                          const float* slopeX, const float* slopeZ, const float* gate, const int* emask, const float* emod, const float* edge,
                                          const float* river, const float* heightErosion, const float* sediment, float* outHeight, float* outHeightErosion,
-                                         float* outSediment, int* unsure) {
-          int idx = blockIdx.x * blockDim.x + threadIdx.x;
-          if (idx >= n * n) return;
-          int z = idx / n;
-          int x = idx - z * n;
+                                         float* outSediment, int* unsure, float slopeStart, float range, float depthPerSlope, float margin,
+                                         int tableTrig) {
           float baseHeight = h[idx];
           float height = baseHeight;
           float erosionSum = heightErosion[idx];
           float sed = sediment[idx];
           int u = 0;
-          float range = java_maxf(1.0E-5f, 0.6f - 0.15f);
           if (emask[idx] == 0 && isfinite(baseHeight)) {
               float curSlopeX = slopeX[idx];
               float curSlopeZ = slopeZ[idx];
               float slopeLen = (float)sqrt((double)(curSlopeX * curSlopeX + curSlopeZ * curSlopeZ + 1.0E-10f));
               float heightFade = ftf_clamp((baseHeight - 0.5f) * 2.0f, -1.0f, 1.0f);
               float ridgeMapCombiMask = java_minf(0.98f, ero_ease_out(slopeLen * 0.01f * P[13]));
-              float rawT = ftf_clamp((slopeLen - 0.15f) / range, 0.0f, 1.0f);
+              float rawT = ftf_clamp((slopeLen - slopeStart) / range, 0.0f, 1.0f);
               if (rawT <= 0.0f) {
                   sed = ftf_clamp(sed + heightFade * (1.0f - ridgeMapCombiMask), -1.0f, 1.0f);
               } else {
                   float smoothSlope = gate[idx];
-                  float ampT = ftf_clamp((smoothSlope - 0.15f) / range, 0.0f, 1.0f);
+                  float ampT = ftf_clamp((smoothSlope - slopeStart) / range, 0.0f, 1.0f);
                   float flatGate = ampT * ampT * (3.0f - 2.0f * ampT);
                   float erosionFactor = ero_modify(P, height, emod[idx], edge[idx], river[idx]);
                   if (erosionFactor != 0.0f) {
@@ -406,7 +423,7 @@ public final class ErosionKernels {
                           float gullyLen = (float)sqrt((double)(gullySlopeX * gullySlopeX + gullySlopeZ * gullySlopeZ));
                           float normGullyX = gullyLen > 1.0E-10f ? gullySlopeX / gullyLen : 0.0f;
                           float normGullyZ = gullyLen > 1.0E-10f ? gullySlopeZ / gullyLen : 0.0f;
-                          ero_phacelle(worldX * freq, worldZ * freq, normGullyX, normGullyZ, P[7], P[8], P[9], ftf_add(seed, octave), out, u);
+                          ero_phacelle(worldX * freq, worldZ * freq, normGullyX, normGullyZ, P[7], P[8], P[9], ftf_add(seed, octave), out, u, tableTrig);
                           float phacelleX = out[0];
                           float phacelleY = out[1];
                           float phacelleZ = out[2];
@@ -434,10 +451,10 @@ public final class ErosionKernels {
                           if (!(flatGate <= 0.0f)) {
                               float sedimentModifier = java_maxf(0.2f, 1.0f - sed);
                               float capSlope = java_minf(smoothSlope, 3.0f);
-                              float maxDepth = 0.5f * capSlope * P[0];
+                              float maxDepth = depthPerSlope * capSlope * P[0];
                               float limitedBlocks = ftf_clamp(accumulatedHeightDelta * flatGate * sedimentModifier, -maxDepth, maxDepth);
                               if (limitedBlocks > 0.0f) {
-                                  float headroom = (env[idx] - baseHeight) * P[1] + 0.5f;
+                                  float headroom = (env[idx] - baseHeight) * P[1] + margin;
                                   limitedBlocks = limitedBlocks * headroom / (limitedBlocks + headroom);
                               }
                               float deltaNormalized = limitedBlocks / P[1];
@@ -459,6 +476,97 @@ public final class ErosionKernels {
               outSediment[idx] = sed;
           }
           unsure[idx] = u;
+      }
+      extern "C" __global__ void ev2Main(int n, int seed, int octaves, int worldBlockX, int worldBlockZ, const float* P, const float* h, const float* env,
+                                         const float* slopeX, const float* slopeZ, const float* gate, const int* emask, const float* emod, const float* edge,
+                                         const float* river, const float* heightErosion, const float* sediment, float* outHeight, float* outHeightErosion,
+                                         float* outSediment, int* unsure, float slopeStart, float range, float depthPerSlope, float margin,
+                                         int tableTrig) {
+          int idx = blockIdx.x * blockDim.x + threadIdx.x;
+          if (idx >= n * n) return;
+          int z = idx / n;
+          int x = idx - z * n;
+          ev2_cell(idx, x, z, seed, octaves, worldBlockX, worldBlockZ, P, h, env, slopeX, slopeZ, gate, emask, emod, edge, river, heightErosion, sediment, outHeight, outHeightErosion, outSediment, unsure, slopeStart, range, depthPerSlope, margin, tableTrig);
+      }
+      // G6c: ev2Main over a batch of grids of n x n cells, one after another in every buffer; grid g's corner block is
+      // (blockXs[g], blockZs[g]).
+      extern "C" __global__ void evbMain(int grids, int n, int seed, int octaves, const int* blockXs, const int* blockZs, const float* P, const float* h, const float* env,
+                                         const float* slopeX, const float* slopeZ, const float* gate, const int* emask, const float* emod, const float* edge,
+                                         const float* river, const float* heightErosion, const float* sediment, float* outHeight, float* outHeightErosion,
+                                         float* outSediment, int* unsure, float slopeStart, float range, float depthPerSlope, float margin,
+                                         int tableTrig) {
+          int idx = blockIdx.x * blockDim.x + threadIdx.x;
+          int nn = n * n;
+          if (idx >= grids * nn) return;
+          int g = idx / nn;
+          int li = idx - g * nn;
+          int z = li / n;
+          int x = li - z * n;
+          int worldBlockX = blockXs[g];
+          int worldBlockZ = blockZs[g];
+          ev2_cell(idx, x, z, seed, octaves, worldBlockX, worldBlockZ, P, h, env, slopeX, slopeZ, gate, emask, emod, edge, river, heightErosion, sediment, outHeight, outHeightErosion, outSediment, unsure, slopeStart, range, depthPerSlope, margin, tableTrig);
+      }
+      // G6c: the 21 Oct filter's grid passes over a batch of grids of n x n cells (grid g at g * n * n in every buffer).
+      #define EVB_CELL int idx = blockIdx.x * blockDim.x + threadIdx.x; int nn = n * n; if (idx >= grids * nn) return; \
+          int base = idx - idx % nn; int li = idx - base; int z = li / n; int x = li - z * n;
+      extern "C" __global__ void evbSlopes(int grids, int n, const float* hAll, const float* P, float* slopeX, float* slopeZ) {
+          EVB_CELL
+          const float* h = hAll + base;
+          int row = z * n;
+          int last = n - 1;
+          float wh = P[1];
+          float c = h[li];
+          if (x == 0) slopeX[idx] = (h[row + 1] - h[row]) * wh;
+          else if (x == last) slopeX[idx] = (h[row + last] - h[row + last - 1]) * wh;
+          else slopeX[idx] = ero_minmod(c - h[li - 1], h[li + 1] - c) * wh;
+          if (z == 0) slopeZ[idx] = (h[row + n + x] - h[row + x]) * wh;
+          else if (z == last) slopeZ[idx] = (h[row + x] - h[row - n + x]) * wh;
+          else slopeZ[idx] = ero_minmod(c - h[row - n + x], h[row + n + x] - c) * wh;
+      }
+      extern "C" __global__ void evbWindowRows(int grids, int n, int r, int isMax, const float* bufAll, float* tmp) {
+          EVB_CELL
+          const float* buf = bufAll + base;
+          int row = z * n;
+          int lo = max(0, x - r);
+          int hi = min(n - 1, x + r);
+          float m = buf[row + lo];
+          for (int k = lo + 1; k <= hi; k++) {
+              float v = buf[row + k];
+              if (isMax ? v > m : v < m) m = v;
+          }
+          tmp[idx] = m;
+      }
+      extern "C" __global__ void evbWindowCols(int grids, int n, int r, int isMax, const float* tmpAll, float* buf) {
+          EVB_CELL
+          const float* tmp = tmpAll + base;
+          int lo = max(0, z - r);
+          int hi = min(n - 1, z + r);
+          float m = tmp[lo * n + x];
+          for (int k = lo + 1; k <= hi; k++) {
+              float v = tmp[k * n + x];
+              if (isMax ? v > m : v < m) m = v;
+          }
+          buf[idx] = m;
+      }
+      extern "C" __global__ void evbBlurRows(int grids, int n, int r, const float* bufAll, float* tmp) {
+          EVB_CELL
+          const float* buf = bufAll + base;
+          int row = z * n;
+          int lo = max(0, x - r);
+          int hi = min(n - 1, x + r);
+          float sum = 0.0f;
+          for (int k = lo; k <= hi; k++) sum += buf[row + k];
+          tmp[idx] = sum / (float)(hi - lo + 1);
+      }
+      extern "C" __global__ void evbBlurCols(int grids, int n, int r, const float* tmpAll, float* buf) {
+          EVB_CELL
+          const float* tmp = tmpAll + base;
+          int lo = max(0, z - r);
+          int hi = min(n - 1, z + r);
+          float inv = 1.0f / (float)(hi - lo + 1);
+          float sum = 0.0f;
+          for (int k = lo; k <= hi; k++) sum += tmp[k * n + x];
+          buf[idx] = sum * inv;
       }
       // ---- S6.2: FreeTerraForged's CliffRelaxation (21 Oct): floats only (no exp, cos or pow), so every cell exact. ----
       // P: 15 modifier min, 16 max, 17 range (the relaxation's own Modifier).
@@ -556,12 +664,62 @@ public final class ErosionKernels {
    private ErosionKernels() {
    }
 
+   /** NoiseUtil's static initialiser: SIN_BITS 12, radFull 6.2831855f, then the exact values at 0, 90, 180 and 270 degrees. */
+   private static float[] sinTable() {
+      int count = 4096;
+      int mask = count - 1;
+      float radFull = 6.2831855f;
+      float degToIndex = count / 360.0f;
+      float[] sin = new float[count];
+      for (int i = 0; i < count; i++) {
+         sin[i] = (float)Math.sin((i + 0.5f) / count * radFull);
+      }
+
+      for (int i = 0; i < 360; i += 90) {
+         sin[(int)(i * degToIndex) & mask] = (float)Math.sin(i * 3.141592653589793 / 180.0);
+      }
+
+      return sin;
+   }
+
+   /** The table as a device array, and NoiseUtil.sin: SIN[(int)(r * radToIndex) & SIN_MASK], (int) of a float as Java's (NaN 0, saturating). */
+   private static String sinSource() {
+      StringBuilder out = new StringBuilder("__device__ const float ERO_SIN[4096] = {");
+      for (int i = 0; i < SIN.length; i++) {
+         // Hexadecimal float literals: exact, and constant (a device array's initialiser cannot call __int_as_float).
+         out.append(i == 0 ? "" : ",").append(i % 8 == 0 ? "\n" : "").append(Float.toHexString(SIN[i])).append('f');
+      }
+
+      return out.append("};\n__device__ __forceinline__ float ero_sin(float r) {\n    float v = r * ")
+         .append(Float.toHexString(RAD_TO_INDEX))
+         .append("f;\n    int i = isnan(v) ? 0 : v >= 2147483647.0f ? 2147483647 : v <= -2147483648.0f ? (-2147483647 - 1) : (int)v;\n")
+         .append("    return ERO_SIN[i & 4095];\n}\n").toString();
+   }
+
    /**
     * S6: the 21 Oct filter's passes over one tile whose inputs are in the buffers: the envelope (window max, radius 3)
     * into relaxA, the minmod slopes, the gate (slope length, window min then box blur, radius 2) into zone, the per-cell
     * step and the waterline fix. cellHeight gets the heights it started from. Returns the envelope's buffer.
     */
    public static long runV2(Gpu gpu, Buffers d, int n, int seed, int octaves, int blockX, int blockZ) {
+      return runV2(gpu, d, n, seed, octaves, blockX, blockZ, Variant.OCT_21);
+   }
+
+   /**
+    * The 21 Oct filter's constants that FreeTerraForged 1.0.0013 (deleteTiles) changed, and its trig: the slope gate's
+    * start and full slope (the range as the filter makes it, Math.max(1e-5f, full - start)), the depth cap per slope,
+    * the envelope margin, and NoiseUtil's table sin / cos instead of Math's.
+    */
+   public record Variant(float slopeStart, float slopeFull, float depthPerSlope, float margin, boolean tableTrig) {
+      public static final Variant OCT_21 = new Variant(0.15f, 0.6f, 0.5f, 0.5f, false);
+      public static final Variant FTF_1_0_0013 = new Variant(0.05f, 0.15f, 0.08f, 1.5f, true);
+
+      public float range() {
+         return Math.max(1.0E-5f, this.slopeFull - this.slopeStart);
+      }
+   }
+
+   public static long runV2(Gpu gpu, Buffers d, int n, int seed, int octaves, int blockX, int blockZ, Variant v) {
       int count = n * n;
       int grid = (count + 255) / 256;
       gpu.copy(d.height, d.cellHeight, 4L * count);
@@ -575,7 +733,8 @@ public final class ErosionKernels {
       gpu.run("ev2BlurRows", grid, 1, n, 2, d.zone, d.tmp);
       gpu.run("ev2BlurCols", grid, 1, n, 2, d.tmp, d.zone);
       gpu.run("ev2Main", grid, 1, n, seed, octaves, blockX, blockZ, d.params, d.height, d.relaxA, d.slopeX, d.slopeZ, d.zone, d.mask, d.modifier, d.edge,
-         d.river, d.heightErosion, d.sediment, d.outHeight, d.outHeightErosion, d.outSediment, d.unsure);
+         d.river, d.heightErosion, d.sediment, d.outHeight, d.outHeightErosion, d.outSediment, d.unsure, v.slopeStart(), v.range(), v.depthPerSlope(),
+         v.margin(), v.tableTrig() ? 1 : 0);
       gpu.run("eroFinish", grid, 1, count, d.params, d.height, d.unsure, d.outHeight, d.outHeightErosion);
       return d.relaxA;
    }

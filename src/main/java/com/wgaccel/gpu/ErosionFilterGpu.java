@@ -4,8 +4,6 @@ import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import etcodehome.freeterraforged.world.worldgen.cell.Cell;
 import etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels;
-import etcodehome.freeterraforged.world.worldgen.densityfunction.tile.filter.Filterable;
-import etcodehome.freeterraforged.world.worldgen.densityfunction.tile.filter.Modifier;
 import etcodehome.freeterraforged.world.worldgen.noise.NoiseUtil;
 import java.lang.reflect.Field;
 import java.nio.FloatBuffer;
@@ -25,6 +23,11 @@ import org.lwjgl.system.MemoryUtil;
  * result is used, and the few cells it was unsure of (a double exp, cos, sin or pow too near a float rounding
  * boundary) are redone here on the CPU with the same Java as FreeTerraForged's. Any GPU failure turns it off and
  * FreeTerraForged's filter runs instead.
+ * <p>
+ * FreeTerraForged 1.0.0013 (deleteTiles) runs the same 21 Oct filter on each chunk's 40 x 40 grid (cell.filter.Erosion),
+ * with other constants and NoiseUtil's table sin / cos ({@link ErosionKernels.Variant#FTF_1_0_0013}): algorithm 3. Its
+ * grids are many and small (the 23 Oct 2026 profile: 43,288 grids, 1.91 ms each on the CPU, 17% of all CPU time), so
+ * every 64th one is also run by FreeTerraForged's own filter and compared; a difference turns the GPU off.
  */
 public final class ErosionFilterGpu {
    private static final Map<Object, Params> PARAMS = Collections.synchronizedMap(new WeakHashMap<>());
@@ -40,20 +43,25 @@ public final class ErosionFilterGpu {
    private static final AtomicInteger logged = new AtomicInteger();
    /** The GPU thread's buffers (only that thread touches them). */
    private static final ThreadLocal<ErosionKernels.Buffers> DEVICE = new ThreadLocal<>();
+   /** G6c: each generation thread's host buffers for 1.0.0013's grids (Job's eleven), reused grid after grid. */
+   private static final ThreadLocal<java.nio.Buffer[]> POOL = new ThreadLocal<>();
 
    private ErosionFilterGpu() {
    }
 
-   /** Called instead of FreeTerraForged's Erosion.apply; original runs FreeTerraForged's own filter. */
-   public static void apply(Object erosion, Filterable map, Runnable original) {
+   private static final AtomicInteger SAMPLED = new AtomicInteger();
+
+   /**
+    * Called instead of FreeTerraForged's Erosion.apply (a 1.0.0010 tile or a 1.0.0013 chunk grid: its cells, side and
+    * corner block); original runs FreeTerraForged's own filter.
+    */
+   public static void apply(Object erosion, Cell[] backing, int n, int blockX, int blockZ, Runnable original) {
       Config.GpuFilterMode mode = Config.GPU_EROSION_FILTER.get();
       if (mode == Config.GpuFilterMode.OFF || Config.GPU_MODE.get() == Config.GpuMode.OFF || disabled || !Lwjgl.PRESENT) {
          original.run();
          return;
       }
 
-      Cell[] backing = map.getBacking();
-      int n = map.getBlockSize().total();
       if (backing.length != n * n) {
          disable("the tile has " + backing.length + " cells, not " + n + " x " + n);
          original.run();
@@ -72,19 +80,26 @@ public final class ErosionFilterGpu {
 
       Params params;
       try {
-         params = params(erosion);
+         params = params(erosion, algorithm);
       } catch (ReflectiveOperationException | RuntimeException failure) {
          disable("FreeTerraForged's erosion filter could not be read: " + failure);
          original.run();
          return;
       }
 
-      boolean check = mode == Config.GpuFilterMode.CHECK;
-      Job job = new Job(params, backing, n, map.getBlockX(), map.getBlockZ(), check, algorithm);
+      // 1.0.0013's grids: every 64th also FreeTerraForged's own and compared (a 1.0.0010 tile was checked offline).
+      boolean sampled = algorithm == 3 && SAMPLED.getAndIncrement() % 64 == 0;
+      boolean check = mode == Config.GpuFilterMode.CHECK || sampled;
+      Job job = new Job(params, backing, n, blockX, blockZ, check, algorithm);
       try {
          long start = System.nanoTime();
          try {
-            GpuService.call(job::run);
+            if (algorithm == 3) {
+               // 1.0.0013's chunk grids: batched with the others waiting (G6c).
+               ErosionGridBatch.run(job);
+            } else {
+               GpuService.call(job::run);
+            }
          } catch (Exception | LinkageError failure) {
             disable(failure.toString());
             original.run();
@@ -93,7 +108,10 @@ public final class ErosionFilterGpu {
 
          gpuNanos.addAndGet(System.nanoTime() - start);
          if (check) {
-            check(job, backing, original);
+            int different = check(job, backing, original);
+            if (sampled && different > 0) {
+               disable(different + " cells of a checked chunk grid differ from FreeTerraForged's own filter");
+            }
          } else {
             use(job, backing);
          }
@@ -118,24 +136,30 @@ public final class ErosionFilterGpu {
          }
 
          int found = 0;
+         boolean grid = erosion.getClass().getName().endsWith(".cell.filter.Erosion");
          if (methods.contains("relaxCliffs")) {
             found = 1;
-         } else if (methods.containsAll(java.util.List.of("windowMax", "windowMin", "boxBlur", "minmod", "samplePhacelleNoise")) && v2Constants(erosion.getClass())) {
-            found = 2;
+         } else if (methods.containsAll(java.util.List.of("windowMax", "windowMin", "boxBlur", "minmod", "samplePhacelleNoise"))) {
+            if (!grid && constants(erosion.getClass(), ErosionKernels.Variant.OCT_21, 96.0F)) {
+               found = 2;
+            } else if (grid && constants(erosion.getClass(), ErosionKernels.Variant.FTF_1_0_0013, 300.0F) && sinTable()) {
+               found = 3;
+            }
          }
 
          algorithm = known = found;
          WorldgenAccelerator.LOG.info("WGA GPU erosion filter: FreeTerraForged's filter is {}", found == 1 ? "the 13 Oct one (relaxCliffs inside)"
-            : found == 2 ? "the 21 Oct rewrite (ported, S6)" : "unknown (the GPU stays off)");
+            : found == 2 ? "the 21 Oct rewrite (ported, S6)" : found == 3 ? "1.0.0013's on chunk grids (the 21 Oct one with its constants and table sin / cos)"
+            : "unknown (the GPU stays off)");
       }
 
       return known;
    }
 
-   /** The 21 Oct filter's constants the port has written in. */
-   private static boolean v2Constants(Class<?> type) {
-      Object[][] expected = {{"BASE_WAVELENGTH_BLOCKS", 96.0F}, {"FLAT_SLOPE_START", 0.15F}, {"FLAT_SLOPE_FULL", 0.6F}, {"GATE_SMOOTH_RADIUS", 2},
-         {"ENVELOPE_RADIUS", 3}, {"ENVELOPE_MARGIN_BLOCKS", 0.5F}, {"MAX_DEPTH_PER_SLOPE", 0.5F}, {"MAX_SLOPE_FOR_CAP", 3.0F}, {"RIDGE_SLOPE_SCALE", 0.01F},
+   /** The filter's constants: the variant's (gate, depth cap, margin) and wavelength, the rest written into the port. */
+   private static boolean constants(Class<?> type, ErosionKernels.Variant v, float wavelength) {
+      Object[][] expected = {{"BASE_WAVELENGTH_BLOCKS", wavelength}, {"FLAT_SLOPE_START", v.slopeStart()}, {"FLAT_SLOPE_FULL", v.slopeFull()}, {"GATE_SMOOTH_RADIUS", 2},
+         {"ENVELOPE_RADIUS", 3}, {"ENVELOPE_MARGIN_BLOCKS", v.margin()}, {"MAX_DEPTH_PER_SLOPE", v.depthPerSlope()}, {"MAX_SLOPE_FOR_CAP", 3.0F}, {"RIDGE_SLOPE_SCALE", 0.01F},
          {"RIDGE_MASK_MAX", 0.98F}, {"HEIGHT_MIDPOINT", 0.5F}, {"NON_NEGATIVE_NOISE", false}, {"ROUNDING_DECAY_PER_OCTAVE", 0.001F},
          {"MIN_SEDIMENT_MODIFIER", 0.2F}, {"TAU", 6.2831855F}};
       try {
@@ -155,9 +179,30 @@ public final class ErosionFilterGpu {
       }
    }
 
+   /** FreeTerraForged's NoiseUtil.SIN and radToIndex are the ones the module was made with ({@link ErosionKernels#SIN}). */
+   private static boolean sinTable() {
+      try {
+         Field sin = NoiseUtil.class.getDeclaredField("SIN");
+         Field radToIndex = NoiseUtil.class.getDeclaredField("radToIndex");
+         sin.setAccessible(true);
+         radToIndex.setAccessible(true);
+         float[] theirs = (float[])sin.get(null);
+         boolean same = java.util.Arrays.equals(theirs, ErosionKernels.SIN)
+            && Float.floatToRawIntBits((Float)radToIndex.get(null)) == Float.floatToRawIntBits(ErosionKernels.RAD_TO_INDEX);
+         if (!same) {
+            WorldgenAccelerator.LOG.info("WGA GPU erosion filter: FreeTerraForged's sine table is not the one the GPU has");
+         }
+
+         return same;
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         WorldgenAccelerator.LOG.info("WGA GPU erosion filter: could not read FreeTerraForged's sine table: {}", failure.toString());
+         return false;
+      }
+   }
+
    /** The per-cell step of the job's algorithm on the CPU (unsure cells and CHECK). */
    private static void step(Job job, Cell cell, int x, int z, float[][] grids, float[] phacelle) {
-      if (job.algorithm == 2) {
+      if (job.algorithm >= 2) {
          cpuCellV2(job.params, cell, x, z, job.n, job.blockX, job.blockZ, grids[4], grids[0], grids[1], grids[2], grids[3], phacelle);
       } else {
          cpuCell(job.params, cell, x, z, job.n, job.blockX, job.blockZ, grids[0], grids[1], grids[2], grids[3], phacelle);
@@ -206,13 +251,13 @@ public final class ErosionFilterGpu {
       unsureCells.addAndGet(unsure);
       int done = tiles.incrementAndGet();
       if (done == 1 || done % 128 == 0) {
-         WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU erosion filter: %,d tiles on the GPU (%.2f ms each with copies), %,d cells, %,d unsure cells redone on the CPU",
-            done, gpuNanos.get() / 1.0e6 / done, cells.get(), unsureCells.get()));
+         WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU erosion filter: %,d tiles on the GPU (%.2f ms each with copies), %,d cells, %,d unsure cells redone on the CPU%s",
+            done, gpuNanos.get() / 1.0e6 / done, cells.get(), unsureCells.get(), job.algorithm == 3 ? ErosionGridBatch.summary() : ""));
       }
    }
 
    /** CHECK: FreeTerraForged's own filter runs, then the GPU's cells and this class's CPU step are compared with it. */
-   private static void check(Job job, Cell[] backing, Runnable original) {
+   private static int check(Job job, Cell[] backing, Runnable original) {
       int count = backing.length;
       Cell[] port = new Cell[count];
       for (int i = 0; i < count; i++) {
@@ -264,6 +309,8 @@ public final class ErosionFilterGpu {
             cpuDiffer.get() == 0 ? "BIT-IDENTICAL" : String.format(Locale.ROOT, "%,d cells DIFFER", cpuDiffer.get()), unsureCells.get(),
             gpuNanos.get() / 1.0e6 / done, ftfNanos.get() / 1.0e6 / done));
       }
+
+      return gpuDifferent + cpuDifferent;
    }
 
    private static void report(String what, Job job, int x, int z, float height, float heightErosion, float sediment, Cell expected) {
@@ -278,7 +325,7 @@ public final class ErosionFilterGpu {
    }
 
    /** A tile's cells packed for the GPU and the results. Host buffers off-heap; freed by {@link #free}. */
-   private static final class Job {
+   static final class Job {
       final Params params;
       final int n;
       final int count;
@@ -304,6 +351,12 @@ public final class ErosionFilterGpu {
       FloatBuffer slopeX;
       FloatBuffer slopeZ;
       FloatBuffer zone;
+      /** G6c: done once a batch has put the results in (or failed). */
+      final java.util.concurrent.CompletableFuture<Void> done = new java.util.concurrent.CompletableFuture<>();
+      /** G6c: the grid has an unsure cell or is checked, so the batch hands it the grids for the CPU step. */
+      boolean needsGrids;
+      /** G6c: the eleven host buffers are the calling thread's own, kept for its next grid ({@link #POOL}); not freed. */
+      final boolean pooled;
 
       Job(Params params, Cell[] backing, int n, int blockX, int blockZ, boolean all, int algorithm) {
          this.params = params;
@@ -313,17 +366,20 @@ public final class ErosionFilterGpu {
          this.blockX = blockX;
          this.blockZ = blockZ;
          this.all = all;
-         this.height = MemoryUtil.memAllocFloat(this.count);
-         this.mask = MemoryUtil.memAllocInt(this.count);
-         this.modifier = MemoryUtil.memAllocFloat(this.count);
-         this.edge = MemoryUtil.memAllocFloat(this.count);
-         this.river = MemoryUtil.memAllocFloat(this.count);
-         this.heightErosion = MemoryUtil.memAllocFloat(this.count);
-         this.sediment = MemoryUtil.memAllocFloat(this.count);
-         this.outHeight = MemoryUtil.memAllocFloat(this.count);
-         this.outHeightErosion = MemoryUtil.memAllocFloat(this.count);
-         this.outSediment = MemoryUtil.memAllocFloat(this.count);
-         this.unsure = MemoryUtil.memAllocInt(this.count);
+         // 1.0.0013's grids (~700 a second): the thread's own buffers, as a thread has one grid at a time (G6c).
+         this.pooled = algorithm == 3;
+         java.nio.Buffer[] own = this.pooled ? pool(this.count) : null;
+         this.height = own != null ? (FloatBuffer)own[0] : MemoryUtil.memAllocFloat(this.count);
+         this.mask = own != null ? (IntBuffer)own[1] : MemoryUtil.memAllocInt(this.count);
+         this.modifier = own != null ? (FloatBuffer)own[2] : MemoryUtil.memAllocFloat(this.count);
+         this.edge = own != null ? (FloatBuffer)own[3] : MemoryUtil.memAllocFloat(this.count);
+         this.river = own != null ? (FloatBuffer)own[4] : MemoryUtil.memAllocFloat(this.count);
+         this.heightErosion = own != null ? (FloatBuffer)own[5] : MemoryUtil.memAllocFloat(this.count);
+         this.sediment = own != null ? (FloatBuffer)own[6] : MemoryUtil.memAllocFloat(this.count);
+         this.outHeight = own != null ? (FloatBuffer)own[7] : MemoryUtil.memAllocFloat(this.count);
+         this.outHeightErosion = own != null ? (FloatBuffer)own[8] : MemoryUtil.memAllocFloat(this.count);
+         this.outSediment = own != null ? (FloatBuffer)own[9] : MemoryUtil.memAllocFloat(this.count);
+         this.unsure = own != null ? (IntBuffer)own[10] : MemoryUtil.memAllocInt(this.count);
          for (int i = 0; i < this.count; i++) {
             Cell cell = backing[i];
             this.height.put(i, cell.height);
@@ -352,7 +408,9 @@ public final class ErosionFilterGpu {
          gpu.copyIn(d.river, this.river);
          gpu.copyIn(d.heightErosion, this.heightErosion);
          gpu.copyIn(d.sediment, this.sediment);
-         long relaxed = this.algorithm == 2 ? ErosionKernels.runV2(gpu, d, this.n, this.params.seed, this.params.octaves, this.blockX, this.blockZ)
+         long relaxed = this.algorithm == 3 ? ErosionKernels.runV2(gpu, d, this.n, this.params.seed, this.params.octaves, this.blockX, this.blockZ,
+               ErosionKernels.Variant.FTF_1_0_0013)
+            : this.algorithm == 2 ? ErosionKernels.runV2(gpu, d, this.n, this.params.seed, this.params.octaves, this.blockX, this.blockZ)
             : ErosionKernels.run(gpu, d, this.n, this.params.seed, this.params.octaves, this.blockX, this.blockZ);
          gpu.download(d.outHeight, this.outHeight);
          gpu.download(d.outHeightErosion, this.outHeightErosion);
@@ -397,13 +455,39 @@ public final class ErosionFilterGpu {
       }
 
       void free() {
-         for (java.nio.Buffer buffer : new java.nio.Buffer[] {this.height, this.mask, this.modifier, this.edge, this.river, this.heightErosion, this.sediment,
-            this.outHeight, this.outHeightErosion, this.outSediment, this.unsure, this.preHeight, this.preHeightErosion, this.preSediment, this.relaxed,
-            this.slopeX, this.slopeZ, this.zone}) {
+         java.nio.Buffer[] own = {this.height, this.mask, this.modifier, this.edge, this.river, this.heightErosion, this.sediment, this.outHeight,
+            this.outHeightErosion, this.outSediment, this.unsure};
+         for (java.nio.Buffer buffer : this.pooled ? new java.nio.Buffer[0] : own) {
+            MemoryUtil.memFree(buffer);
+         }
+
+         for (java.nio.Buffer buffer : new java.nio.Buffer[] {this.preHeight, this.preHeightErosion, this.preSediment, this.relaxed, this.slopeX, this.slopeZ,
+            this.zone}) {
             if (buffer != null) {
                MemoryUtil.memFree(buffer);
             }
          }
+      }
+
+      /** The calling thread's eleven buffers of count cells (Job's order), made the first time and on a size change. */
+      private static java.nio.Buffer[] pool(int count) {
+         java.nio.Buffer[] own = POOL.get();
+         if (own == null || own[0].capacity() != count) {
+            if (own != null) {
+               for (java.nio.Buffer buffer : own) {
+                  MemoryUtil.memFree(buffer);
+               }
+            }
+
+            own = new java.nio.Buffer[11];
+            for (int i = 0; i < 11; i++) {
+               own[i] = i == 1 || i == 10 ? MemoryUtil.memAllocInt(count) : MemoryUtil.memAllocFloat(count);
+            }
+
+            POOL.set(own);
+         }
+
+         return own;
       }
    }
 
@@ -412,7 +496,10 @@ public final class ErosionFilterGpu {
       static final int PACKED = ErosionKernels.Buffers.PARAMS;
       final int seed;
       final int octaves;
-      final Modifier modifier;
+      /** FreeTerraForged's Modifier (tile.filter in 1.0.0010, cell.filter in 1.0.0013) and its modify(Cell, float). */
+      final Object modifier;
+      final java.lang.reflect.Method modify;
+      final ErosionKernels.Variant variant;
       final float scaleBlocks;
       final float worldHeight;
       final float strength;
@@ -432,10 +519,27 @@ public final class ErosionFilterGpu {
       final float ground;
       final FloatBuffer packed;
 
-      Params(Object erosion) throws ReflectiveOperationException {
+      Params(Object erosion, int algorithm) throws ReflectiveOperationException {
          this.seed = (Integer)field(erosion, "seed");
          this.octaves = (Integer)field(erosion, "octaves");
-         this.modifier = (Modifier)field(erosion, "modifier");
+         this.modifier = field(erosion, "modifier");
+         // 1.0.0013's Modifier.range is an anonymous class and modify a default method of the Modifier interface: the
+         // public methods include it (1.0.0010's is declared on the class, also public).
+         java.lang.reflect.Method modify = null;
+         for (java.lang.reflect.Method each : this.modifier.getClass().getMethods()) {
+            if (each.getName().equals("modify") && each.getParameterCount() == 2 && each.getParameterTypes()[0] == Cell.class
+               && each.getParameterTypes()[1] == float.class) {
+               modify = each;
+            }
+         }
+
+         if (modify == null) {
+            throw new NoSuchMethodException(this.modifier.getClass().getName() + ".modify(Cell, float)");
+         }
+
+         modify.setAccessible(true);
+         this.modify = modify;
+         this.variant = algorithm == 3 ? ErosionKernels.Variant.FTF_1_0_0013 : ErosionKernels.Variant.OCT_21;
          this.scaleBlocks = (Float)field(erosion, "scaleBlocks");
          this.worldHeight = (Float)field(erosion, "worldHeight");
          this.strength = (Float)field(erosion, "strength");
@@ -466,10 +570,10 @@ public final class ErosionFilterGpu {
       }
    }
 
-   private static Params params(Object erosion) throws ReflectiveOperationException {
+   private static Params params(Object erosion, int algorithm) throws ReflectiveOperationException {
       Params known = PARAMS.get(erosion);
       if (known == null) {
-         known = new Params(erosion);
+         known = new Params(erosion, algorithm);
          PARAMS.put(erosion, known);
       }
 
@@ -524,7 +628,7 @@ public final class ErosionFilterGpu {
          return;
       }
 
-      float erosionFactor = p.modifier.modify(cell, 1.0F);
+      float erosionFactor = modify(p, cell);
       if (erosionFactor == 0.0F) {
          return;
       }
@@ -637,22 +741,23 @@ public final class ErosionFilterGpu {
          return;
       }
 
-      float slopeGateRange = Math.max(1.0E-5F, 0.6F - 0.15F);
+      ErosionKernels.Variant v = p.variant;
+      float slopeGateRange = v.range();
       float curSlopeX = slopeX[idx];
       float curSlopeZ = slopeZ[idx];
       float slopeLen = (float)Math.sqrt((double)(curSlopeX * curSlopeX + curSlopeZ * curSlopeZ + 1.0E-10F));
       float heightFade = NoiseUtil.clamp((baseHeight - 0.5F) * 2.0F, -1.0F, 1.0F);
       float ridgeMapCombiMask = Math.min(0.98F, easeOut(slopeLen * 0.01F * p.slopeOnsetRidge));
-      float rawT = NoiseUtil.clamp((slopeLen - 0.15F) / slopeGateRange, 0.0F, 1.0F);
+      float rawT = NoiseUtil.clamp((slopeLen - v.slopeStart()) / slopeGateRange, 0.0F, 1.0F);
       if (rawT <= 0.0F) {
          cell.sediment = NoiseUtil.clamp(cell.sediment + heightFade * (1.0F - ridgeMapCombiMask), -1.0F, 1.0F);
          return;
       }
 
       float smoothSlope = gate[idx];
-      float ampT = NoiseUtil.clamp((smoothSlope - 0.15F) / slopeGateRange, 0.0F, 1.0F);
+      float ampT = NoiseUtil.clamp((smoothSlope - v.slopeStart()) / slopeGateRange, 0.0F, 1.0F);
       float flatGate = ampT * ampT * (3.0F - 2.0F * ampT);
-      float erosionFactor = p.modifier.modify(cell, 1.0F);
+      float erosionFactor = modify(p, cell);
       if (erosionFactor == 0.0F) {
          return;
       }
@@ -674,7 +779,7 @@ public final class ErosionFilterGpu {
          float normGullyX = gullyLen > 1.0E-10F ? gullySlopeX / gullyLen : 0.0F;
          float normGullyZ = gullyLen > 1.0E-10F ? gullySlopeZ / gullyLen : 0.0F;
          samplePhacelleNoise(worldX * freq, worldZ * freq, normGullyX, normGullyZ, p.phacelleScale, p.phacelleOffset, p.phacelleNormalization, p.seed + octave,
-            phacelleOut);
+            phacelleOut, v.tableTrig());
          float phacelleX = phacelleOut[0];
          float phacelleY = phacelleOut[1];
          float phacelleZ = phacelleOut[2];
@@ -709,11 +814,11 @@ public final class ErosionFilterGpu {
 
       float sedimentModifier = Math.max(0.2F, 1.0F - cell.sediment);
       float capSlope = Math.min(smoothSlope, 3.0F);
-      float maxDepth = 0.5F * capSlope * p.scaleBlocks;
+      float maxDepth = v.depthPerSlope() * capSlope * p.scaleBlocks;
       float gatedBlocks = NoiseUtil.clamp(accumulatedHeightDelta * flatGate * sedimentModifier, -maxDepth, maxDepth);
       float limitedBlocks = gatedBlocks;
       if (limitedBlocks > 0.0F) {
-         float headroom = (envelope[idx] - baseHeight) * p.worldHeight + 0.5F;
+         float headroom = (envelope[idx] - baseHeight) * p.worldHeight + v.margin();
          limitedBlocks = limitedBlocks * headroom / (limitedBlocks + headroom);
       }
 
@@ -723,8 +828,22 @@ public final class ErosionFilterGpu {
       cell.height += change;
    }
 
+   private static float modify(Params p, Cell cell) {
+      try {
+         return (Float)p.modify.invoke(p.modifier, cell, 1.0F);
+      } catch (ReflectiveOperationException failure) {
+         throw new IllegalStateException(failure);
+      }
+   }
+
    private static void samplePhacelleNoise(float px, float pz, float normDirX, float normDirZ, float freq, float offset, float normalization, int seed,
          float[] result) {
+      samplePhacelleNoise(px, pz, normDirX, normDirZ, freq, offset, normalization, seed, result, false);
+   }
+
+   /** tableTrig: FreeTerraForged 1.0.0013's version (far cell points skipped, NoiseUtil's table sin / cos). */
+   private static void samplePhacelleNoise(float px, float pz, float normDirX, float normDirZ, float freq, float offset, float normalization, int seed,
+         float[] result, boolean tableTrig) {
       float sideDirX = -normDirZ * freq * TAU;
       float sideDirZ = normDirX * freq * TAU;
       offset *= TAU;
@@ -744,6 +863,23 @@ public final class ErosionFilterGpu {
             float vecX = pFracX - (float)i - hashX;
             float vecZ = pFracZ - (float)j - hashZ;
             float sqrDist = vecX * vecX + vecZ * vecZ;
+            if (tableTrig) {
+               if (sqrDist >= 2.25F) {
+                  continue;
+               }
+
+               float weight = (float)Math.exp((double)(-sqrDist * 2.0F)) - 0.01111F;
+               if (weight <= 0.0F) {
+                  continue;
+               }
+
+               weightSum += weight;
+               float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;
+               phaseDirX += NoiseUtil.cos(waveInput) * weight;
+               phaseDirZ += NoiseUtil.sin(waveInput) * weight;
+               continue;
+            }
+
             float weight = Math.max(0.0F, (float)Math.exp((double)(-sqrDist * 2.0F)) - 0.01111F);
             weightSum += weight;
             float waveInput = vecX * sideDirX + vecZ * sideDirZ + offset;

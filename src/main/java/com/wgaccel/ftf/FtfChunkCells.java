@@ -24,7 +24,9 @@ import java.util.function.Supplier;
  * and handed out as copies; the real chunk takes them (and they are dropped). The cells are a function of the position
  * and the world only. 1 in 64 handed-out copies is worked out again and compared field by field; a difference turns
  * this off for good. FreeTerraForged 1.0.0010 never calls generateChunkCells (its tiles are cached already); a version
- * that caches cells itself turns this off ({@link FtfSlowPaths#chunkCells}).
+ * that caches cells itself turns this off ({@link FtfSlowPaths#chunkCells}). A version whose generateChunkCells also
+ * fills the surface envelope's cache keeps it to the stand-ins ({@link FtfSlowPaths#standInCells}): the second stand-in
+ * of a chunk gets the first one's cells, the chunk itself always makes its own.
  */
 public final class FtfChunkCells {
    /** Kept cells at most (about 50 KB each); the oldest go first. Stand-ins the real chunk never takes end here. */
@@ -57,13 +59,23 @@ public final class FtfChunkCells {
 
    /** generateChunkCells(x, z, context) through the cache; make is FreeTerraForged's own call. */
    public static Cell[] cells(int x, int z, GeneratorContext context, Supplier<Cell[]> make) {
-      if (off || !Config.FTF_SHARED_CHUNK_CELLS.get() || !FtfSlowPaths.chunkCells()) {
+      if (off || !Config.FTF_SHARED_CHUNK_CELLS.get() || !FtfSlowPaths.standInCells()) {
          return make.get();
       }
 
       Key key = new Key(x, z, context);
       // Our look-ahead threads make stand-ins; any other thread is the chunk itself (or a feature reading it).
       boolean standIn = Thread.currentThread().getName().startsWith("WGA GPU");
+      if (!standIn && !FtfSlowPaths.chunkCells()) {
+         // Only the stand-ins share (FtfSlowPaths.standInCells): the chunk's own cells through FreeTerraForged's call, and
+         // the kept ones are not needed any more.
+         if (KEPT.remove(key) != null) {
+            SIZE.decrementAndGet();
+         }
+
+         return make.get();
+      }
+
       Cell[] kept = standIn ? KEPT.get(key) : KEPT.remove(key);
       if (kept == null) {
          Cell[] made = make.get();

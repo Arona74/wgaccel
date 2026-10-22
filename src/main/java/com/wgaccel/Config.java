@@ -25,6 +25,7 @@ public final class Config {
    public static final Setting<Boolean> GPU_IMPROVEMENTS;
    public static final Setting<Boolean> FTF_FAST_PLACEMENT_SCOPES;
    public static final Setting<Boolean> FTF_SHARED_CHUNK_CELLS;
+   public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
    public static final Setting<Boolean> MEMORY_REPORT;
@@ -187,6 +188,12 @@ public final class Config {
             "copies are worked out again and compared; a difference turns it off. Each part turns itself off when FreeTerraForged",
             "no longer has the slow path (a cache of its own; see the log at the first chunk). The same world. Since 0.10.21.")
          .define("ftfSharedChunkCells", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FTF_RAW_CHUNK_CACHE = Setting.of(builder
+         .comment("FreeTerraForged 1.0.0013 and later (no tiles): how many chunks' raw heightmap cells (before its terrain filters, about",
+            "47 KB a chunk) its RawChunkCache keeps. It keeps 1,024, fewer than a pregeneration front spans: the 23 Oct 2026 profile",
+            "(r1000, 15,680 chunks) had 22,745 misses, about 6,000 of them chunks made again after being dropped (~4% of the CPU).",
+            "The cells are the same either way; 0 keeps FreeTerraForged's own size.")
+         .defineInRange("ftfRawChunkCache", 4096, 0, 65536), 4096, 4096).under(CPU_IMPROVEMENTS, 0);
       FAST_BLOCK_PREDICATES = Setting.custom(builder
          .comment("Block predicates (placement filters, rule-based block choices) read each block once per evaluation: a block read",
             "again in the same evaluation comes from that evaluation's own reads (nothing writes blocks while a predicate runs).",

@@ -56,6 +56,13 @@ public final class Environment {
       String parallelism = c2meParallelism();
       if (parallelism != null) {
          log("WGA C2ME globalExecutorParallelism = " + parallelism);
+         // C2ME's default gave 7 workers on 16 threads, busy only ~60% (waiting on each other), the CPU 11 of 16 busy;
+         // 12 made the same run 1:09 -> 0:56 (23 Oct 2026, 7800X3D + RX 9070 XT, FreeTerraForged 1.0.0013, r1000).
+         if (parallelism.replace("\"", "").equalsIgnoreCase("default") && runtime.availableProcessors() >= 8) {
+            log(String.format(Locale.ROOT, "WGA hint: C2ME uses its default number of workers; with the GPU parts taking work off the CPU, more are"
+               + " usually faster for pregeneration (globalExecutorParallelism in config/c2me.toml, e.g. %d on this %d-thread CPU; see the README)",
+               Math.max(1, runtime.availableProcessors() * 3 / 4), runtime.availableProcessors()));
+         }
       }
 
       ServerLevel overworld = server.overworld();

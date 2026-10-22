@@ -253,6 +253,12 @@ FreeTerraForged tile cache (`tileCacheTiles = 256`) takes about 1.7 GB more. Wit
 lot once it fills (the collector runs all the time): give it more, or lower `chunkyMaxWorkingCount`. ZGC (`-XX:+UseZGC -XX:+ZGenerational`) was used on
 the test PC; leave the rest of the JVM flags as your launcher sets them. Graphics card memory: a few hundred MB.
 
+**C2ME's workers:** C2ME's default number of worker threads leaves much of the CPU idle once the GPU parts take work
+off it: on a 16-thread CPU it ran 7 workers, busy only about 60% of the time, with the CPU 11 of 16 busy. Setting
+`globalExecutorParallelism = 12` in `config/c2me.toml` made the same pregeneration about 19% faster (RX 9070 XT
+PC). About three quarters of your CPU threads is a good start; the log's
+`WGA hint` line suggests a number when C2ME is on its default.
+
 **Java:** Java 21 (Minecraft 1.21.1's own) works. The radius 1000 measurements above were made on Java 25 (the AMD
 laptop's on Java 21); the difference between Java 21 and 25 for this mod **has not been measured**.
 
