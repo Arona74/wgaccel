@@ -23,6 +23,10 @@ config="wgaccel.ftf.mixins.json"
 [[mixins]]
 config="wgaccel.check.mixins.json"
 
+# Only applies when C2ME's chunk system is installed (the 4 x 4 area step's status and dependency).
+[[mixins]]
+config="wgaccel.c2me.mixins.json"
+
 [[dependencies.wgaccel]]
     modId="neoforge"
     type="required"

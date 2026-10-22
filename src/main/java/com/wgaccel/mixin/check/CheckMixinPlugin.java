@@ -37,7 +37,7 @@ public final class CheckMixinPlugin implements IMixinConfigPlugin {
 
    @Override
    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-      return this.check;
+      return this.check && !com.wgaccel.Conflicts.openCl();
    }
 
    @Override

@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin.c2me",
+  "plugin": "com.wgaccel.mixin.c2me.C2meMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "NewStatusHookMixin",
+    "VanillaDelegateMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

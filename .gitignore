@@ -1,8 +1,0 @@
-test-instance-mods/
-*.jar
-build/
-.gradle/
-local.properties
-!gradle/wrapper/gradle-wrapper.jar
-logs/
-run/

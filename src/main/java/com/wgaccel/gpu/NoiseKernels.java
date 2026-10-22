@@ -2,7 +2,7 @@ package com.wgaccel.gpu;
 
 /**
  * CUDA C versions of FreeTerraForged's noise modules, written operation for operation like its Java (compiled with
- * {@link GpuSelfTest#EXACT_OPTIONS}: no fused multiply-add, IEEE division and square root), so the results are
+ * {@link GpuSelfTest#EXACT_FLAGS}: no fused multiply-add, IEEE division and square root), so the results are
  * bit-identical. Integer hashing uses unsigned arithmetic (Java's int wraps; C++ signed overflow is undefined).
  */
 public final class NoiseKernels {

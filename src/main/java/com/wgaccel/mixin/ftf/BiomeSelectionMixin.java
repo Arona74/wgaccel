@@ -58,7 +58,7 @@ public abstract class BiomeSelectionMixin {
       WorldgenPlans.ProviderResult result = original.call(providers, domain, target);
       Stats.record(Stage.BIOME_SEARCH, System.nanoTime() - start);
       if (com.wgaccel.gen.GpuBiomes.checking()) {
-         com.wgaccel.gen.GpuBiomes.compareSearch(target, result.target(), result.biome(), result.usedFallback());
+         com.wgaccel.gen.GpuBiomes.compareSearch(domain, target, result.target(), result.biome(), result.usedFallback());
       }
 
       com.wgaccel.gen.BiomeTap.searched(target, result.target(), result.biome(), result.usedFallback());
@@ -72,7 +72,7 @@ public abstract class BiomeSelectionMixin {
          Climate.TargetPoint target, int quartX, int quartY, int quartZ, Climate.Sampler sampler, GeneratorContext context, Operation<Holder<Biome>> original) {
       long start = System.nanoTime();
       com.wgaccel.gen.GpuBiomes.sawContext(context);
-      Holder<Biome> gpu = com.wgaccel.gen.GpuBiomes.decorated(target);
+      Holder<Biome> gpu = com.wgaccel.gen.GpuBiomes.decorated(decoration, selection, spatial, target, quartX, quartY, quartZ, sampler, context);
       if (gpu != null) {
          Stats.record(Stage.BIOME_DECORATE, System.nanoTime() - start);
          return gpu;
@@ -86,7 +86,7 @@ public abstract class BiomeSelectionMixin {
       }
 
       if (com.wgaccel.gen.GpuBiomes.decorationChecking()) {
-         com.wgaccel.gen.GpuBiomes.compareDecoration(target, result);
+         com.wgaccel.gen.GpuBiomes.compareDecoration(decoration, selection, spatial, target, quartX, quartY, quartZ, sampler, context, result);
       }
 
       return result;

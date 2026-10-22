@@ -21,7 +21,7 @@ import java.util.concurrent.Future;
  * 14 threads at once (as C2ME's workers ask). For changing the fill's code against real data without a game run.
  */
 public final class FillBench {
-   private record Sample(FillGpu.Job job, byte[] codes, double[] noise, int[] permutations, int interpolators, int columns) {
+   private record Sample(FillGpu.Job job, byte[] codes, double[] noise, int[] permutations, int interpolators, int columns, float[] beardKernel) {
    }
 
    private FillBench() {
@@ -56,6 +56,9 @@ public final class FillBench {
       long context = Gpu.createContext();
       long start = System.nanoTime();
       FillGpu gpu = new FillGpu(context, source, first.noise, first.permutations, first.interpolators, first.columns);
+      if (first.beardKernel() != null) {
+         gpu.setBeardKernel(first.beardKernel());
+      }
       System.out.printf(Locale.ROOT, "%d samples, source %,d KB, compiled in %.0f ms%n", samples.size(), source.length() / 1024, (System.nanoTime() - start) / 1.0e6);
       int same = 0;
       for (Sample sample : samples) {
@@ -143,7 +146,8 @@ public final class FillBench {
 
    private static Sample read(Path path) throws Exception {
       try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
-         if (in.readInt() != 1) {
+         int version = in.readInt();
+         if (version != 1 && version != 2) {
             throw new IllegalStateException("unknown sample version in " + path);
          }
 
@@ -198,7 +202,20 @@ public final class FillBench {
 
          byte[] codes = new byte[in.readInt()];
          in.readFully(codes);
-         return new Sample(job, codes, noise, permutations, interpolators, columns);
+         float[] kernel = null;
+         if (version >= 2) {
+            job.beard = new int[in.readInt()];
+            for (int i = 0; i < job.beard.length; i++) {
+               job.beard[i] = in.readInt();
+            }
+
+            kernel = new float[in.readInt()];
+            for (int i = 0; i < kernel.length; i++) {
+               kernel[i] = in.readFloat();
+            }
+         }
+
+         return new Sample(job, codes, noise, permutations, interpolators, columns, kernel);
       }
    }
 }

@@ -27,7 +27,7 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
 
    @Override
    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-      return this.present;
+      return this.present && !com.wgaccel.Conflicts.openCl();
    }
 
    @Override

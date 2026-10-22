@@ -90,6 +90,8 @@ public final class GpuSurface {
       /** For a checked chunk: its heightmaps' raw data and post-processing marks from before the surface (the write check). */
       long[][] mapsBefore;
       it.unimi.dsi.fastutil.shorts.ShortList[] marksBefore;
+      /** Marks other threads made on this checked chunk while its CPU surface ran (see FOREIGN). */
+      java.util.concurrent.ConcurrentLinkedQueue<Long> foreignMarks;
    }
 
    private static volatile Program program;
@@ -155,11 +157,30 @@ public final class GpuSurface {
             com.wgaccel.WgaChat.warnOff("WGA GPU surface off: {} has no GPU version", unsupported.getMessage());
          } catch (Throwable failure) {
             task.failed(failure.toString());
-            com.wgaccel.WgaChat.warnOff("WGA GPU surface off: {}", failure.toString());
+            com.wgaccel.WgaChat.warnOff("WGA GPU surface off: {}", com.wgaccel.gpu.GpuSelfTest.describe(failure));
          }
       }, "WGA GPU surface compile");
       thread.setDaemon(true);
       thread.start();
+   }
+
+   /**
+    * C1 (as FreeTerraForged's developer suggested: take everything from its compat runtime layer): the surface rule root
+    * FreeTerraForged's buildSurface hands SurfaceSystem (its worldgen plan's surface facet, with every mod's transforms
+    * applied), or null outside FreeTerraForged.
+    */
+   private static SurfaceRules.RuleSource ftfSurfaceRoot(RandomState random) {
+      try {
+         Object plan = random.sampler().getClass().getMethod("getWorldgenPlan").invoke(random.sampler());
+         java.lang.reflect.Method surface = plan.getClass().getMethod("surface");
+         surface.setAccessible(true);
+         Object facet = surface.invoke(plan);
+         java.lang.reflect.Method root = facet.getClass().getMethod("root");
+         root.setAccessible(true);
+         return ((java.util.Optional<?>)root.invoke(facet)).map(value -> (SurfaceRules.RuleSource)value).orElse(null);
+      } catch (ReflectiveOperationException | RuntimeException notFreeTerraForged) {
+         return null;
+      }
    }
 
    private static Program build(ServerLevel overworld) throws Exception {
@@ -169,7 +190,11 @@ public final class GpuSurface {
 
       RandomState random = overworld.getChunkSource().randomState();
       SurfaceSystem system = random.surfaceSystem();
-      SurfaceRules.RuleSource rules = generator.generatorSettings().value().surfaceRule();
+      SurfaceRules.RuleSource rules = ftfSurfaceRoot(random);
+      if (rules == null) {
+         rules = generator.generatorSettings().value().surfaceRule();
+      }
+
       if (generator.generatorSettings().value().useLegacyRandomSource()) {
          throw new IllegalStateException("the overworld uses the legacy random source");
       }
@@ -357,6 +382,73 @@ public final class GpuSurface {
     * Once the chunk's rule tree is made: the GPU works the surface out; ON writes it (the loop then runs no rows),
     * CHECK keeps it for {@link #end}.
     */
+   private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.LongAdder> MARK_CALLERS = new java.util.concurrent.ConcurrentHashMap<>();
+
+   /**
+    * Fluid-mark tracing (0.10.15, to find why checked chunks' CPU surface makes marks the GPU way does not): a mark made
+    * on a checked chunk while its CPU surface runs is counted by its caller (the calling frames); each new caller is
+    * logged once with the position and the block there at that moment.
+    */
+   /**
+    * Fluid marks other threads made on a checked chunk while its CPU surface ran (0.10.16's trace: neighbouring
+    * chunks' features, e.g. Still Life's oversized disks, call Feature.markAboveForPostProcessing, which reaches a chunk
+    * still in its surface step without the far-chunk write check). The real chunk gets them whichever way its surface is
+    * made, so the write check adds them to the GPU's copy before comparing.
+    */
+   private static final java.util.concurrent.ConcurrentHashMap<ChunkAccess, java.util.concurrent.ConcurrentLinkedQueue<Long>> FOREIGN = new java.util.concurrent.ConcurrentHashMap<>();
+   private static final java.util.concurrent.atomic.LongAdder FOREIGN_MARKS = new java.util.concurrent.atomic.LongAdder();
+
+   /** Checked chunks whose CPU surface is running (marks on them from any thread are traced). */
+   private static final java.util.Set<ChunkAccess> TRACED = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+   public static void traceMark(ChunkAccess chunk, BlockPos pos) {
+      if (TRACED.isEmpty() || !TRACED.contains(chunk)) {
+         return;
+      }
+
+      Current current = CURRENT.get();
+      boolean own = current.checkReady && current.chunk == chunk;
+      if (!own) {
+         FOREIGN.computeIfAbsent(chunk, c -> new java.util.concurrent.ConcurrentLinkedQueue<>()).add(pos.asLong());
+         FOREIGN_MARKS.increment();
+      }
+
+      String thread = (own ? "its surface thread " : "OTHER thread ") + Thread.currentThread().getName();
+
+      StackTraceElement[] stack = new Throwable().getStackTrace();
+      StringBuilder callers = new StringBuilder();
+      int shown = 0;
+      for (int i = 2; i < stack.length && shown < 9; i++) {
+         String frame = stack[i].getClassName() + "." + stack[i].getMethodName() + ":" + stack[i].getLineNumber();
+         if (frame.startsWith("java.") || frame.contains("mixinextras$bridge")) {
+            continue;
+         }
+
+         callers.append(shown++ == 0 ? "" : " < ").append(frame);
+      }
+
+      String key = thread.replaceAll("[0-9]+", "#") + ": " + callers;
+      java.util.concurrent.atomic.LongAdder count = MARK_CALLERS.get(key);
+      if (count == null) {
+         count = MARK_CALLERS.computeIfAbsent(key, k -> new java.util.concurrent.atomic.LongAdder());
+         if (MARK_CALLERS.size() <= 12) {
+            WorldgenAccelerator.LOG.info("WGA surface mark trace: new caller of markPosForPostprocessing at {} (block {}): {}", pos.toShortString(),
+               chunk.getBlockState(pos), key);
+         }
+      }
+
+      count.increment();
+   }
+
+   /** The traced mark callers with their counts, for the logs. */
+   public static String markCallers() {
+      StringBuilder text = new StringBuilder(String.format(Locale.ROOT,
+         "WGA surface mark trace (checked chunks' CPU surface; %,d marks from other threads added to the GPU's copy before comparing):", FOREIGN_MARKS.sum()));
+      MARK_CALLERS.entrySet().stream().sorted((a, b) -> Long.compare(b.getValue().sum(), a.getValue().sum())).limit(8)
+         .forEach(e -> text.append(String.format(Locale.ROOT, " [%,d x] %s;", e.getValue().sum(), e.getKey())));
+      return text.toString();
+   }
+
    public static void rulesMade() {
       Current current = CURRENT.get();
       if (!current.active) {
@@ -399,6 +491,7 @@ public final class GpuSurface {
 
                System.arraycopy(ahead.out, 0, current.out, 0, n);
                current.checkReady = true;
+               TRACED.add(current.chunk);
                return;
             }
 
@@ -463,6 +556,7 @@ public final class GpuSurface {
 
          if (check) {
             current.checkReady = true;
+               TRACED.add(current.chunk);
             return;
          }
 
@@ -521,6 +615,8 @@ public final class GpuSurface {
             current.mapsBefore[i] = mapsNow[i].getRawData().clone();
          }
 
+         // Traced from here (before the marks are copied), so marks other threads make from now on are known.
+         TRACED.add(chunk);
          it.unimi.dsi.fastutil.shorts.ShortList[] lists = chunk.getPostProcessing();
          current.marksBefore = new it.unimi.dsi.fastutil.shorts.ShortList[lists.length];
          for (int i = 0; i < lists.length; i++) {
@@ -1010,6 +1106,9 @@ public final class GpuSurface {
       current.timedWay = 0;
       SurfaceAhead.takeCodes(chunk);
       boolean check = current.checkReady && current.chunk == chunk;
+      TRACED.remove(chunk);
+      java.util.concurrent.ConcurrentLinkedQueue<Long> foreign = FOREIGN.remove(chunk);
+      current.foreignMarks = foreign;
       current.active = false;
       current.skipLoop = false;
       current.checkReady = false;
@@ -1195,9 +1294,24 @@ public final class GpuSurface {
       }
 
       it.unimi.dsi.fastutil.shorts.ShortList[] realMarks = chunk.getPostProcessing();
+      if (current.foreignMarks != null) {
+         // Marks other threads made meanwhile (neighbours' features): in the real chunk either way.
+         for (long packed : current.foreignMarks) {
+            BlockPos at = BlockPos.of(packed);
+            int index = chunk.getSectionIndex(at.getY());
+            if (index >= 0 && index < marks.length) {
+               if (marks[index] == null) {
+                  marks[index] = new it.unimi.dsi.fastutil.shorts.ShortArrayList();
+               }
+
+               marks[index].add(net.minecraft.world.level.chunk.ProtoChunk.packOffsetCoordinates(at));
+            }
+         }
+      }
+
       for (int i = 0; i < marks.length; i++) {
          if (!sortedMarks(marks[i]).equals(sortedMarks(realMarks[i]))) {
-            return "fluid marks of section " + i;
+            return "fluid marks of section " + i + markDifference(current, chunk, i, marks[i], realMarks[i], current.marksBefore[i]);
          }
       }
 
@@ -1233,6 +1347,63 @@ public final class GpuSurface {
       return count == 0 ? null : count + " blocks, " + first;
    }
 
+   /**
+    * Which fluid marks differ (at most 4 of each kind): the GPU way's only and the CPU's only, each with its position,
+    * the block before the surface, the CPU's block there now, whether the mark was there before the surface, and the
+    * GPU's code there (-1: the GPU leaves the block alone).
+    */
+   private static String markDifference(Current current, ChunkAccess chunk, int index, it.unimi.dsi.fastutil.shorts.ShortList gpu,
+         it.unimi.dsi.fastutil.shorts.ShortList cpu, it.unimi.dsi.fastutil.shorts.ShortList before) {
+      it.unimi.dsi.fastutil.shorts.ShortList a = sortedMarks(gpu);
+      it.unimi.dsi.fastutil.shorts.ShortList b = sortedMarks(cpu);
+      it.unimi.dsi.fastutil.shorts.ShortList was = sortedMarks(before);
+      StringBuilder text = new StringBuilder(String.format(Locale.ROOT, " (gpu %d marks, cpu %d, before the surface %d)", a.size(), b.size(), was.size()));
+      int sectionY = chunk.getSectionYFromSectionIndex(index);
+      for (int side = 0; side < 2; side++) {
+         it.unimi.dsi.fastutil.shorts.ShortList mine = side == 0 ? a : b;
+         it.unimi.dsi.fastutil.shorts.ShortList other = side == 0 ? b : a;
+         int shown = 0;
+         for (int k = 0; k < mine.size() && shown < 4; k++) {
+            short packed = mine.getShort(k);
+            int inMine = count(mine, packed);
+            if (count(other, packed) >= inMine) {
+               continue;
+            }
+
+            if (k > 0 && mine.getShort(k - 1) == packed) {
+               continue;
+            }
+
+            shown++;
+            BlockPos at = net.minecraft.world.level.chunk.ProtoChunk.unpackOffsetCoordinates(packed, sectionY, chunk.getPos());
+            String blockBefore = "?";
+            String gpuCode = "?";
+            SurfaceGpu.Job job = current.job;
+            int lx = at.getX() & 15;
+            int lz = at.getZ() & 15;
+            if (at.getY() >= job.minY && at.getY() < job.minY + job.height) {
+               int column = lx * 16 + lz;
+               blockBefore = String.valueOf(current.before[(at.getY() - job.minY) * 256 + column]);
+               gpuCode = String.valueOf(current.out[(at.getY() - job.minY) * 256 + column]);
+            }
+
+            text.append(String.format(Locale.ROOT, "; %s only: %s x%d (cpu x%d) block before %s, cpu now %s, marked before %s, gpu code %s",
+               side == 0 ? "gpu" : "cpu", at.toShortString(), inMine, count(other, packed), blockBefore, chunk.getBlockState(at), count(was, packed) > 0, gpuCode));
+         }
+      }
+
+      return text.toString();
+   }
+
+   private static int count(it.unimi.dsi.fastutil.shorts.ShortList sorted, short value) {
+      int n = 0;
+      for (int i = 0; i < sorted.size(); i++) {
+         n += sorted.getShort(i) == value ? 1 : 0;
+      }
+
+      return n;
+   }
+
    private static it.unimi.dsi.fastutil.shorts.ShortList sortedMarks(it.unimi.dsi.fastutil.shorts.ShortList list) {
       it.unimi.dsi.fastutil.shorts.ShortArrayList sorted = list == null ? new it.unimi.dsi.fastutil.shorts.ShortArrayList() : new it.unimi.dsi.fastutil.shorts.ShortArrayList(list);
       sorted.sort(null);
@@ -1241,6 +1412,10 @@ public final class GpuSurface {
 
    /** A summary every so often: chunks from the GPU, checked and identical, left to the CPU and why, times per chunk. */
    private static void report() {
+      if (!MARK_CALLERS.isEmpty()) {
+         WorldgenAccelerator.LOG.info(markCallers());
+      }
+
       long done = WRITTEN.sum() + CHECKED.sum();
       int next = NEXT_REPORT.get();
       if (done < next || !NEXT_REPORT.compareAndSet(next, next < 1024 ? next * 2 : next + 2048)) {

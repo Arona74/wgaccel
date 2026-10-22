@@ -33,10 +33,22 @@ public final class WorldgenAccelerator {
 
    public WorldgenAccelerator(IEventBus modBus, ModContainer container) {
       container.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+      if (Conflicts.openCl()) {
+         // The user, 2026-10-22: with C2ME's OpenCL module the whole mod is off (its mixins too: the mixin plugins ask the same).
+         LOG.warn("WGA Worldgen Accelerator is OFF: C2ME's OpenCL module ({}) is installed; remove one of the two", Conflicts.C2ME_OPENCL);
+         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) -> event.getEntity()
+            .sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] Off: C2ME's OpenCL module is installed too. "
+               + "The two do the same work in different ways; remove one of them.").withStyle(net.minecraft.ChatFormatting.YELLOW)));
+         return;
+      }
+
+      modBus.addListener((net.neoforged.fml.event.config.ModConfigEvent.Loading event) -> Setting.invalidate());
+      modBus.addListener((net.neoforged.fml.event.config.ModConfigEvent.Reloading event) -> Setting.invalidate());
       GpuSelfTest.cacheDirectory = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("wgaccel-gpu-cache");
       NeoForge.EVENT_BUS.addListener(WorldgenAccelerator::onLevelLoad);
       NeoForge.EVENT_BUS.addListener(WorldgenAccelerator::onServerStarted);
       NeoForge.EVENT_BUS.addListener(WorldgenAccelerator::onServerStopping);
+      NeoForge.EVENT_BUS.addListener(WorldgenAccelerator::onPlayerLoggedIn);
       NeoForge.EVENT_BUS.addListener(WgaCommands::register);
       NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, WorldgenAccelerator::onChunkLoadFirst);
       NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, WorldgenAccelerator::onChunkLoadLast);
@@ -80,7 +92,13 @@ public final class WorldgenAccelerator {
     * disk, so the same world loads them again at once.
     */
    private static void onLevelLoad(net.neoforged.neoforge.event.level.LevelEvent.Load event) {
-      if (!(event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) || level.dimension() != net.minecraft.world.level.Level.OVERWORLD) {
+      if (!(event.getLevel() instanceof net.minecraft.server.level.ServerLevel level)) {
+         return;
+      }
+
+      if (level.dimension() != net.minecraft.world.level.Level.OVERWORLD) {
+         // C2.5: loaded after the overworld (whose start resets the others).
+         GpuNoiseFill.startOther(level);
          return;
       }
 
@@ -117,6 +135,23 @@ public final class WorldgenAccelerator {
       LOG.info("WGA GPU ready before the spawn area in {} ms: {}", (System.nanoTime() - start) / 1_000_000, com.wgaccel.gpu.GpuPrepare.status());
    }
 
+   /**
+    * The GPU warning for each player joining a world (the user, 2026-10-22): the GPU parts are tested on an RTX 3080
+    * only and may not work, or may crash, on older or newer cards. Config gpuTestedWarning.
+    */
+   private static void onPlayerLoggedIn(net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) {
+      if (!Config.GPU_TESTED_WARNING.get() || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
+         return;
+      }
+
+      int capability = GpuSelfTest.deviceCapability;
+      String card = capability == 0 ? "" : String.format(java.util.Locale.ROOT, " (this one: %s, compute %d.%d)", GpuSelfTest.deviceName, capability / 10,
+         capability % 10);
+      event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] The GPU parts are tested only on an NVIDIA "
+         + "RTX 3080. On other cards" + card + " they may not work or may crash the game; every GPU result is checked against the CPU's and a part "
+         + "that differs turns itself off. Turn this message off with gpuTestedWarning = false (config/wgaccel-common.toml, [gpu]).").withStyle(net.minecraft.ChatFormatting.YELLOW));
+   }
+
    private static void onServerStarted(ServerStartedEvent event) {
       Environment.log(event.getServer());
       DensityInventory.log(event.getServer().overworld());
@@ -138,7 +173,7 @@ public final class WorldgenAccelerator {
             LOG.info("WGA GPU self-test: {}", line);
          }
       } catch (Throwable failure) {
-         LOG.warn("WGA GPU unavailable: {}", failure.toString());
+         LOG.warn("WGA GPU unavailable: {}", com.wgaccel.gpu.GpuSelfTest.describe(failure));
       }
    }
 

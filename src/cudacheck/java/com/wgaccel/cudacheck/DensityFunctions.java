@@ -89,4 +89,45 @@ final class DensityFunctions {
 
    record BlendDensity(Object input) {
    }
+
+   // C2 (vanilla): the shift kinds.
+   record ShiftA(NoiseHolder offsetNoise) {
+      public double minValue() {
+         return -8.0;
+      }
+
+      public double maxValue() {
+         return 8.0;
+      }
+   }
+
+   record ShiftB(NoiseHolder offsetNoise) {
+      public double minValue() {
+         return -8.0;
+      }
+
+      public double maxValue() {
+         return 8.0;
+      }
+   }
+
+   record Shift(NoiseHolder offsetNoise) {
+      public double minValue() {
+         return -8.0;
+      }
+
+      public double maxValue() {
+         return 8.0;
+      }
+   }
+
+   record ShiftedNoise(Object shiftX, Object shiftY, Object shiftZ, double xzScale, double yScale, NoiseHolder noise) {
+      public double minValue() {
+         return -2.0;
+      }
+
+      public double maxValue() {
+         return 2.0;
+      }
+   }
 }

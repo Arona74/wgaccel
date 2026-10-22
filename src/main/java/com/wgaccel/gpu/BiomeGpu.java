@@ -33,6 +33,8 @@ public final class BiomeGpu {
       public final int[] minimumSurface = new int[16];
       /** G5.4: per quart column (qx * 4 + qz) whether FreeTerraForged's tile has a river there (1) or not (0). */
       public final int[] rivers = new int[16];
+      /** C1: per quart column its provider's number (0 the first; with setProviders). */
+      public final int[] provider = new int[16];
    }
 
    private final class Lane {
@@ -130,6 +132,126 @@ public final class BiomeGpu {
    private final float decorDensity;
    private final float decorCoverage;
    private final ThreadLocal<BatchLane> batchLanes = ThreadLocal.withInitial(BatchLane::new);
+   /** C1: the other providers' searches (biomeTreeSearchRoot), their roots and ocean projection maxima; none by default. */
+   private long searchRoot;
+   private int[] extraRoots = new int[0];
+   private int[] extraTargetMax = new int[0];
+
+   /** C1: search the other providers' trees too (their roots in the node arrays, after the first provider's). */
+   public void setExtras(int[] roots, long[] targetMax) {
+      GpuSelfTest.check(cuCtxSetCurrent(this.context), "cuCtxSetCurrent");
+      this.searchRoot = roots.length == 0 ? 0L : function(this.module, "biomeTreeSearchRoot");
+      this.extraRoots = roots.clone();
+      this.extraTargetMax = new int[targetMax.length];
+      for (int i = 0; i < targetMax.length; i++) {
+         this.extraTargetMax[i] = Math.toIntExact(targetMax[i]);
+      }
+   }
+
+   public int extras() {
+      return this.extraRoots.length;
+   }
+
+   /** C1: the other providers' decoration settings (their Layouts and flags, as {@link BiomeDecoration} has them). */
+   private long[] extraDecorLongs = new long[0];
+   private long[] extraDecorInts = new long[0];
+   private long[] extraDecorFlags = new long[0];
+   private float[] extraDecorDensity = new float[0];
+
+   public void setExtraDecoration(long[][] longs, int[][] ints, float[] density, int[][] flags) {
+      GpuSelfTest.check(cuCtxSetCurrent(this.context), "cuCtxSetCurrent");
+      int count = longs.length;
+      this.extraDecorLongs = new long[count];
+      this.extraDecorInts = new long[count];
+      this.extraDecorFlags = new long[count];
+      for (int k = 0; k < count; k++) {
+         ByteBuffer buffer = MemoryUtil.memAlloc(8 * longs[k].length);
+         try {
+            buffer.asLongBuffer().put(0, longs[k]);
+            this.extraDecorLongs[k] = device(buffer.remaining());
+            GpuSelfTest.check(cuMemcpyHtoD(this.extraDecorLongs[k], buffer), "copy in");
+         } finally {
+            MemoryUtil.memFree(buffer);
+         }
+
+         this.extraDecorInts[k] = upload(ints[k]);
+         this.extraDecorFlags[k] = upload(flags[k]);
+      }
+
+      this.extraDecorDensity = density.clone();
+   }
+
+   // C1: one provider per cell (setProviders): biomeTreeSearchMulti / biomeDecorateMulti instead of the single ones.
+   private long searchMulti;
+   private long decorateMulti;
+   private long rootsDevice;
+   private long targetMaxesDevice;
+   private long pAllDevice;
+   private long qAllDevice;
+   private long flagsAllDevice;
+   private long densitiesDevice;
+   private int flagStride;
+   private boolean multiDecorates;
+
+   /**
+    * C1: every provider's tree root and ocean projection maximum (the first's at 0), and with decoration (non-null) each
+    * one's Layout settings, flags (one length) and density; each cell then searches and decorates only its column's
+    * provider (Job.provider).
+    */
+   public void setProviders(int[] roots, long[] targetMax, long[][] longs, int[][] ints, float[] density, int[][] flags) {
+      GpuSelfTest.check(cuCtxSetCurrent(this.context), "cuCtxSetCurrent");
+      this.searchMulti = function(this.module, "biomeTreeSearchMulti");
+      this.rootsDevice = upload(roots);
+      int[] maxima = new int[targetMax.length];
+      for (int i = 0; i < maxima.length; i++) {
+         maxima[i] = Math.toIntExact(targetMax[i]);
+      }
+
+      this.targetMaxesDevice = upload(maxima);
+      this.multiDecorates = longs != null && this.decorate != 0L;
+      if (this.multiDecorates) {
+         this.decorateMulti = function(this.module, "biomeDecorateMulti");
+         long[] pAll = new long[6 * longs.length];
+         int[] qAll = new int[7 * ints.length];
+         this.flagStride = flags[0].length;
+         int[] flagsAll = new int[this.flagStride * flags.length];
+         for (int k = 0; k < longs.length; k++) {
+            System.arraycopy(longs[k], 0, pAll, 6 * k, 6);
+            System.arraycopy(ints[k], 0, qAll, 7 * k, 7);
+            System.arraycopy(flags[k], 0, flagsAll, this.flagStride * k, this.flagStride);
+         }
+
+         ByteBuffer buffer = MemoryUtil.memAlloc(8 * pAll.length);
+         try {
+            buffer.asLongBuffer().put(0, pAll);
+            this.pAllDevice = device(buffer.remaining());
+            GpuSelfTest.check(cuMemcpyHtoD(this.pAllDevice, buffer), "copy in");
+         } finally {
+            MemoryUtil.memFree(buffer);
+         }
+
+         this.qAllDevice = upload(qAll);
+         this.flagsAllDevice = upload(flagsAll);
+         ByteBuffer floats = MemoryUtil.memAlloc(4 * density.length);
+         try {
+            floats.asFloatBuffer().put(0, density);
+            this.densitiesDevice = device(floats.remaining());
+            GpuSelfTest.check(cuMemcpyHtoD(this.densitiesDevice, floats), "copy in");
+         } finally {
+            MemoryUtil.memFree(floats);
+         }
+      }
+   }
+
+   /** C1: whether cells search (and decorate) their own column's provider. */
+   public boolean multi() {
+      return this.searchMulti != 0L;
+   }
+
+   /** Whether the other providers' cells are decorated on the GPU too. */
+   public boolean decoratesExtras() {
+      return this.decorate != 0L && this.extraDecorLongs.length == this.extraRoots.length && this.extraRoots.length > 0;
+   }
    /** Sampled batches: chunks in them, then microseconds of copy in + climate, search, copy out. */
    private final java.util.concurrent.atomic.LongAdder[] batchTimings = {new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(),
       new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()};
@@ -155,9 +277,41 @@ public final class BiomeGpu {
       private long minimumHost;
       private long riversDevice;
       private long riversHost;
+      private long providerDevice;
+      private long providerHost;
       private long decoratedDevice;
+      private long extraCapacity;
+      private long extraProjectedDevice;
+      private long extraCCDevice;
+      private long extraChosenDevice;
+      private long extraTiedDevice;
+      private long extraDecoratedDevice;
+      private long extraHost;
       private final long[] events = new long[4];
       private int runs;
+
+      /** C1: room for the other providers' results (extra = cells x providers). */
+      void ensureExtra(long extra) {
+         if (extra > this.extraCapacity) {
+            if (this.extraCCDevice != 0L) {
+               cuMemFree(this.extraProjectedDevice);
+               cuMemFree(this.extraCCDevice);
+               cuMemFree(this.extraChosenDevice);
+               cuMemFree(this.extraTiedDevice);
+               cuMemFree(this.extraDecoratedDevice);
+               ncuMemFreeHost(this.extraHost);
+            }
+
+            this.extraCapacity = extra + extra / 4;
+            this.extraProjectedDevice = device(48L * this.extraCapacity);
+            this.extraCCDevice = device(8L * this.extraCapacity);
+            this.extraChosenDevice = device(4L * this.extraCapacity);
+            this.extraTiedDevice = device(4L * this.extraCapacity);
+            this.extraDecoratedDevice = device(4L * this.extraCapacity);
+            // Out on the host: the projected continentalness, the chosen numbers, the decorated numbers.
+            this.extraHost = host(16L * this.extraCapacity);
+         }
+      }
 
       BatchLane() {
          GpuSelfTest.check(cuCtxSetCurrent(BiomeGpu.this.context), "cuCtxSetCurrent");
@@ -205,11 +359,15 @@ public final class BiomeGpu {
                ncuMemFreeHost(this.minimumHost);
                cuMemFree(this.riversDevice);
                ncuMemFreeHost(this.riversHost);
+               cuMemFree(this.providerDevice);
+               ncuMemFreeHost(this.providerHost);
             }
 
             this.chunks = chunks;
             this.riversDevice = device(64L * chunks);
             this.riversHost = host(64L * chunks);
+            this.providerDevice = device(64L * chunks);
+            this.providerHost = host(64L * chunks);
             this.xzDevice = device(8L * chunks);
             this.xzHost = host(8L * chunks);
             this.minimumDevice = device(64L * chunks);
@@ -256,6 +414,16 @@ public final class BiomeGpu {
     */
    public void runBatch(java.util.List<Job> jobs, java.util.List<long[]> climateOut, java.util.List<long[]> projectedOut, java.util.List<int[]> chosenOut,
       java.util.List<int[]> tiedOut, java.util.List<int[]> decoratedOut) {
+      this.runBatch(jobs, climateOut, projectedOut, chosenOut, tiedOut, decoratedOut, null, null, null);
+   }
+
+   /**
+    * C1: as above; with extraCCOut and extraChosenOut (and other providers set) also, per job, each other provider k's
+    * projected continentalness and chosen number (-1: a tie) for each cell i at k * cells + i.
+    */
+   public void runBatch(java.util.List<Job> jobs, java.util.List<long[]> climateOut, java.util.List<long[]> projectedOut, java.util.List<int[]> chosenOut,
+      java.util.List<int[]> tiedOut, java.util.List<int[]> decoratedOut, java.util.List<long[]> extraCCOut, java.util.List<int[]> extraChosenOut,
+      java.util.List<int[]> extraDecoratedOut) {
       int chunks = jobs.size();
       if (chunks == 0) {
          return;
@@ -279,6 +447,7 @@ public final class BiomeGpu {
       java.nio.IntBuffer xz = MemoryUtil.memIntBuffer(lane.xzHost, 2 * chunks);
       java.nio.IntBuffer minimum = MemoryUtil.memIntBuffer(lane.minimumHost, 16 * chunks);
       java.nio.IntBuffer rivers = MemoryUtil.memIntBuffer(lane.riversHost, 16 * chunks);
+      java.nio.IntBuffer providers = MemoryUtil.memIntBuffer(lane.providerHost, 16 * chunks);
       for (int j = 0; j < chunks; j++) {
          Job job = jobs.get(j);
          at.put(3 * per * j, job.at, 0, 3 * per);
@@ -287,9 +456,15 @@ public final class BiomeGpu {
          xz.put(2 * j + 1, job.chunkZ);
          minimum.put(16 * j, job.minimumSurface, 0, 16);
          rivers.put(16 * j, job.rivers, 0, 16);
+         providers.put(16 * j, job.provider, 0, 16);
       }
 
-      boolean decorating = decoratedOut != null && this.decorate != 0L;
+      boolean decorating = decoratedOut != null && this.decorate != 0L && (this.searchMulti == 0L || this.multiDecorates);
+      int extras = extraCCOut != null && extraChosenOut != null ? this.extraRoots.length : 0;
+      boolean decoratingExtras = decorating && extras > 0 && extraDecoratedOut != null && this.decoratesExtras();
+      if (extras > 0) {
+         lane.ensureExtra((long)n * extras);
+      }
 
       boolean timed = lane.runs++ % 4 == 0;
       if (timed) {
@@ -302,6 +477,10 @@ public final class BiomeGpu {
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.minimumDevice, lane.minimumHost, 64L * chunks, lane.stream), "copy in");
       if (decorating) {
          GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.riversDevice, lane.riversHost, 64L * chunks, lane.stream), "copy in");
+      }
+
+      if (this.searchMulti != 0L) {
+         GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.providerDevice, lane.providerHost, 64L * chunks, lane.stream), "copy in");
       }
 
       try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -343,7 +522,49 @@ public final class BiomeGpu {
          s.put(9, stack.pointers(lane.projectedDevice).address());
          s.put(10, stack.pointers(lane.chosenDevice).address());
          s.put(11, stack.pointers(lane.tiedDevice).address());
-         GpuSelfTest.check(cuLaunchKernel(this.search, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, s, null), "cuLaunchKernel biomeTreeSearch");
+         if (this.searchMulti != 0L) {
+            PointerBuffer m = stack.mallocPointer(17);
+            m.put(0, stack.pointers(lane.climateDevice).address());
+            m.put(1, MemoryUtil.memAddress(stack.ints(n)));
+            m.put(2, MemoryUtil.memAddress(stack.ints(per)));
+            m.put(3, stack.pointers(lane.atDevice).address());
+            m.put(4, stack.pointers(lane.xzDevice).address());
+            m.put(5, stack.pointers(lane.providerDevice).address());
+            m.put(6, stack.pointers(this.rootsDevice).address());
+            m.put(7, stack.pointers(this.targetMaxesDevice).address());
+            m.put(8, stack.pointers(this.bounds).address());
+            m.put(9, stack.pointers(this.first).address());
+            m.put(10, stack.pointers(this.count).address());
+            m.put(11, stack.pointers(this.nodeBiome).address());
+            m.put(12, MemoryUtil.memAddress(stack.ints(this.sourceMin)));
+            m.put(13, MemoryUtil.memAddress(stack.ints(this.sourceMax)));
+            m.put(14, stack.pointers(lane.projectedDevice).address());
+            m.put(15, stack.pointers(lane.chosenDevice).address());
+            m.put(16, stack.pointers(lane.tiedDevice).address());
+            GpuSelfTest.check(cuLaunchKernel(this.searchMulti, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, m, null), "cuLaunchKernel biomeTreeSearchMulti");
+         } else {
+            GpuSelfTest.check(cuLaunchKernel(this.search, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, s, null), "cuLaunchKernel biomeTreeSearch");
+         }
+
+         for (int k = 0; k < extras; k++) {
+            PointerBuffer e = stack.mallocPointer(14);
+            e.put(0, stack.pointers(lane.climateDevice).address());
+            e.put(1, MemoryUtil.memAddress(stack.ints(n)));
+            e.put(2, MemoryUtil.memAddress(stack.ints(this.extraRoots[k])));
+            e.put(3, stack.pointers(this.bounds).address());
+            e.put(4, stack.pointers(this.first).address());
+            e.put(5, stack.pointers(this.count).address());
+            e.put(6, stack.pointers(this.nodeBiome).address());
+            e.put(7, MemoryUtil.memAddress(stack.ints(this.sourceMin)));
+            e.put(8, MemoryUtil.memAddress(stack.ints(this.sourceMax)));
+            e.put(9, MemoryUtil.memAddress(stack.ints(this.extraTargetMax[k])));
+            e.put(10, stack.pointers(lane.extraProjectedDevice + 48L * k * n).address());
+            e.put(11, stack.pointers(lane.extraCCDevice + 8L * k * n).address());
+            e.put(12, stack.pointers(lane.extraChosenDevice + 4L * k * n).address());
+            e.put(13, stack.pointers(lane.extraTiedDevice + 4L * k * n).address());
+            GpuSelfTest.check(cuLaunchKernel(this.searchRoot, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, e, null), "cuLaunchKernel biomeTreeSearchRoot");
+         }
+
          if (decorating) {
             PointerBuffer d = stack.mallocPointer(20);
             d.put(0, stack.pointers(lane.climateDevice).address());
@@ -366,7 +587,41 @@ public final class BiomeGpu {
             d.put(17, stack.pointers(this.count).address());
             d.put(18, stack.pointers(this.nodeBiome).address());
             d.put(19, stack.pointers(lane.decoratedDevice).address());
-            GpuSelfTest.check(cuLaunchKernel(this.decorate, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, d, null), "cuLaunchKernel biomeDecorate");
+            if (this.searchMulti != 0L) {
+               PointerBuffer dm = stack.mallocPointer(22);
+               for (int a = 0; a < 10; a++) {
+                  dm.put(a, d.get(a));
+               }
+
+               dm.put(10, stack.pointers(this.pAllDevice).address());
+               dm.put(11, stack.pointers(this.qAllDevice).address());
+               dm.put(12, stack.pointers(lane.providerDevice).address());
+               dm.put(13, MemoryUtil.memAddress(stack.ints(this.flagStride)));
+               dm.put(14, stack.pointers(this.densitiesDevice).address());
+               dm.put(15, d.get(13));
+               dm.put(16, stack.pointers(this.flagsAllDevice).address());
+               dm.put(17, d.get(15));
+               dm.put(18, d.get(16));
+               dm.put(19, d.get(17));
+               dm.put(20, d.get(18));
+               dm.put(21, d.get(19));
+               GpuSelfTest.check(cuLaunchKernel(this.decorateMulti, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, dm, null), "cuLaunchKernel biomeDecorateMulti");
+            } else {
+               GpuSelfTest.check(cuLaunchKernel(this.decorate, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, d, null), "cuLaunchKernel biomeDecorate");
+            }
+
+            // C1: each other provider's cells with its own Layout, flags and river table (their roots in its ints).
+            for (int k = 0; decoratingExtras && k < extras; k++) {
+               d.put(1, stack.pointers(lane.extraProjectedDevice + 48L * k * n).address());
+               d.put(2, stack.pointers(lane.extraChosenDevice + 4L * k * n).address());
+               d.put(3, stack.pointers(lane.extraTiedDevice + 4L * k * n).address());
+               d.put(10, stack.pointers(this.extraDecorLongs[k]).address());
+               d.put(11, stack.pointers(this.extraDecorInts[k]).address());
+               d.put(12, MemoryUtil.memAddress(stack.floats(this.extraDecorDensity[k])));
+               d.put(14, stack.pointers(this.extraDecorFlags[k]).address());
+               d.put(19, stack.pointers(lane.extraDecoratedDevice + 4L * k * n).address());
+               GpuSelfTest.check(cuLaunchKernel(this.decorate, (n + 127) / 128, 1, 1, 128, 1, 1, 0, lane.stream, d, null), "cuLaunchKernel biomeDecorate");
+            }
          }
 
          if (timed) {
@@ -387,11 +642,34 @@ public final class BiomeGpu {
       GpuSelfTest.check(ncuMemcpyDtoHAsync(projectedHost, lane.projectedDevice, 48L * n, lane.stream), "copy out");
       GpuSelfTest.check(ncuMemcpyDtoHAsync(chosenHost, lane.chosenDevice, 4L * n, lane.stream), "copy out");
       GpuSelfTest.check(ncuMemcpyDtoHAsync(tiedHost, lane.tiedDevice, 4L * n, lane.stream), "copy out");
+      long extraCCHost = lane.extraHost;
+      long extraChosenHost = lane.extraHost + 8L * n * extras;
+      long extraDecoratedHost = lane.extraHost + 12L * n * extras;
+      if (extras > 0) {
+         GpuSelfTest.check(ncuMemcpyDtoHAsync(extraCCHost, lane.extraCCDevice, 8L * n * extras, lane.stream), "copy out");
+         GpuSelfTest.check(ncuMemcpyDtoHAsync(extraChosenHost, lane.extraChosenDevice, 4L * n * extras, lane.stream), "copy out");
+         if (decoratingExtras) {
+            GpuSelfTest.check(ncuMemcpyDtoHAsync(extraDecoratedHost, lane.extraDecoratedDevice, 4L * n * extras, lane.stream), "copy out");
+         }
+      }
+
       if (timed) {
          GpuSelfTest.check(cuEventRecord(lane.events[3], lane.stream), "cuEventRecord");
       }
 
       GpuSelfTest.check(cuStreamSynchronize(lane.stream), "cuStreamSynchronize");
+      for (int j = 0; extras > 0 && j < chunks; j++) {
+         long[] cc = extraCCOut.get(j);
+         int[] chosen = extraChosenOut.get(j);
+         for (int k = 0; k < extras; k++) {
+            MemoryUtil.memLongBuffer(extraCCHost + 8L * ((long)k * n + (long)per * j), per).get(0, cc, k * per, per);
+            MemoryUtil.memIntBuffer(extraChosenHost + 4L * ((long)k * n + (long)per * j), per).get(0, chosen, k * per, per);
+            if (decoratingExtras) {
+               MemoryUtil.memIntBuffer(extraDecoratedHost + 4L * ((long)k * n + (long)per * j), per).get(0, extraDecoratedOut.get(j), k * per, per);
+            }
+         }
+      }
+
       if (timed) {
          try (MemoryStack stack = MemoryStack.stackPush()) {
             java.nio.FloatBuffer ms = stack.mallocFloat(1);

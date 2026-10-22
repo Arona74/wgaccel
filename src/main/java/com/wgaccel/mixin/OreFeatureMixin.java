@@ -2,6 +2,8 @@ package com.wgaccel.mixin;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Share;
+import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import com.wgaccel.gen.FastOres;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.WorldGenLevel;
@@ -15,9 +17,16 @@ import org.spongepowered.asm.mixin.injection.At;
 public abstract class OreFeatureMixin {
    @WrapOperation(method = "place", at = @At(value = "INVOKE",
       target = "Lnet/minecraft/world/level/WorldGenLevel;getHeight(Lnet/minecraft/world/level/levelgen/Heightmap$Types;II)I"))
-   private int wgaccel$height(WorldGenLevel level, Heightmap.Types type, int x, int z, Operation<Integer> original) {
+   private int wgaccel$height(WorldGenLevel level, Heightmap.Types type, int x, int z, Operation<Integer> original,
+         @Share("wgaccelChunks") LocalRef<FastOres.Chunks> chunks) {
       if (level instanceof WorldGenRegion region && FastOres.on()) {
-         int height = FastOres.height(region, type, x, z);
+         FastOres.Chunks call = chunks.get();
+         if (call == null || call.region() != region) {
+            call = new FastOres.Chunks(region);
+            chunks.set(call);
+         }
+
+         int height = FastOres.height(call, type, x, z);
          return FastOres.sample() ? FastOres.verify(height, original.call(level, type, x, z)) : height;
       }
 

@@ -40,16 +40,31 @@ public final class BiomesAhead {
    /** How long a biome step waits for its chunk still in the look-ahead's queue before doing it on the CPU. */
    private static final long TAKE_WAIT_NANOS = 10_000_000L;
    // Three threads: four (run AF) made smaller launches and more GPU time per chunk (2.3 -> 3.3 ms) for few more ready.
-   private static final int THREADS = 3;
+   private static final int THREADS_WITH_TILES = 3;
    /**
     * A chunk's result: per quart column (qx * 4 + qz) its temperature, humidity, continentalness, erosion, weirdness and
     * projected continentalness (the same up the whole column: 2D CellSampler fields; a chunk where they are not is the
     * CPU's), per cell (as GpuBiomes numbers them) its depth and chosen biome's number (-1: a tie, the CPU's).
     */
-   record Result(int quartY, int quartHeight, int[] columns, int[] cells, int[] decorated) {
+   record Result(int quartY, int quartHeight, int[] columns, int[] cells, int[] decorated, int[] extra, int[] extraDecorated, int[] provider) {
    }
 
    private static volatile BiomesAhead current;
+
+   /** The 4 x 4 area step: whether this chunk's biomes are still queued or being made. */
+   public static boolean pending(long key) {
+      BiomesAhead look = current;
+      return look != null && look.states.get(key) == QUEUED;
+   }
+
+   /** The 4 x 4 area step: the chunk queued (at the front) unless already queued or made. */
+   public static void soonKey(long key) {
+      BiomesAhead look = current;
+      if (look != null && policySampler != null && GpuBiomes.ready() && look.states.putIfAbsent(key, QUEUED) == null) {
+         look.noticed.increment();
+         look.soon.add(key);
+      }
+   }
    /** The biome step's climate sampler (its FreeTerraForged policy: seed, preset, surface context), from the first chunk. */
    private static volatile Object policySampler;
 
@@ -87,7 +102,8 @@ public final class BiomesAhead {
       this.generator = generator;
       this.fluidPicker = GpuNoiseFill.fluidPicker(generator);
       this.budget = budget;
-      for (int i = 0; i < THREADS; i++) {
+      int threads = com.wgaccel.ftf.FtfSlowPaths.lookAheadThreads(THREADS_WITH_TILES);
+      for (int i = 0; i < threads; i++) {
          Thread thread = new Thread(this::run, "WGA GPU biomes ahead " + i);
          thread.setDaemon(true);
          thread.setPriority(Thread.NORM_PRIORITY - 1);
@@ -113,7 +129,7 @@ public final class BiomesAhead {
       try {
          // Results wait from structure starts to the biome step; each is 8 bytes per cell (tall presets: ~40 KB).
          current = new BiomesAhead(overworld, generator, Math.max(4096, Config.GPU_LOOK_AHEAD_CHUNKS.get()));
-         WorldgenAccelerator.LOG.info("WGA GPU biomes ahead: on ({} threads; chunks noticed at their structure starts)", THREADS);
+         WorldgenAccelerator.LOG.info("WGA GPU biomes ahead: on ({} threads; chunks noticed at their structure starts)", current.threads.size());
       } catch (Throwable failure) {
          com.wgaccel.WgaChat.warnOff("WGA GPU biomes ahead off: {}", failure.toString());
       }
@@ -143,6 +159,11 @@ public final class BiomesAhead {
     */
    public static void noticed(ServerLevel level, ChunkPos pos) {
       BiomesAhead look = current;
+      if (com.wgaccel.c2me.AreaStep.on()) {
+         // The 4 x 4 area step queues the chunks itself.
+         return;
+      }
+
       if (Config.GPU_BIOMES_AHEAD_AT_REFERENCES.get()) {
          // Noticed at structure references instead (soon): only chunks that are going to be generated get there.
          return;
@@ -159,7 +180,7 @@ public final class BiomesAhead {
     */
    public static void soon(ServerLevel level, ChunkPos pos) {
       BiomesAhead look = current;
-      if (look == null || level != look.level) {
+      if (look == null || level != look.level || com.wgaccel.c2me.AreaStep.on()) {
          return;
       }
 
@@ -252,7 +273,11 @@ public final class BiomesAhead {
       List<int[]> chosenPool = new ArrayList<>();
       List<int[]> tiedPool = new ArrayList<>();
       List<int[]> decoratedPool = new ArrayList<>();
+      List<long[]> extraCCPool = new ArrayList<>();
+      List<int[]> extraChosenPool = new ArrayList<>();
+      List<int[]> extraDecoratedPool = new ArrayList<>();
       List<BiomeGpu.Job> jobs = new ArrayList<>();
+      java.util.Map<BiomeGpu.Job, int[]> providersOf = new java.util.IdentityHashMap<>();
       List<Long> keys = new ArrayList<>();
       List<int[]> heights = new ArrayList<>();
       NoiseGeneratorSettings settings = this.generator.generatorSettings().value();
@@ -308,6 +333,13 @@ public final class BiomesAhead {
                   GpuNoiseFill.tileStage(noise, true);
                   try {
                      inputs.read(pos.getMinBlockX(), pos.getMinBlockZ(), noise, sampler, p.cellSamplers());
+                     // C1: each column's provider (the chunk is the CPU's without it).
+                     int[] known = new int[16];
+                     if (p.gpu().multi() && !GpuBiomes.regions(job, known, p.table(), pos.getMinBlockX() >> 2, pos.getMinBlockZ() >> 2)) {
+                        throw new IllegalStateException("no FreeTerraForged context for the providers yet");
+                     }
+
+                     providersOf.put(job, known);
                      rivers = p.gpu().decorates() && GpuBiomes.riverFlags(job, pos.getMinBlockX() >> 2, pos.getMinBlockZ() >> 2);
                   } finally {
                      GpuNoiseFill.tileStage(noise, false);
@@ -357,7 +389,12 @@ public final class BiomesAhead {
             chosenPool.add(new int[0]);
             tiedPool.add(new int[0]);
             decoratedPool.add(new int[0]);
+            extraCCPool.add(new long[0]);
+            extraChosenPool.add(new int[0]);
+            extraDecoratedPool.add(new int[0]);
          }
+
+         int extras = p.gpu().extras();
 
          for (int j = 0; j < jobs.size(); j++) {
             if (climatePool.get(j).length < 6 * n) {
@@ -367,12 +404,19 @@ public final class BiomesAhead {
                tiedPool.set(j, new int[n]);
                decoratedPool.set(j, new int[n]);
             }
+
+            if (extraCCPool.get(j).length < extras * n) {
+               extraCCPool.set(j, new long[extras * n]);
+               extraChosenPool.set(j, new int[extras * n]);
+               extraDecoratedPool.set(j, new int[extras * n]);
+            }
          }
 
          long gpuStart = System.nanoTime();
          this.inputNanos.add(gpuStart - start);
          try {
-            p.gpu().runBatch(jobs, climatePool, projectedPool, chosenPool, tiedPool, decorating ? decoratedPool : null);
+            p.gpu().runBatch(jobs, climatePool, projectedPool, chosenPool, tiedPool, decorating ? decoratedPool : null, extras > 0 ? extraCCPool : null,
+               extras > 0 ? extraChosenPool : null, extras > 0 ? extraDecoratedPool : null);
          } catch (Throwable failure) {
             com.wgaccel.WgaChat.warnOff("WGA GPU biomes ahead off: {}", failure.toString());
             for (Long key : keys) {
@@ -397,7 +441,9 @@ public final class BiomesAhead {
             }
 
             Result result = pack(heights.get(j)[0], heights.get(j)[1], n, climatePool.get(j), projectedPool.get(j), chosenPool.get(j), tiedPool.get(j),
-               decorating ? java.util.Arrays.copyOf(decoratedPool.get(j), n) : null);
+               decorating ? java.util.Arrays.copyOf(decoratedPool.get(j), n) : null, extras, extraCCPool.get(j), extraChosenPool.get(j),
+               decorating && p.gpu().decoratesExtras() ? java.util.Arrays.copyOf(extraDecoratedPool.get(j), extras * n) : null,
+               p.gpu().multi() ? providersOf.get(jobs.get(j)) : null);
             if (result == null) {
                this.states.remove(key, QUEUED);
                this.skipped.increment();
@@ -427,7 +473,8 @@ public final class BiomesAhead {
    }
 
    /** Null when a value does not fit an int or a column's climate is not the same at every height (the chunk is then the CPU's). */
-   private static Result pack(int quartY, int quartHeight, int n, long[] climate, long[] projected, int[] chosen, int[] tied, int[] decorated) {
+   private static Result pack(int quartY, int quartHeight, int n, long[] climate, long[] projected, int[] chosen, int[] tied, int[] decorated, int extras,
+         long[] extraCC, int[] extraChosen, int[] extraDecorated, int[] provider) {
       int[] columns = new int[16 * 6];
       int[] cells = new int[2 * n];
       for (int i = 0; i < n; i++) {
@@ -453,7 +500,22 @@ public final class BiomesAhead {
          }
       }
 
-      return new Result(quartY, quartHeight, columns, cells, decorated);
+      // C1: per other provider k, its 16 columns' projected continentalness then each cell's chosen number (-1: a tie).
+      int[] extra = extras == 0 ? null : new int[extras * (16 + n)];
+      for (int k = 0; k < extras; k++) {
+         int at = k * (16 + n);
+         for (int i = 0; i < n; i++) {
+            long cc = extraCC[k * n + i];
+            if (cc != (int)cc || i >= 16 && extra[at + (i & 15)] != (int)cc) {
+               return null;
+            }
+
+            extra[at + (i & 15)] = (int)cc;
+            extra[at + 16 + i] = extraChosen[k * n + i];
+         }
+      }
+
+      return new Result(quartY, quartHeight, columns, cells, decorated, extra, extraDecorated, provider == null ? null : provider.clone());
    }
 
    String summary() {

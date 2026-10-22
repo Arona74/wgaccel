@@ -22,24 +22,9 @@ public final class FastOres {
    private static volatile boolean disabled;
    private static final LongAdder CALLS = new LongAdder();
    private static final LongAdder CHECKED = new LongAdder();
+   private static final java.util.concurrent.atomic.AtomicLong CHECK_COUNT = new java.util.concurrent.atomic.AtomicLong();
    private static final LongAdder DIFFERENT = new LongAdder();
 
-   /** The calling thread's last region chunk (the ore's box is 1 to 4 chunks). */
-   private static final class Last {
-      long calls;
-      long checks;
-      WorldGenRegion region;
-      int chunkX;
-      int chunkZ;
-      ChunkAccess chunk;
-      LevelHeightAccessor heightLevel;
-      int minY;
-      int maxY;
-      int minSection;
-      int sections;
-   }
-
-   private static final ThreadLocal<Last> LAST = ThreadLocal.withInitial(Last::new);
 
    private FastOres() {
    }
@@ -48,49 +33,83 @@ public final class FastOres {
       return !disabled && Config.FAST_ORES.get();
    }
 
-   /** WorldGenRegion.getHeight(type, x, z) with the chunk kept between calls. */
-   public static int height(WorldGenRegion region, Heightmap.Types type, int x, int z) {
-      Last last = LAST.get();
-      int chunkX = SectionPos.blockToSectionCoord(x);
-      int chunkZ = SectionPos.blockToSectionCoord(z);
-      if (last.region != region || last.chunk == null || last.chunkX != chunkX || last.chunkZ != chunkZ) {
-         last.region = region;
-         last.chunkX = chunkX;
-         last.chunkZ = chunkZ;
-         last.chunk = region.getChunk(chunkX, chunkZ);
+   /**
+    * The chunks of one OreFeature.place call (its box is at most 2 x 2 chunks), kept for that call only (the mixin's
+    * MixinExtras @Share local): no ThreadLocal per column (the Still Life profile, 2026-10-22: the ThreadLocal and the
+    * one-chunk cache's misses at chunk borders were ~6% of feature time).
+    */
+   public static final class Chunks {
+      private final WorldGenRegion region;
+      private final long[] keys = new long[4];
+      private final ChunkAccess[] chunks = new ChunkAccess[4];
+      private int size;
+
+      public Chunks(WorldGenRegion region) {
+         this.region = region;
       }
 
-      return last.chunk.getHeight(type, x & 15, z & 15) + 1;
+      public WorldGenRegion region() {
+         return this.region;
+      }
+
+      ChunkAccess get(int chunkX, int chunkZ) {
+         long key = net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ);
+         for (int i = 0; i < this.size; i++) {
+            if (this.keys[i] == key) {
+               return this.chunks[i];
+            }
+         }
+
+         ChunkAccess chunk = this.region.getChunk(chunkX, chunkZ);
+         int slot = this.size < 4 ? this.size++ : 3;
+         this.keys[slot] = key;
+         this.chunks[slot] = chunk;
+         return chunk;
+      }
    }
 
-   /** The level's build range and section range, read once per level and thread. */
-   private static Last range(LevelHeightAccessor level) {
-      Last last = LAST.get();
-      if (last.heightLevel != level) {
-         last.heightLevel = level;
-         last.minY = level.getMinBuildHeight();
-         last.maxY = level.getMaxBuildHeight();
-         last.minSection = level.getMinSection();
-         last.sections = level.getSectionsCount();
+   /** WorldGenRegion.getHeight(type, x, z) from the call's chunks. */
+   public static int height(Chunks chunks, Heightmap.Types type, int x, int z) {
+      return chunks.get(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)).getHeight(type, x & 15, z & 15) + 1;
+   }
+
+   /** A level's build range and section range (the same for every thread). */
+   private record Range(LevelHeightAccessor level, int minY, int maxY, int minSection, int sections) {
+   }
+
+   /**
+    * The last level's range, shared by all threads (no ThreadLocal: 0.9.90's vanilla profile had ThreadLocal look-ups
+    * at ~10% of the CPU, nearly all FastOres asking for its per-thread record per ore block). Immutable, so a race only
+    * makes it twice; the compared answers (every ~256th) still check it against the game.
+    */
+   private static volatile Range lastRange;
+
+   private static Range range(LevelHeightAccessor level) {
+      // Keyed by the region's level (one per dimension, the same heights), not the region (one per chunk step).
+      LevelHeightAccessor key = level instanceof WorldGenRegion region ? region.getLevel() : level;
+      Range range = lastRange;
+      if (range == null || range.level() != key) {
+         range = new Range(key, level.getMinBuildHeight(), level.getMaxBuildHeight(), level.getMinSection(), level.getSectionsCount());
+         lastRange = range;
       }
 
-      return last;
+      return range;
    }
 
    /** LevelHeightAccessor.isOutsideBuildHeight(y). */
    public static boolean outside(LevelHeightAccessor level, int y) {
-      Last last = range(level);
-      return y < last.minY || y >= last.maxY;
+      Range range = range(level);
+      return y < range.minY() || y >= range.maxY();
    }
 
    /** LevelHeightAccessor.getSectionIndex(y). */
    public static int sectionIndex(LevelHeightAccessor level, int y) {
-      return SectionPos.blockToSectionCoord(y) - range(level).minSection;
+      return SectionPos.blockToSectionCoord(y) - range(level).minSection();
    }
 
    /** LevelHeightAccessor.getSectionsCount(). */
    public static int sectionsCount(LevelHeightAccessor level) {
-      return range(level).sections;
+      return range(level).sections();
    }
 
    /**
@@ -98,8 +117,8 @@ public final class FastOres {
     * counter on every call (1.2 billion per run) made ores 5-10x slower (run of 0.9.67).
     */
    public static boolean sample() {
-      Last last = LAST.get();
-      if ((++last.calls & 255) != 0) {
+      // About 1 in 256 at random (ThreadLocalRandom lives on the thread itself: no ThreadLocal look-up).
+      if (java.util.concurrent.ThreadLocalRandom.current().nextInt(256) != 0) {
          return false;
       }
 
@@ -118,7 +137,7 @@ public final class FastOres {
          }
       }
 
-      if ((++LAST.get().checks & 8191) == 0) {
+      if (CHECK_COUNT.incrementAndGet() % 65536 == 0) {
          WorldgenAccelerator.LOG.info(summary());
       }
 

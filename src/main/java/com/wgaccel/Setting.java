@@ -15,6 +15,19 @@ public final class Setting<T> implements Supplier<T>, BooleanSupplier, IntSuppli
    private final ModConfigSpec.ConfigValue<T> raw;
    private final T client;
    private final T server;
+   /** The section switch this setting belongs to (cpuImprovements, gpuImprovements) and its value while that is off. */
+   private Setting<Boolean> master;
+   private T off;
+   /** The value as last read, and the config generation it was read in (hot paths read settings per block or ore). */
+   private volatile T cached;
+   private volatile int cachedGeneration = -1;
+   /** Raised when the config is loaded or reloaded (WorldgenAccelerator's ModConfigEvent listener): every cache is stale. */
+   private static volatile int generation;
+
+   /** The config was loaded or changed: settings read it again (0.9.88's profile: config reads 2.9% of the CPU). */
+   public static void invalidate() {
+      generation++;
+   }
 
    private Setting(ModConfigSpec.ConfigValue<T> raw, T client, T server) {
       this.raw = raw;
@@ -34,6 +47,22 @@ public final class Setting<T> implements Supplier<T>, BooleanSupplier, IntSuppli
 
    @Override
    public T get() {
+      int now = generation;
+      if (this.cachedGeneration == now) {
+         return this.cached;
+      }
+
+      T value = this.read();
+      this.cached = value;
+      this.cachedGeneration = now;
+      return value;
+   }
+
+   private T read() {
+      if (this.master != null && !this.master.get()) {
+         return this.off;
+      }
+
       Config.Preset preset = Config.preset();
       if (preset == Config.Preset.CUSTOM || this.client == null) {
          return this.raw.get();
@@ -55,6 +84,13 @@ public final class Setting<T> implements Supplier<T>, BooleanSupplier, IntSuppli
    @Override
    public double getAsDouble() {
       return ((Number)this.get()).doubleValue();
+   }
+
+   /** In a section with an on/off switch: while the switch is off, this setting reads as off. */
+   Setting<T> under(Setting<Boolean> master, T off) {
+      this.master = master;
+      this.off = off;
+      return this;
    }
 
    /** The value written in the config file. */

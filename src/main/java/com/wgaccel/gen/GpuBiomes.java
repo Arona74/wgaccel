@@ -37,7 +37,8 @@ import net.neoforged.fml.loading.FMLPaths;
 public final class GpuBiomes {
    private static final int CHECK_EVERY = 64;
 
-   record Program(RandomState random, List<Object> cellSamplers, BiomeTable table, BiomeGpu gpu) {
+   /** vanilla: C2, the table is vanilla's MultiNoiseBiomeSource's (its getNoiseBiome is hooked, not FreeTerraForged's). */
+   record Program(RandomState random, List<Object> cellSamplers, BiomeTable table, BiomeGpu gpu, boolean vanilla) {
    }
 
    private static final class Current {
@@ -48,6 +49,15 @@ public final class GpuBiomes {
       int[] chosen = new int[0];
       int[] tied = new int[0];
       int[] decorated = new int[0];
+      /** C1: per other provider k, cell i at k * n + i: its projected continentalness and chosen number (-1: a tie). */
+      long[] extraCC = new long[0];
+      int[] extraChosen = new int[0];
+      /** C1: per other provider k, cell i at k * n + i: its decorated number (-1: the CPU's), when hasExtraDecorated. */
+      int[] extraDecorated = new int[0];
+      boolean hasExtraDecorated;
+      int extras;
+      /** C1 (multi): per quart column the provider the GPU searched and decorated (0 the first; -1 unknown: the CPU's). */
+      final int[] provider = new int[16];
       boolean hasDecorated;
       Climate.TargetPoint[] made = new Climate.TargetPoint[0];
       ChunkAccess chunk;
@@ -74,6 +84,10 @@ public final class GpuBiomes {
    private static final LongAdder SAMPLES = new LongAdder();
    private static final LongAdder SEARCHES = new LongAdder();
    private static final LongAdder TIES = new LongAdder();
+   /** C1: searches of other providers' tables from the GPU (part of SEARCHES). */
+   private static final LongAdder EXTRA_SEARCHES = new LongAdder();
+   /** C1 (multi): searches whose domain was not the column's predicted provider (the CPU's). */
+   private static final LongAdder MISPREDICTED = new LongAdder();
    private static final LongAdder CPU_SAMPLES = new LongAdder();
    private static final LongAdder CPU_SEARCHES = new LongAdder();
    private static final LongAdder DIFFERENT = new LongAdder();
@@ -102,11 +116,16 @@ public final class GpuBiomes {
          return;
       }
 
+      if (!overworld.getChunkSource().getGenerator().getClass().getName().contains("TerraForged") && !Config.GPU_BIOMES_VANILLA.get() && !com.wgaccel.c2me.AreaStep.on()) {
+         WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (not FreeTerraForged's; gpuBiomesVanilla is false)");
+         return;
+      }
+
       com.wgaccel.gpu.GpuPrepare.Task task = com.wgaccel.gpu.GpuPrepare.begin("biomes");
       Thread thread = new Thread(() -> {
          long start = System.nanoTime();
          try {
-            program = build(overworld.getChunkSource().randomState());
+            program = build(overworld.getChunkSource().randomState(), overworld.getChunkSource().getGenerator().getBiomeSource());
             task.done();
             WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU biomes: ready in %.0f ms; the climate and table search of chunks now come from the GPU (every 64th checked)",
                (System.nanoTime() - start) / 1.0e6));
@@ -115,7 +134,7 @@ public final class GpuBiomes {
             com.wgaccel.WgaChat.warnOff("WGA GPU biomes off: {} has no GPU version", unsupported.kind);
          } catch (Throwable failure) {
             task.failed(failure.toString());
-            com.wgaccel.WgaChat.warnOff("WGA GPU biomes off: {}", failure.toString());
+            com.wgaccel.WgaChat.warnOff("WGA GPU biomes off: {}", com.wgaccel.gpu.GpuSelfTest.describe(failure));
          }
       }, "WGA GPU biomes compile");
       thread.setDaemon(true);
@@ -123,14 +142,36 @@ public final class GpuBiomes {
       BiomesAhead.start(overworld);
    }
 
-   private static Program build(RandomState random) throws Exception {
+   private static Program build(RandomState random, net.minecraft.world.level.biome.BiomeSource biomeSource) throws Exception {
       NoiseRouter router = random.router();
+      // C2: without FreeTerraForged's plan (no getWorldgenPlan), vanilla's MultiNoiseBiomeSource's own parameter list.
+      boolean vanilla = false;
+      try {
+         random.sampler().getClass().getMethod("getWorldgenPlan");
+      } catch (NoSuchMethodException noPlan) {
+         if (!(biomeSource instanceof net.minecraft.world.level.biome.MultiNoiseBiomeSource)) {
+            throw new IllegalStateException("the overworld's biome source is " + biomeSource.getClass().getSimpleName() + ", not a MultiNoiseBiomeSource");
+         }
+
+         vanilla = true;
+      }
+
       DensityCodegen codegen = new DensityCodegen();
+      // C2: column-only climate noises and splines remembered per thread (BiomeKernels: a thread per 8 cells of a column).
+      codegen.hoistColumns(true);
       String[] climate = {codegen.function(DensityCodegen.unwrap(router.temperature())), codegen.function(DensityCodegen.unwrap(router.vegetation())),
          codegen.function(DensityCodegen.unwrap(router.continents())), codegen.function(DensityCodegen.unwrap(router.erosion())),
          codegen.function(DensityCodegen.unwrap(router.depth())), codegen.function(DensityCodegen.unwrap(router.ridges()))};
-      BiomeTable table = BiomeTable.of(random);
-      String source = codegen.source(List.of()) + BiomeKernels.source(climate);
+      BiomeTable table;
+      if (vanilla) {
+         java.lang.reflect.Method parameters = net.minecraft.world.level.biome.MultiNoiseBiomeSource.class.getDeclaredMethod("parameters");
+         parameters.setAccessible(true);
+         table = BiomeTable.ofParameters("vanilla", (Climate.ParameterList<?>)parameters.invoke(biomeSource));
+      } else {
+         table = BiomeTable.of(random);
+      }
+
+      String source = codegen.source(List.of()) + BiomeKernels.source(climate, codegen.cacheSlots());
       try {
          Files.writeString(FMLPaths.GAMEDIR.get().resolve("logs").resolve("wgaccel-biomes.cu"), source, StandardCharsets.UTF_8);
       } catch (Exception ignored) {
@@ -144,7 +185,7 @@ public final class GpuBiomes {
       }
 
       com.wgaccel.gpu.BiomeDecoration decoration = null;
-      if (Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.OFF) {
+      if (!vanilla && Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.OFF) {
          try {
             decoration = com.wgaccel.gpu.BiomeDecoration.of(random, table);
             WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
@@ -161,9 +202,46 @@ public final class GpuBiomes {
             table.sourceMin, table.sourceMax, table.targetMax)
          : new BiomeGpu(GpuService.context(), source, codegen.noiseData(), codegen.permutations(), decoration.bounds, decoration.first, decoration.count, decoration.biome,
             table.sourceMin, table.sourceMax, table.targetMax, decoration.longs, decoration.ints, decoration.density, decoration.presetCoverage, decoration.flags);
+      if (table.extraRoots.length > 0 && table.spatialResolver != null) {
+         // C1: one provider per cell: each quart column's provider worked out on the CPU (regions), the GPU searching and
+         // decorating only that one (its tree root, projection and Layout).
+         int providers = 1 + table.extraRoots.length;
+         int[] roots = new int[providers];
+         long[] maxima = new long[providers];
+         maxima[0] = table.targetMax;
+         for (int k = 1; k < providers; k++) {
+            roots[k] = table.extraRoots[k - 1];
+            maxima[k] = table.extraTargetMax[k - 1];
+         }
+
+         if (decoration != null) {
+            long[][] longs = new long[providers][];
+            int[][] ints = new int[providers][];
+            float[] density = new float[providers];
+            int[][] flags = new int[providers][];
+            longs[0] = decoration.longs;
+            ints[0] = decoration.ints;
+            density[0] = decoration.density;
+            flags[0] = decoration.flags;
+            for (int k = 1; k < providers; k++) {
+               longs[k] = decoration.extraLongs[k - 1];
+               ints[k] = decoration.extraInts[k - 1];
+               density[k] = decoration.extraDensity[k - 1];
+               flags[k] = decoration.extraFlags[k - 1];
+            }
+
+            gpu.setProviders(roots, maxima, longs, ints, density, flags);
+         } else {
+            gpu.setProviders(roots, maxima, null, null, null, null);
+         }
+
+         WorldgenAccelerator.LOG.info("WGA GPU biomes: {} other providers, each cell searched in its own column's ({}), deferred placeholder number {}", table.extraIds.size(),
+            table.extraIds, table.deferredNumber);
+      }
+
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU biomes: %d CellSampler inputs, a table of %,d points (%d biomes), ocean projection to %d",
          codegen.cellSamplers().size(), table.values.size(), table.biomeCount, table.targetMax));
-      return new Program(random, List.copyOf(codegen.cellSamplers()), table, gpu);
+      return new Program(random, List.copyOf(codegen.cellSamplers()), table, gpu, vanilla);
    }
 
    /** At doCreateBiomes' start: this chunk's cells may come from the GPU. */
@@ -216,6 +294,31 @@ public final class GpuBiomes {
       }
 
       java.util.Arrays.fill(current.made, 0, n, null);
+      if (result.provider() != null) {
+         System.arraycopy(result.provider(), 0, current.provider, 0, 16);
+      }
+
+      int[] extra = result.extra();
+      current.extras = extra == null ? 0 : extra.length / (16 + n);
+      if (current.extraCC.length < current.extras * n) {
+         current.extraCC = new long[current.extras * n];
+         current.extraChosen = new int[current.extras * n];
+         current.extraDecorated = new int[current.extras * n];
+      }
+
+      current.hasExtraDecorated = result.extraDecorated() != null;
+      if (current.hasExtraDecorated) {
+         System.arraycopy(result.extraDecorated(), 0, current.extraDecorated, 0, current.extras * n);
+      }
+
+      for (int k = 0; k < current.extras; k++) {
+         int at = k * (16 + n);
+         for (int i = 0; i < n; i++) {
+            current.extraCC[k * n + i] = extra[at + (i & 15)];
+            current.extraChosen[k * n + i] = extra[at + 16 + i];
+         }
+      }
+
       current.hasDecorated = result.decorated() != null;
       if (current.hasDecorated) {
          System.arraycopy(result.decorated(), 0, current.decorated, 0, n);
@@ -362,9 +465,56 @@ public final class GpuBiomes {
          return null;
       }
 
+      if (p.gpu.multi()) {
+         // C1: the GPU searched this cell's column's predicted provider; its answer only for that domain.
+         int k = p.table.providerId.equals(domain) ? 0 : p.table.extraIds.indexOf(domain) + 1;
+         if (k < 0 || (k == 0) != p.table.providerId.equals(domain) || k != current.provider[cell & 15]) {
+            MISPREDICTED.increment();
+            return null;
+         }
+
+         int chosen = current.chosen[cell];
+         if (chosen == p.table.deferredNumber) {
+            CPU_SEARCHES.increment();
+            return null;
+         }
+
+         SEARCHES.increment();
+         if (k > 0) {
+            EXTRA_SEARCHES.increment();
+         }
+
+         @SuppressWarnings("unchecked")
+         Holder<Biome> found = (Holder<Biome>)p.table.biomes.get(chosen);
+         long[] t = current.projected;
+         int at = cell * 6;
+         Climate.TargetPoint projected = new Climate.TargetPoint(t[at], t[at + 1], t[at + 2], t[at + 3], t[at + 4], t[at + 5]);
+         return newResult(domain, found, k == 0 ? p.table.candidates : p.table.extraCandidates.get(k - 1), projected);
+      }
+
       if (!p.table.providerId.equals(domain)) {
-         CPU_SEARCHES.increment();
-         return null;
+         // C1: another provider's cell: its own search from the GPU (a tie or TerraBlender's deferred placeholder: the CPU's).
+         int k = p.table.extraIds.indexOf(domain);
+         int n = 16 * current.quartHeight;
+         int chosen = k < 0 || k >= current.extras ? -1 : current.extraChosen[k * n + cell];
+         if (chosen < 0 || chosen == p.table.deferredNumber) {
+            if (k >= 0 && k < current.extras && chosen < 0) {
+               TIES.increment();
+            } else {
+               CPU_SEARCHES.increment();
+            }
+
+            return null;
+         }
+
+         SEARCHES.increment();
+         EXTRA_SEARCHES.increment();
+         @SuppressWarnings("unchecked")
+         Holder<Biome> other = (Holder<Biome>)p.table.biomes.get(chosen);
+         long[] c = current.climate;
+         int at = cell * 6;
+         Climate.TargetPoint projected = new Climate.TargetPoint(c[at], c[at + 1], current.extraCC[k * n + cell], c[at + 3], c[at + 4], c[at + 5]);
+         return newResult(domain, other, p.table.extraCandidates.get(k), projected);
       }
 
       SEARCHES.increment();
@@ -376,6 +526,34 @@ public final class GpuBiomes {
       return newResult(domain, biome, p.table.candidates, projected);
    }
 
+   /** C2: in a vanilla world, whether the GPU biomes are in use (the hook on MultiNoiseBiomeSource.getNoiseBiome asks). */
+   public static boolean vanillaReady() {
+      Program p = program;
+      return p != null && !failed && p.vanilla();
+   }
+
+   /** C2: vanilla's search (ParameterList.findValue) from the GPU for the cell being chosen, or null (the CPU searches). */
+   @SuppressWarnings("unchecked")
+   public static Holder<Biome> searchVanilla(Climate.TargetPoint target) {
+      Current current = CURRENT.get();
+      int cell = current.selecting;
+      if (cell < 0 || current.made[cell] != target || current.check) {
+         if (current.active && current.ran && !current.check) {
+            CPU_SEARCHES.increment();
+         }
+
+         return null;
+      }
+
+      if (current.tied[cell] != 0) {
+         TIES.increment();
+         return null;
+      }
+
+      SEARCHES.increment();
+      return (Holder<Biome>)current.program.table.biomes.get(current.chosen[cell]);
+   }
+
    @SuppressWarnings({"unchecked", "rawtypes"})
    private static Object newResult(ResourceLocation domain, Holder<Biome> biome, Climate.ParameterList<?> candidates, Climate.TargetPoint projected) {
       return new etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult(domain, biome, biome, false, (Climate.ParameterList)candidates,
@@ -383,10 +561,40 @@ public final class GpuBiomes {
    }
 
    /** CHECK chunks: the CPU's search against the GPU's. */
-   public static void compareSearch(Climate.TargetPoint target, Climate.TargetPoint projected, Holder<Biome> biome, boolean usedFallback) {
+   public static void compareSearch(ResourceLocation domain, Climate.TargetPoint target, Climate.TargetPoint projected, Holder<Biome> biome, boolean usedFallback) {
       Current current = CURRENT.get();
       int cell = current.selecting;
+      // C1: only the GPU table's own domain (another provider's cell is searched on the CPU, the GPU's answer never used);
+      // vanilla (one table) passes null.
       if (cell < 0 || current.made[cell] != target || usedFallback) {
+         return;
+      }
+
+      BiomeTable table = current.program.table;
+      if (domain != null && current.program.gpu.multi()) {
+         int k = table.providerId.equals(domain) ? 0 : table.extraIds.indexOf(domain) + 1;
+         if (k < 0 || (k == 0) != table.providerId.equals(domain) || k != current.provider[cell & 15]) {
+            return;
+         }
+      } else if (domain != null && !table.providerId.equals(domain)) {
+         // C1: another provider's cell against the GPU's search of its table.
+         int k = table.extraIds.indexOf(domain);
+         int n = 16 * current.quartHeight;
+         if (k < 0 || k >= current.extras) {
+            return;
+         }
+
+         int chosen = current.extraChosen[k * n + cell];
+         long[] c = current.climate;
+         int at = cell * 6;
+         if (chosen < 0) {
+            TIES.increment();
+         } else if (c[at] != projected.temperature() || c[at + 1] != projected.humidity() || current.extraCC[k * n + cell] != projected.continentalness()
+            || c[at + 3] != projected.erosion() || c[at + 4] != projected.depth() || c[at + 5] != projected.weirdness() || !table.biomes.get(chosen).equals(biome)) {
+            difference(current, String.format(Locale.ROOT, "search in %s of %s: game %s %s, gpu %s (cc %d)", domain, target,
+               biome.unwrapKey().map(Object::toString).orElse("?"), projected, table.biomes.get(chosen), current.extraCC[k * n + cell]));
+         }
+
          return;
       }
 
@@ -430,10 +638,26 @@ public final class GpuBiomes {
          }
 
          java.util.Arrays.fill(current.made, 0, n, null);
+         if (p.gpu.multi() && !regions(job, current.provider, p.table, current.quartX, current.quartZ)) {
+            // C1: no provider per column yet (no FreeTerraForged context seen): this chunk is the CPU's.
+            current.active = false;
+            return false;
+         }
+
          current.hasDecorated = p.gpu.decorates() && riverFlags(job, current.quartX, current.quartZ);
+         current.extras = p.gpu.extras();
+         if (current.extraCC.length < current.extras * n) {
+            current.extraCC = new long[current.extras * n];
+            current.extraChosen = new int[current.extras * n];
+            current.extraDecorated = new int[current.extras * n];
+         }
+
+         current.hasExtraDecorated = current.hasDecorated && p.gpu.decoratesExtras();
+
          long gpuStart = System.nanoTime();
          p.gpu.runBatch(List.of(job), List.of(current.climate), List.of(current.projected), List.of(current.chosen), List.of(current.tied),
-            current.hasDecorated ? List.of(current.decorated) : null);
+            current.hasDecorated ? List.of(current.decorated) : null, current.extras > 0 ? List.of(current.extraCC) : null,
+            current.extras > 0 ? List.of(current.extraChosen) : null, current.hasExtraDecorated ? List.of(current.extraDecorated) : null);
          long end = System.nanoTime();
          INPUT_NANOS.add(gpuStart - start);
          GPU_NANOS.add(end - gpuStart);
@@ -494,6 +718,45 @@ public final class GpuBiomes {
       return true;
    }
 
+   /**
+    * C1: the chunk's 16 quart columns' providers as FreeTerraForged chooses them (the region cell of the column by
+    * WorldLookup.applyBiomeRegion, then the plan's spatial resolver), into the job (0 for an unknown domain) and known
+    * (-1 there: the CPU's); false without a context yet.
+    */
+   static boolean regions(BiomeGpu.Job job, int[] known, BiomeTable table, int quartX, int quartZ) {
+      Object context = decorContext;
+      if (context == null || table.spatialResolver == null) {
+         return false;
+      }
+
+      etcodehome.freeterraforged.world.worldgen.cell.heightmap.WorldLookup lookup = ((etcodehome.freeterraforged.world.worldgen.GeneratorContext)context).lookup;
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SpatialResolver resolver =
+         (etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SpatialResolver)table.spatialResolver;
+      etcodehome.freeterraforged.concurrent.Resource<etcodehome.freeterraforged.world.worldgen.cell.Cell> resource = etcodehome.freeterraforged.world.worldgen.cell.Cell.getResource();
+      try {
+         for (int qx = 0; qx < 4; qx++) {
+            for (int qz = 0; qz < 4; qz++) {
+               etcodehome.freeterraforged.world.worldgen.cell.Cell cell = resource.get().reset();
+               lookup.applyBiomeRegion(cell, (quartX + qx) << 2, (quartZ + qz) << 2);
+               Object domain = resolver.resolve(cell.biomeRegionX, cell.biomeRegionZ).domain();
+               int k = table.providerId.equals(domain) ? 0 : table.extraIds.indexOf(domain) + 1;
+               known[qx * 4 + qz] = k > 0 || table.providerId.equals(domain) ? k : -1;
+               job.provider[qx * 4 + qz] = Math.max(0, known[qx * 4 + qz]);
+            }
+         }
+      } catch (IllegalStateException closed) {
+         if (decorContext == context) {
+            decorContext = null;
+         }
+
+         throw closed;
+      } finally {
+         resource.close();
+      }
+
+      return true;
+   }
+
    private static void riverCells(etcodehome.freeterraforged.world.worldgen.cell.heightmap.WorldLookup lookup,
       etcodehome.freeterraforged.concurrent.Resource<etcodehome.freeterraforged.world.worldgen.cell.Cell> resource, BiomeGpu.Job job, int quartX, int quartZ) {
       for (int qx = 0; qx < 4; qx++) {
@@ -516,27 +779,101 @@ public final class GpuBiomes {
       return cell;
    }
 
-   /** The GPU's decorated biome for the cell being chosen (gpuBiomeDecoration ON, not a checked chunk), or null: the CPU decorates. */
+   /**
+    * The GPU's decoration by FreeTerraForged's stage for the cell being chosen, as a biome number; -1 when the CPU
+    * decorates (a tie, a region's stage choice, a selection the GPU did not make: another biome, a fallback, an unknown
+    * domain); -2 when there is no GPU decoration for this cell at all.
+    */
+   private static int decoratedNumber(Current current, Climate.TargetPoint target, etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult selection) {
+      int cell = decorationCell(target);
+      if (cell < 0) {
+         return -2;
+      }
+
+      BiomeTable table = current.program.table;
+      int n = 16 * current.quartHeight;
+      int value;
+      int searched;
+      if (current.program.gpu.multi()) {
+         Object domain = selection.domain();
+         int k = table.providerId.equals(domain) ? 0 : table.extraIds.indexOf(domain) + 1;
+         if (k < 0 || (k == 0) != table.providerId.equals(domain) || k != current.provider[cell & 15]) {
+            return -1;
+         }
+
+         value = current.decorated[cell];
+         searched = current.tied[cell] != 0 ? -1 : current.chosen[cell];
+      } else if (table.providerId.equals(selection.domain())) {
+         value = current.decorated[cell];
+         searched = current.tied[cell] != 0 ? -1 : current.chosen[cell];
+      } else {
+         int k = table.extraIds.indexOf(selection.domain());
+         if (k < 0 || k >= current.extras || !current.hasExtraDecorated) {
+            return -2;
+         }
+
+         value = current.extraDecorated[k * n + cell];
+         searched = current.extraChosen[k * n + cell];
+      }
+
+      // The GPU decorated its own search's result: only for a selection that is exactly that (C1: a deferred placeholder's
+      // fallback search, or a CPU search, may differ).
+      if (selection.usedFallback() || searched < 0 || !table.biomes.get(searched).equals(selection.biome()) || selection.biome() != selection.baseBiome()) {
+         return -1;
+      }
+
+      return value;
+   }
+
+   /**
+    * The cell's final biome with the GPU's decoration (gpuBiomeDecoration ON, not a checked chunk): FreeTerraForged's
+    * stage from the GPU, then the plan's later stages (C1: Lithostitched's injectors) on the CPU as SelectionDecoration.apply
+    * runs them; null: the CPU decorates.
+    */
    @SuppressWarnings("unchecked")
-   public static Holder<Biome> decorated(Climate.TargetPoint target) {
+   public static Holder<Biome> decorated(etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SelectionDecoration decoration,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult selection,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SpatialResult spatial, Climate.TargetPoint target, int quartX, int quartY, int quartZ,
+      Climate.Sampler sampler, etcodehome.freeterraforged.world.worldgen.GeneratorContext context) {
       if (Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.ON) {
          return null;
       }
 
       Current current = CURRENT.get();
-      int cell = decorationCell(target);
-      if (cell < 0 || current.check) {
+      if (current.check) {
          return null;
       }
 
-      int value = current.decorated[cell];
+      int value = decoratedNumber(current, target, selection);
       if (value < 0) {
-         DECOR_CPU.increment();
+         if (value == -1) {
+            DECOR_CPU.increment();
+         }
+
          return null;
       }
 
       DECOR_GPU.increment();
-      return (Holder<Biome>)current.program.table.biomes.get(value);
+      return later(decoration, selection, (Holder<Biome>)current.program.table.biomes.get(value), spatial, target, quartX, quartY, quartZ, sampler, context);
+   }
+
+   /** The plan's stages after the first (FreeTerraForged's), from the first's result, as SelectionDecoration.apply runs them. */
+   private static Holder<Biome> later(etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SelectionDecoration decoration,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult selection, Holder<Biome> first,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SpatialResult spatial, Climate.TargetPoint target, int quartX, int quartY, int quartZ,
+      Climate.Sampler sampler, etcodehome.freeterraforged.world.worldgen.GeneratorContext context) {
+      List<etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SelectionDecoratorStage> stages = decoration.stages();
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult now = selection.withBiome(first);
+      for (int i = 1; i < stages.size(); i++) {
+         Holder<Biome> next = stages.get(i).decorator().apply(now, spatial, target, quartX, quartY, quartZ, sampler, context);
+         if (next == null) {
+            throw new IllegalStateException("Selection decorator " + stages.get(i).id() + " returned null");
+         }
+
+         now = now.withBiome(next);
+      }
+
+      return now.biome();
    }
 
    /** Whether the CPU's decoration of this cell is to be compared with the GPU's (CHECK, or a checked chunk). */
@@ -545,27 +882,31 @@ public final class GpuBiomes {
       return mode == Config.GpuFilterMode.CHECK || mode == Config.GpuFilterMode.ON && CURRENT.get().check;
    }
 
-   public static void compareDecoration(Climate.TargetPoint target, Holder<Biome> game) {
+   public static void compareDecoration(etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SelectionDecoration decoration,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.ProviderResult selection,
+      etcodehome.freeterraforged.world.worldgen.runtime.WorldgenPlans.SpatialResult spatial, Climate.TargetPoint target, int quartX, int quartY, int quartZ,
+      Climate.Sampler sampler, etcodehome.freeterraforged.world.worldgen.GeneratorContext context, Holder<Biome> game) {
       Current current = CURRENT.get();
-      int cell = decorationCell(target);
-      if (cell < 0) {
+      int value = decoratedNumber(current, target, selection);
+      if (value == -2) {
          return;
       }
 
-      int value = current.decorated[cell];
       if (value < 0) {
          DECOR_CPU.increment();
          return;
       }
 
-      Object gpu = current.program.table.biomes.get(value);
+      @SuppressWarnings("unchecked")
+      Holder<Biome> gpu = later(decoration, selection, (Holder<Biome>)current.program.table.biomes.get(value), spatial, target, quartX, quartY, quartZ, sampler,
+         context);
       if (gpu == game || gpu.equals(game)) {
          DECOR_SAME.increment();
       } else {
          DECOR_DIFFERENT.increment();
          if (DECOR_LOGGED.incrementAndGet() <= 12) {
-            WorldgenAccelerator.LOG.warn("WGA GPU biome decoration check: chunk {} cell {} target {}: game {}, gpu {} (searched {})", current.chunk == null ? "?"
-               : current.chunk.getPos(), cell, target, game.unwrapKey().map(Object::toString).orElse("?"), gpu, current.program.table.biomes.get(current.chosen[cell]));
+            WorldgenAccelerator.LOG.warn("WGA GPU biome decoration check: chunk {} target {} in {}: game {}, gpu {} (searched {})", current.chunk == null ? "?"
+               : current.chunk.getPos(), target, selection.domain(), game.unwrapKey().map(Object::toString).orElse("?"), gpu, selection.biome());
          }
       }
    }
@@ -612,8 +953,8 @@ public final class GpuBiomes {
       }
 
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
-         "WGA GPU biomes: %,d chunks (%,d checked: %s); from the GPU %,d samples and %,d searches; on the CPU %,d samples, %,d searches, %,d ties; per chunk: CPU inputs %.2f ms, GPU %.2f ms",
-         done, CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER", SAMPLES.sum(), SEARCHES.sum(), CPU_SAMPLES.sum(), CPU_SEARCHES.sum(),
+         "WGA GPU biomes: %,d chunks (%,d checked: %s); from the GPU %,d samples and %,d searches (%,d in other providers' tables, %,d other than the column's predicted provider); on the CPU %,d samples, %,d searches, %,d ties; per chunk: CPU inputs %.2f ms, GPU %.2f ms",
+         done, CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER", SAMPLES.sum(), SEARCHES.sum(), EXTRA_SEARCHES.sum(), MISPREDICTED.sum(), CPU_SAMPLES.sum(), CPU_SEARCHES.sum(),
          TIES.sum(), INPUT_NANOS.sum() / 1.0e6 / Math.max(1, done), GPU_NANOS.sum() / 1.0e6 / Math.max(1, done))
          + (Config.GPU_BIOME_DECORATION.get() == Config.GpuFilterMode.OFF ? "" : String.format(Locale.ROOT,
             "; decoration: %,d from the GPU, %,d left to the CPU, compared %,d %s", DECOR_GPU.sum(), DECOR_CPU.sum(), DECOR_SAME.sum() + DECOR_DIFFERENT.sum(),

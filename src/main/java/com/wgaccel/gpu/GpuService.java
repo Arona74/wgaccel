@@ -43,7 +43,7 @@ public final class GpuService {
             own.useStream(GpuStreams.create());
          }
       } catch (Throwable failure) {
-         WorldgenAccelerator.LOG.warn("WGA GPU: a further GPU thread did not start: {}", failure.toString());
+         WorldgenAccelerator.LOG.warn("WGA GPU: a further GPU thread did not start: {}", GpuSelfTest.describe(failure));
          return;
       }
 
@@ -145,7 +145,7 @@ public final class GpuService {
          WorldgenAccelerator.LOG.info("WGA GPU: world generation kernels compiled and loaded in {} ms", (System.nanoTime() - start) / 1_000_000);
          this.gpu.complete(made);
       } catch (Throwable failure) {
-         WorldgenAccelerator.LOG.warn("WGA GPU unavailable for world generation: {}", failure.toString());
+         WorldgenAccelerator.LOG.warn("WGA GPU unavailable for world generation: {}", GpuSelfTest.describe(failure));
          this.gpu.completeExceptionally(failure);
          return;
       }

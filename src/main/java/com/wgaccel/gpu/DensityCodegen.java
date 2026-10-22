@@ -67,6 +67,14 @@ public final class DensityCodegen {
    private final Map<Object, Boolean> columnOnly = new IdentityHashMap<>();
    private final Map<Object, Integer> columnIndex = new IdentityHashMap<>();
    private final List<String> columnFunctions = new ArrayList<>();
+   /** C2: subtrees of corner functions that depend only on x and z, cached per corner column by densityCorners. */
+   private final Map<Object, Integer> cornerColumnIndex = new IdentityHashMap<>();
+   /** C2: the COLUMN function of each corner column subtree, by its dc_cc index (cornerColumns works them out). */
+   private final Map<Integer, String> cornerColumnNames = new java.util.TreeMap<>();
+   /** C2: column-only subtrees remembered inside a corner thread's column functions (by mode), slots after dc_cc's. */
+   private final Map<Mode, Map<Object, Integer>> columnMemo = new java.util.EnumMap<>(Mode.class);
+   /** Cache slot pairs taken by dc_cc and dc_cm together. */
+   private int cacheSlots;
    private boolean hoistColumns;
    private final Map<Mode, Map<Object, String>> splinesByMode = new java.util.EnumMap<>(Mode.class);
    private final Map<Object, int[]> noises = new IdentityHashMap<>();
@@ -139,7 +147,7 @@ public final class DensityCodegen {
 
    /** As {@link #chunkSource(String, List)}, plus a kernel densityBlocksStep for the BLOCK_STEP root when given. */
    public String chunkSource(String blockFunction, String stepFunction, List<String> cornerFunctions) {
-      StringBuilder kernels = new StringBuilder(cornersKernel(cornerFunctions));
+      StringBuilder kernels = new StringBuilder(cornersKernel(cornerFunctions, this.cacheSlots, this.cornerColumnCases()));
       kernels.append(blocksKernel("densityBlocks", blockFunction));
       if (stepFunction != null) {
          kernels.append(blocksKernel("densityBlocksStep", stepFunction));
@@ -154,7 +162,7 @@ public final class DensityCodegen {
     * function is the final density in BLOCK_STEP mode; the vein and barrier functions as for {@link #statesKernel}.
     */
    public String fillSource(String stepFunction, List<String> cornerFunctions, String toggle, String ridged, String gap, String barrier) {
-      return VanillaKernels.NOISE + VanillaKernels.DENSITY + this.code + cornersKernel(cornerFunctions) + columnsKernel(this.columnFunctions)
+      return VanillaKernels.NOISE + VanillaKernels.DENSITY + this.code + cornersKernel(cornerFunctions, this.cacheSlots, this.cornerColumnCases()) + columnsKernel(this.columnFunctions)
          + statesHelpers(toggle, ridged, gap, barrier) + fillKernel(stepFunction);
    }
 
@@ -190,7 +198,12 @@ public final class DensityCodegen {
       return kernel.toString();
    }
 
-   private static String cornersKernel(List<String> cornerFunctions) {
+   /**
+    * densityCorners: every interpolator's value at every cell corner of the chunk. C2: a thread takes one corner column
+    * and up to 8 corner heights, for every interpolator in turn, so the hoisted column subtrees (dc_ccN) are worked out
+    * once per thread instead of once per corner; the corners and their order in memory are as before.
+    */
+   private static String cornersKernel(List<String> cornerFunctions, int cornerColumns, String cornerColumnCases) {
       StringBuilder kernels = new StringBuilder("""
          __device__ __forceinline__ void dc_chunk(DCtx& c, const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY,
                                                   int cellCountY, int cellWidth, int cellHeight, const double* corners, int cornerStride) {
@@ -209,6 +222,40 @@ public final class DensityCodegen {
              c.corners = corners;
              c.cornerStride = cornerStride;
              c.columns = 0;
+             c.ccache = 0;
+             c.ccflag = 0;
+         }
+         // C2: every corner column subtree (dc_ccN) at every corner column (25 for cells 4 wide) for both signs of y, worked
+         // out once per chunk into the corners buffer after the interpolators' corners: slot k, sign s, column (i, kz) at
+         // (k * 2 + s) * nx * nx + i * nx + kz (C2ME OpenCL's prefill passes, our own code). Its threads remember the
+         // subtrees' own repeated parts (dc_cmN).
+         extern "C" __global__ void cornerColumns(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
+                                                  int cellWidth, int cellHeight, int interpolators, int slots, double* corners) {
+             int nx = 16 / cellWidth + 1;
+             int cols = nx * nx;
+             int t = blockIdx.x * blockDim.x + threadIdx.x;
+             if (t >= slots * 2 * cols) return;
+             int k = t / (2 * cols);
+             int r = t - k * 2 * cols;
+             int sign = r / cols;
+             int col = r - sign * cols;
+             double ccache[CC_SLOTS];
+             unsigned char ccflag[CC_SLOTS];
+             for (int s = 0; s < CC_SLOTS; s++) {
+                 ccflag[s] = 0;
+             }
+             DCtx c;
+             dc_chunk(c, cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, 0, 0);
+             c.ccache = ccache;
+             c.ccflag = ccflag;
+             c.x = chunkX + (col / nx) * cellWidth;
+             c.z = chunkZ + (col % nx) * cellWidth;
+             c.y = sign ? -1 : 0;
+             double v = 0.0;
+             switch (k) {
+         CC_CASES
+             }
+             corners[(long long)interpolators * nx * nx * (cellCountY + 1) + t] = v;
          }
          extern "C" __global__ void densityCorners(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                    int cellWidth, int cellHeight, int interpolators, double* corners) {
@@ -225,12 +272,15 @@ public final class DensityCodegen {
              int j = rest - kz * ny;
              DCtx c;
              dc_chunk(c, cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, 0, 0);
+             CC_PREFILLED
              c.x = chunkX + i * cellWidth;
              c.y = (j + cellMinY) * cellHeight;
              c.z = chunkZ + kz * cellWidth;
              double v;
              switch (k) {
-         """);
+         """.replace("CC_SLOTS", Integer.toString(Math.max(1, cornerColumns * 2)))
+            .replace("CC_CASES", cornerColumnCases)
+            .replace("CC_PREFILLED", cornerColumnCases.isEmpty() ? "" : "c.ccolumns = corners + (long long)interpolators * per;"));
       for (int i = 0; i < cornerFunctions.size(); i++) {
          kernels.append("    case ").append(i).append(": v = ").append(cornerFunctions.get(i)).append("(c); break;\n");
       }
@@ -843,6 +893,66 @@ public final class DensityCodegen {
          return "dc_column(c, " + index + ")";
       }
 
+      if (this.hoistColumns && this.mode == Mode.CORNER && !kind(actual).equals("CellSampler") && this.columnOnly(actual)) {
+         // C2: in a corner function, a subtree that depends only on x and z (vanilla's height splines over its flat-cached
+         // climate noises: 0.9.79's corners took 20 ms per chunk) is worked out at most twice per thread of densityCorners
+         // (y >= 0 and y < 0, as for the block columns) and read from its cache: the same function on the same x, z and
+         // sign of y, so the same value.
+         Integer index = this.cornerColumnIndex.get(actual);
+         if (index == null) {
+            Mode saved = this.mode;
+            String name = this.function(actual, Mode.COLUMN);
+            this.mode = saved;
+            index = this.cacheSlots++;
+            this.cornerColumnIndex.put(actual, index);
+            this.cornerColumnNames.put(index, name);
+            this.code.append("__device__ __noinline__ double dc_cc").append(index).append("(const DCtx& c) {\n")
+               .append("    if (c.ccolumns) {\n")
+               .append("        int nx = 16 / c.cellWidth + 1;\n")
+               .append("        return c.ccolumns[(").append(index)
+               .append(" * 2 + (c.y < 0 ? 1 : 0)) * nx * nx + ((c.x - c.chunkX) / c.cellWidth) * nx + (c.z - c.chunkZ) / c.cellWidth];\n")
+               .append("    }\n")
+               .append("    int slot = ").append(index).append(" * 2 + (c.y < 0 ? 1 : 0);\n")
+               .append("    if (!c.ccflag[slot]) {\n")
+               .append("        DCtx d = c;\n")
+               .append("        d.y = c.y < 0 ? -1 : 0;\n")
+               .append("        c.ccache[slot] = ").append(name).append("(d);\n")
+               .append("        c.ccflag[slot] = 1;\n")
+               .append("    }\n")
+               .append("    return c.ccache[slot];\n")
+               .append("}\n");
+         }
+
+         return "dc_cc" + index + "(c)";
+      }
+
+      if (this.hoistColumns && (this.mode == Mode.COLUMN || this.mode == Mode.POINT) && memoKind(actual) && this.columnOnly(actual)) {
+         // C2: inside a corner thread's column functions (c.ccache set), a column-only noise, spline or cache marker is
+         // worked out once per sign of y and remembered: vanilla's nested height splines ask their coordinate noises at
+         // every spline node (up to ~650 NormalNoise calls for the offset spline), where vanilla's CPU caches them per
+         // point. The same function at the same x, z and sign of y; elsewhere (no cache) it is worked out as before.
+         Map<Object, Integer> memo = this.columnMemo.computeIfAbsent(this.mode, m -> new IdentityHashMap<>());
+         Integer index = memo.get(actual);
+         if (index == null) {
+            Mode saved = this.mode;
+            String name = this.function(actual, saved);
+            this.mode = saved;
+            index = this.cacheSlots++;
+            memo.put(actual, index);
+            this.code.append("__device__ __noinline__ double dc_cm").append(index).append("(const DCtx& c) {\n")
+               .append("    if (c.ccache == 0) return ").append(name).append("(c);\n")
+               .append("    int slot = ").append(index).append(" * 2 + (c.y < 0 ? 1 : 0);\n")
+               .append("    if (!c.ccflag[slot]) {\n")
+               .append("        c.ccache[slot] = ").append(name).append("(c);\n")
+               .append("        c.ccflag[slot] = 1;\n")
+               .append("    }\n")
+               .append("    return c.ccache[slot];\n")
+               .append("}\n");
+         }
+
+         return "dc_cm" + index + "(c)";
+      }
+
       return this.function(actual, this.mode) + "(c)";
    }
 
@@ -856,12 +966,40 @@ public final class DensityCodegen {
       this.hoistColumns = hoist;
    }
 
+   /** C2: cornerColumns' switch: each corner column subtree's COLUMN function by its slot ("" without any). */
+   private String cornerColumnCases() {
+      StringBuilder cases = new StringBuilder();
+      for (Map.Entry<Integer, String> entry : this.cornerColumnNames.entrySet()) {
+         cases.append("    case ").append(entry.getKey()).append(": v = ").append(entry.getValue()).append("(c); break;\n");
+      }
+
+      return cases.toString();
+   }
+
+   /** C2: whether the corner kernels use prefilled corner columns (FillGpu then runs cornerColumns before densityCorners). */
+   public boolean hasCornerColumns() {
+      return !this.cornerColumnNames.isEmpty();
+   }
+
+   /** C2: cache slot pairs the dc_cc / dc_cm functions use (a kernel's per-thread cache holds twice as many). */
+   public int cacheSlots() {
+      return this.cacheSlots;
+   }
+
    /** The hoisted subtrees' COLUMN functions, in column index order. */
    public List<String> columnFunctions() {
       return this.columnFunctions;
    }
 
    /** Whether a node's value depends only on the block's x and z (and the sign of y, for a noise with y scale 0). */
+   /** C2: kinds worth remembering in a corner thread (their work is far more than a cache look-up). */
+   private static boolean memoKind(Object node) {
+      return switch (kind(node)) {
+         case "ShiftedNoise", "Noise", "ShiftA", "ShiftB", "Spline", "Marker", "WeirdScaledSampler", "EndIslandDensityFunction" -> true;
+         default -> false;
+      };
+   }
+
    private boolean columnOnly(Object node) throws ReflectiveOperationException {
       Object actual = unwrap(node);
       Boolean known = this.columnOnly.get(actual);
@@ -871,8 +1009,14 @@ public final class DensityCodegen {
 
       Map<String, Object> f = fields(actual);
       boolean result = switch (kind(actual)) {
-         case "Constant", "CellSampler", "BlendAlpha", "BlendOffset" -> true;
+         case "Constant", "CellSampler", "BlendAlpha", "BlendOffset", "EndIslandDensityFunction" -> true;
+         // More Density Functions' block x and z read no y.
+         case "XPos", "ZPos" -> actual.getClass().getName().startsWith("com.klinbee.moredensityfunctions.");
          case "Noise" -> (Double)f.get("yScale") == 0.0;
+         // C2 (vanilla): ShiftA and ShiftB read no y; a ShiftedNoise with no y scale reads y only through its shifts.
+         case "ShiftA", "ShiftB" -> true;
+         case "ShiftedNoise" -> (Double)f.get("yScale") == 0.0 && this.columnOnly(f.get("shiftX")) && this.columnOnly(f.get("shiftY"))
+            && this.columnOnly(f.get("shiftZ"));
          case "Ap2" -> this.columnOnly(f.get("argument1")) && this.columnOnly(f.get("argument2"));
          case "MulOrAdd", "Mapped", "Clamp", "BlendDensity" -> this.columnOnly(f.get("input"));
          case "RangeChoice" -> this.columnOnly(f.get("input")) && this.columnOnly(f.get("whenInRange")) && this.columnOnly(f.get("whenOutOfRange"));
@@ -985,6 +1129,15 @@ public final class DensityCodegen {
          case "RangeChoice" -> line("double v = %s;", this.call(f.get("input")))
             + line("return v >= %s && v < %s ? %s : %s;", lit((Double)f.get("minInclusive")), lit((Double)f.get("maxExclusive")),
                this.call(f.get("whenInRange")), this.call(f.get("whenOutOfRange")));
+         // More Density Functions' (MIT) moredfs:x / y / z: the block's coordinate as a double (blockX() etc. turned to
+         // double, as its compute does). Still Life's temperature uses moredfs:z.
+         case "XPos", "YPos", "ZPos" -> {
+            if (!node.getClass().getName().startsWith("com.klinbee.moredensityfunctions.")) {
+               throw new Unsupported(kind);
+            }
+
+            yield line("return (double)c.%s;", kind.substring(0, 1).toLowerCase(java.util.Locale.ROOT));
+         }
          case "YClampedGradient" -> {
             double fromY = (Integer)f.get("fromY");
             double toY = (Integer)f.get("toY");
@@ -998,6 +1151,28 @@ public final class DensityCodegen {
                : line("return %s, (double)c.x * %s, (double)c.y * %s, (double)c.z * %s);", noise, lit((Double)f.get("xzScale")), lit((Double)f.get("yScale")),
                   lit((Double)f.get("xzScale")));
          }
+         // C2 (vanilla): DensityFunctions.ShiftNoise.compute(x, y, z) = offsetNoise.getValue(x * 0.25, y * 0.25, z * 0.25) * 4.0,
+         // ShiftA at (x, 0, z), ShiftB at (z, x, 0), Shift at (x, y, z).
+         case "ShiftA", "ShiftB", "Shift" -> {
+            String noise = this.noise(f.get("offsetNoise"));
+            String at = switch (kind) {
+               case "ShiftA" -> "(double)c.x * 0.25, 0.0 * 0.25, (double)c.z * 0.25";
+               case "ShiftB" -> "(double)c.z * 0.25, (double)c.x * 0.25, 0.0 * 0.25";
+               default -> "(double)c.x * 0.25, (double)c.y * 0.25, (double)c.z * 0.25";
+            };
+            yield noise == null ? line("return 0.0 * 4.0;") : line("return %s, %s) * 4.0;", noise, at);
+         }
+         // C2: DensityFunctions.ShiftedNoise.compute.
+         case "ShiftedNoise" -> {
+            String noise = this.noise(f.get("noise"));
+            String xz = lit((Double)f.get("xzScale"));
+            yield line("double d0 = (double)c.x * %s + %s;", xz, this.call(f.get("shiftX")))
+               + line("double d1 = (double)c.y * %s + %s;", lit((Double)f.get("yScale")), this.call(f.get("shiftY")))
+               + line("double d2 = (double)c.z * %s + %s;", xz, this.call(f.get("shiftZ")))
+               + (noise == null ? line("return 0.0;") : line("return %s, d0, d1, d2);", noise));
+         }
+         // C2: BlendedNoise (vanilla's base_3d_noise), VanillaKernels.mc_blended.
+         case "BlendedNoise" -> line("return %s;", this.blended(node));
          case "WeirdScaledSampler" -> {
             String mapper = ((Enum<?>)f.get("rarityValueMapper")).name();
             String rarity = switch (mapper) {
@@ -1024,6 +1199,8 @@ public final class DensityCodegen {
 
             yield line("return dc_cell(c, %d);", index);
          }
+         // C2.5: the End's islands (DensityFunctions.EndIslandDensityFunction.compute), block x and z divided by 8.
+         case "EndIslandDensityFunction" -> line("return ((double)%s(c.np + %d, c.x / 8, c.z / 8) - 8.0) / 128.0;", this.endIslands(), this.endIslandNoise(f.get("islandNoise")));
          case "ClampToNearestUnit" -> {
             int resolution = (Integer)f.get("resolution");
             yield line("double v = %s;", this.call(f.get("function"))) + line("double scaled = v * (double)%d;", resolution)
@@ -1117,6 +1294,142 @@ public final class DensityCodegen {
       }
 
       return "mc_normal(c.nd + " + offsets[0] + ", c.np + " + offsets[1];
+   }
+
+   private final Map<Object, int[]> blendedNoises = new IdentityHashMap<>();
+
+   /**
+    * C2: a BlendedNoise packed once (VanillaKernels.mc_blended's layout: its five numbers, then minLimitNoise,
+    * maxLimitNoise and mainNoise as PerlinNoises); the call for a block.
+    */
+   private String blended(Object blended) throws ReflectiveOperationException {
+      int[] offsets = this.blendedNoises.get(blended);
+      if (offsets == null) {
+         offsets = new int[] {this.noiseData.size(), this.permutations.size()};
+         for (String name : new String[] {"xzMultiplier", "yMultiplier", "xzFactor", "yFactor", "smearScaleMultiplier"}) {
+            this.noiseData.add((Double)field(blended, name));
+         }
+
+         this.pack(field(blended, "minLimitNoise"));
+         this.pack(field(blended, "maxLimitNoise"));
+         this.pack(field(blended, "mainNoise"));
+         this.blendedNoises.put(blended, offsets);
+      }
+
+      return "mc_blended(c.nd + " + offsets[0] + ", c.np + " + offsets[1] + ", c.x, c.y, c.z)";
+   }
+
+   private final Map<Object, Integer> islandNoises = new IdentityHashMap<>();
+   private boolean endIslandsEmitted;
+
+   /** C2.5: an End island SimplexNoise's permutation (256 values; getValue(x, y) reads p[i & 255] only), packed once. */
+   private int endIslandNoise(Object simplex) throws ReflectiveOperationException {
+      Integer offset = this.islandNoises.get(simplex);
+      if (offset == null) {
+         offset = this.permutations.size();
+         int[] p = (int[])field(simplex, "p");
+         for (int k = 0; k < 256; k++) {
+            this.permutations.add(p[k]);
+         }
+
+         this.islandNoises.put(simplex, offset);
+      }
+
+      return offset;
+   }
+
+   /**
+    * C2.5: the End's island height (DensityFunctions.EndIslandDensityFunction.getHeightValue and vanilla
+    * SimplexNoise.getValue(x, y)), emitted once, operation for operation: floats as Java's (Mth.sqrt as a double square
+    * root cast to float, Java's Math.max for floats), the int square wrapping as Java's.
+    */
+   private String endIslands() throws ReflectiveOperationException {
+      if (!this.endIslandsEmitted) {
+         this.endIslandsEmitted = true;
+         Class<?> simplex = Class.forName("net.minecraft.world.level.levelgen.synth.SimplexNoise");
+         java.lang.reflect.Field f2 = simplex.getDeclaredField("F2");
+         java.lang.reflect.Field g2 = simplex.getDeclaredField("G2");
+         f2.setAccessible(true);
+         g2.setAccessible(true);
+         this.code.append("""
+               __device__ const int EI_GRADIENT[48] = {1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1, 0, 1, 0, 1, -1, 0, 1, 1, 0, -1, -1, 0, -1, 0, 1, 1, 0, -1, 1, 0, 1, -1, 0, -1, -1,
+                                                       1, 1, 0, 0, -1, 1, -1, 1, 0, 0, -1, -1};
+               __device__ __forceinline__ double ei_corner(int g, double x, double y, double z, double r) {
+                   double d1 = r - x * x - y * y - z * z;
+                   if (d1 < 0.0) return 0.0;
+                   d1 *= d1;
+                   return d1 * d1 * ((double)EI_GRADIENT[g * 3] * x + (double)EI_GRADIENT[g * 3 + 1] * y + (double)EI_GRADIENT[g * 3 + 2] * z);
+               }
+               __device__ double ei_simplex(const int* p, double x, double y) {
+                   double d0 = (x + y) * %1$s;
+                   int i = mc_floor(x + d0);
+                   int j = mc_floor(y + d0);
+                   double d1 = (double)(i + j) * %2$s;
+                   double d2 = (double)i - d1;
+                   double d3 = (double)j - d1;
+                   double d4 = x - d2;
+                   double d5 = y - d3;
+                   int k;
+                   int l;
+                   if (d4 > d5) {
+                       k = 1;
+                       l = 0;
+                   } else {
+                       k = 0;
+                       l = 1;
+                   }
+                   double d6 = d4 - (double)k + %2$s;
+                   double d7 = d5 - (double)l + %2$s;
+                   double d8 = d4 - 1.0 + 2.0 * %2$s;
+                   double d9 = d5 - 1.0 + 2.0 * %2$s;
+                   int i1 = i & 0xFF;
+                   int j1 = j & 0xFF;
+                   int k1 = p[(i1 + p[j1 & 0xFF]) & 0xFF] %% 12;
+                   int l1 = p[(i1 + k + p[(j1 + l) & 0xFF]) & 0xFF] %% 12;
+                   int i2 = p[(i1 + 1 + p[(j1 + 1) & 0xFF]) & 0xFF] %% 12;
+                   double d10 = ei_corner(k1, d4, d5, 0.0, 0.5);
+                   double d11 = ei_corner(l1, d6, d7, 0.0, 0.5);
+                   double d12 = ei_corner(i2, d8, d9, 0.0, 0.5);
+                   return 70.0 * (d10 + d11 + d12);
+               }
+               __device__ __forceinline__ float ei_clamp(float v) {
+                   // Mth.clamp: value < min ? min : Math.min(value, max) (a NaN stays NaN, as far out where the int square wraps).
+                   return v < -100.0f ? -100.0f : (v != v ? v : (v <= 80.0f ? v : 80.0f));
+               }
+               __device__ float mc_end_height(const int* p, int x, int z) {
+                   int i = x / 2;
+                   int j = z / 2;
+                   int k = x %% 2;
+                   int l = z %% 2;
+                   int sq = (int)((unsigned int)x * (unsigned int)x + (unsigned int)z * (unsigned int)z);
+                   float f = 100.0f - (float)sqrt((double)(float)sq) * 8.0f;
+                   f = ei_clamp(f);
+                   for (int i1 = -12; i1 <= 12; i1++) {
+                       for (int j1 = -12; j1 <= 12; j1++) {
+                           long long k1 = (long long)(i + i1);
+                           long long l1 = (long long)(j + j1);
+                           if (k1 * k1 + l1 * l1 > 4096LL && ei_simplex(p, (double)k1, (double)l1) < (double)-0.9f) {
+                               float f1 = fmodf(fabsf((float)k1) * 3439.0f + fabsf((float)l1) * 147.0f, 13.0f) + 9.0f;
+                               float f2 = (float)(k - i1 * 2);
+                               float f3 = (float)(l - j1 * 2);
+                               float f4 = 100.0f - (float)sqrt((double)(f2 * f2 + f3 * f3)) * f1;
+                               f4 = ei_clamp(f4);
+                               if (f != f) {
+                                   // Java's Math.max keeps a NaN first argument.
+                               } else if (f == 0.0f && f4 == 0.0f && signbit(f)) {
+                                   f = f4;
+                               } else {
+                                   f = f >= f4 ? f : f4;
+                               }
+                           }
+                       }
+                   }
+                   return f;
+               }
+               """.formatted(lit((Double)f2.get(null)), lit((Double)g2.get(null))));
+      }
+
+      return "mc_end_height";
    }
 
    private void pack(Object perlin) throws ReflectiveOperationException {

@@ -72,7 +72,6 @@ public final class Reporter {
       tick();
       summary().forEach(WorldgenAccelerator.LOG::info);
       stopScheduler();
-      RunProfile.stop();
    }
 
    /** Starts a new run; the summary of the one before it is logged and returned. */
@@ -148,7 +147,7 @@ public final class Reporter {
       double usedGb = (runtime.totalMemory() - runtime.freeMemory()) / 1.073741824e9;
       double maxGb = runtime.maxMemory() / 1.073741824e9;
       log(String.format(Locale.ROOT, "WGA %.0fs: %,d new chunks (%.1f/s), %,d full | CPU %.1f of %d threads | GC pauses %,d ms (%d) | heap %.1f / %.1f GB",
-         seconds, newChunks, newChunks / seconds, window.calls(Stage.FULL), cpu / 1.0e9 / seconds, THREADS, gc[0], gc[1], usedGb, maxGb) + RunProfile.window());
+         seconds, newChunks, newChunks / seconds, window.calls(Stage.FULL), cpu / 1.0e9 / seconds, THREADS, gc[0], gc[1], usedGb, maxGb) + com.wgaccel.c2me.AreaStep.summary());
       log("WGA work per chunk (ms, share): " + work(window, null) + layers(window));
       log("WGA waits per chunk (ms): " + waits(window, null) + " | saving: " + saving(window, null) + ftf(window, null));
       log("WGA features (average per call, share of feature time): " + Named.top(windowNamed.get(Named.Category.FEATURE), 6, false)
@@ -261,7 +260,7 @@ public final class Reporter {
          runLabel, chunks, span, rate, runBestRate));
       if (runActiveSeconds > 0.0) {
          lines.add(String.format(Locale.ROOT, "WGA   while generating: CPU %.1f of %d threads, GC pauses %,d ms (%d)",
-            runCpu / 1.0e9 / runActiveSeconds, THREADS, runGcPauseMillis, runGcPauses) + RunProfile.run());
+            runCpu / 1.0e9 / runActiveSeconds, THREADS, runGcPauseMillis, runGcPauses));
       }
 
       lines.add("WGA   work per chunk (ms average / slowest, share): " + work(run, Stats::runMax) + layers(run));

@@ -36,6 +36,8 @@ public final class FillToGround {
    /** Blocks kept above structure pieces and junctions (their terrain adaptation reaches about 12). */
    private static final int STRUCTURE_MARGIN = 16;
    private static final boolean FTF = ModList.get().isLoaded("freeterraforged");
+   /** FreeTerraForged without the tile system FtfGround reads (1.0.0013 and later). */
+   private static volatile boolean ftfGroundGone;
    public static final LongAdder CUT = new LongAdder();
    public static final LongAdder TOUCHED = new LongAdder();
    private static final AtomicInteger WARNINGS = new AtomicInteger();
@@ -65,7 +67,26 @@ public final class FillToGround {
       }
 
       long start = System.nanoTime();
-      int ground = FtfGround.highest(random, chunk.getPos());
+      int ground;
+      try {
+         if (com.wgaccel.ftf.FtfCellsGround.available(chunk)) {
+            // FreeTerraForged 1.0.0013 and later: the chunk's own cells (no tiles).
+            ground = com.wgaccel.ftf.FtfCellsGround.highest(random, chunk);
+         } else if (ftfGroundGone) {
+            return full;
+         } else {
+            ground = FtfGround.highest(random, chunk.getPos());
+         }
+      } catch (ReflectiveOperationException failed) {
+         return full;
+      } catch (LinkageError gone) {
+         // FreeTerraForged 1.0.0013 removed its tile system (TileCache, Tile), which FtfGround reads: no ground to cut
+         // at, the full height is filled (a crash before 0.10.19).
+         ftfGroundGone = true;
+         com.wgaccel.WgaChat.warnOff("WGA fillToGround off for FreeTerraForged: its tiles are not there in this version ({})", gone.toString());
+         return full;
+      }
+
       Stats.record(Stage.FTF_GROUND, System.nanoTime() - start);
       if (ground == FtfGround.UNKNOWN) {
          return full;

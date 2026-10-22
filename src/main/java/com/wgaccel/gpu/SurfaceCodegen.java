@@ -89,7 +89,7 @@ public final class SurfaceCodegen {
                                                  const int* strataCount, int strataMax, const double* nd, const int* np, int* out) {
              int t = blockIdx.x * blockDim.x + threadIdx.x;
              if (t >= count) return;
-             const int* r = calls + t * 12;
+             const int* r = calls + t * 13;
              SCtx c;
              c.x = r[0];
              c.y = r[1];
@@ -101,6 +101,7 @@ public final class SurfaceCodegen {
              c.biome = r[7];
              c.cold = r[8];
              c.steep = r[9];
+             c.slope = r[12];
              c.minSurface = r[10];
              int column = r[11];
              c.secondary = secondary[column];
@@ -131,7 +132,7 @@ public final class SurfaceCodegen {
    public static String loopSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
          int frozenOcean, int deepFrozenOcean) {
       String depthCode = surfaceDepthCode.replace("(nd + ", "(ind + ").replace(", np + ", ", inp + ");
-      return VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
+      return SurfaceInputs.steep(VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
          extern "C" __global__ void surfaceLoop(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* heights,
                                                 const int* minBase, const float* strataDepth, const int* strataState, const int* strataCount, int strataMax,
                                                 const int* grid, const int* g, long long zoomSeed, const float* temperature, const int* modifier,
@@ -169,6 +170,14 @@ public final class SurfaceCodegen {
              c.depth = depth;
              c.secondary = secondary;
              c.steep = steep;
+             {
+                 // C1: Lithostitched's SlopeCondition: the highest minus the lowest of the four neighbours' heights.
+                 int sn = heights[lx * 16 + max(lz - 1, 0)];
+                 int ss = heights[lx * 16 + min(lz + 1, 15)];
+                 int se = heights[min(lx + 1, 15) * 16 + lz];
+                 int sw = heights[max(lx - 1, 0) * 16 + lz];
+                 c.slope = max(max(sn, ss), max(se, sw)) - min(min(sn, ss), min(se, sw));
+             }
              c.minSurface = minBase[t] + depth - 8;
              c.strataDepth = strataDepth + t * strataMax;
              c.strataState = strataState + t * strataMax;
@@ -210,7 +219,7 @@ public final class SurfaceCodegen {
                  }
              }
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, root);
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, root));
    }
 
    /**
@@ -291,7 +300,7 @@ public final class SurfaceCodegen {
    public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
          int frozenOcean, int deepFrozenOcean) {
       String depthCode = surfaceDepthCode.replace("(nd + ", "(ind + ").replace(", np + ", ", inp + ");
-      return VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
+      return SurfaceInputs.steep(VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
          extern "C" __global__ void surfacePrepass(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* grid,
                                                    const int* g, long long zoomSeed, const double* ind, const int* inp, int* above, int* below,
                                                    int* water, int* columnDepth, double* columnSecondary, int* special) {
@@ -379,6 +388,14 @@ public final class SurfaceCodegen {
              c.depth = columnDepth[t];
              c.secondary = columnSecondary[t];
              c.steep = steep;
+             {
+                 // C1: Lithostitched's SlopeCondition: the highest minus the lowest of the four neighbours' heights.
+                 int sn = heights[lx * 16 + max(lz - 1, 0)];
+                 int ss = heights[lx * 16 + min(lz + 1, 15)];
+                 int se = heights[min(lx + 1, 15) * 16 + lz];
+                 int sw = heights[max(lx - 1, 0) * 16 + lz];
+                 c.slope = max(max(sn, ss), max(se, sw)) - min(min(sn, ss), min(se, sw));
+             }
              c.minSurface = minBase[t] + c.depth - 8;
              c.strataDepth = strataDepth + t * strataMax;
              c.strataState = strataState + t * strataMax;
@@ -408,7 +425,7 @@ public final class SurfaceCodegen {
              }
              prepassWarpScan(kinds, minY, height, top, t, lane, above, below, water);
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean);
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean));
    }
 
    /** The number of block states the rules can give (indexes fit a short while under 32,767). */
@@ -428,6 +445,7 @@ public final class SurfaceCodegen {
           int biome;
           int cold;
           int steep;
+          int slope;
           int minSurface;
           double secondary;
           const float* strataDepth;
@@ -484,14 +502,27 @@ public final class SurfaceCodegen {
       this.kinds.merge(kind, 1, Integer::sum);
       String body;
       switch (kind) {
-         case "SurfaceRules$SequenceRuleSource" -> {
+         // C1: Lithostitched's TransientMergedRule (Terralith and other mods' rules merged in): its one rule, or its rules as a
+         // vanilla sequence (TransientMergedRule.apply), the same as a SequenceRuleSource of them.
+         case "SurfaceRules$SequenceRuleSource", "TransientMergedRule" -> {
             StringBuilder text = new StringBuilder();
-            for (Object child : (List<?>)field(node, "sequence")) {
+            for (Object child : (List<?>)field(node, kind.equals("TransientMergedRule") ? "rules" : "sequence")) {
                text.append(line("{ int v = %s(c); if (v >= 0) return v; }", this.rule(child)));
             }
 
             body = text + line("return -1;");
          }
+         // C1: Lithostitched's ReferenceRule (rules from its registry, the first that answers) and Regions Unexplored's
+         // ConfigRuleSource (its config, read once: the branch the world uses).
+         case "ReferenceRule" -> {
+            StringBuilder text = new StringBuilder();
+            for (Object holder : (Iterable<?>)field(node, "rules")) {
+               text.append(line("{ int v = %s(c); if (v >= 0) return v; }", this.rule(((net.minecraft.core.Holder<?>)holder).value())));
+            }
+
+            body = text + line("return -1;");
+         }
+         case "ConfigRuleSource" -> body = line("return %s(c);", this.rule(configBranch(node)));
          case "SurfaceRules$TestRuleSource" -> body = line("if (!%s(c)) return -1;", this.condition(field(node, "ifTrue"))) + line("return %s(c);", this.rule(field(node, "thenRun")));
          case "SurfaceRules$BlockRuleSource" -> body = line("return %d;", this.state((BlockState)field(node, "resultState")));
          case "SurfaceRules$Bandlands" -> body = this.bandlands();
@@ -530,6 +561,17 @@ public final class SurfaceCodegen {
       this.kinds.merge(kind, 1, Integer::sum);
       String body = switch (kind) {
          case "SurfaceRules$BiomeConditionSource" -> this.biomeCondition(node);
+         // C1: Lithostitched's conditions: all of / any of (in order, stopping as Java's loops do), a biome HolderSet.
+         case "AllOfCondition", "AnyOfCondition" -> {
+            boolean all = kind.equals("AllOfCondition");
+            StringBuilder text = new StringBuilder();
+            for (Object child : (List<?>)field(node, "conditions")) {
+               text.append(line(all ? "if (!%s(c)) return false;" : "if (%s(c)) return true;", this.condition(child)));
+            }
+
+            yield text + line(all ? "return true;" : "return false;");
+         }
+         case "BiomeCondition" -> this.biomeMask(holderKeys(field(node, "biomes")));
          case "SurfaceRules$NoiseThresholdConditionSource" -> {
             @SuppressWarnings("unchecked")
             NormalNoise noise = this.random.getOrCreateNoise((ResourceKey<NormalNoise.NoiseParameters>)field(node, "noise"));
@@ -560,6 +602,11 @@ public final class SurfaceCodegen {
                + line("int k = %s;", range == 0 ? "0" : "sf_d2i(sf_map(c.secondary, -1.0, 1.0, 0.0, (double)" + range + "))")
                + line("return i <= 1 + %d + j + k;", (Integer)field(node, "offset"));
          }
+         // C1: Lithostitched's SlopeCondition (InclusiveRange.isValueInRange of the neighbours' height difference).
+         case "SlopeCondition" -> {
+            Object range = field(node, "threshold");
+            yield line("return c.slope >= %d && c.slope <= %d;", (Integer)field(range, "minInclusive"), (Integer)field(range, "maxInclusive"));
+         }
          case "SurfaceRules$NotConditionSource" -> line("return !%s(c);", this.condition(field(node, "target")));
          case "SurfaceRules$Hole" -> line("return c.depth <= 0;");
          case "SurfaceRules$Steep" -> line("return c.steep != 0;");
@@ -574,7 +621,29 @@ public final class SurfaceCodegen {
    }
 
    private String biomeCondition(Object node) throws ReflectiveOperationException {
-      List<?> keys = (List<?>)field(node, "biomes");
+      return this.biomeMask((List<?>)field(node, "biomes"));
+   }
+
+   /** C1: a HolderSet's biome keys (Lithostitched's BiomeCondition tests HolderSet.contains of the block's biome). */
+   private static List<Object> holderKeys(Object set) {
+      List<Object> keys = new java.util.ArrayList<>();
+      for (Object holder : (Iterable<?>)set) {
+         ((net.minecraft.core.Holder<?>)holder).unwrapKey().ifPresent(keys::add);
+      }
+
+      return keys;
+   }
+
+   /** C1: Regions Unexplored's ConfigRuleSource: its on_enabled or on_disabled rule, as RUConfigHandler.COMMON.test(key) says. */
+   private static Object configBranch(Object node) throws ReflectiveOperationException {
+      Class<?> handler = Class.forName("net.regions_unexplored.config.RUConfigHandler", true, node.getClass().getClassLoader());
+      Object common = handler.getField("COMMON").get(null);
+      java.lang.reflect.Method test = common.getClass().getMethod("test", String.class);
+      boolean enabled = (Boolean)test.invoke(common, (String)field(node, "key"));
+      return field(node, enabled ? "onEnabled" : "onDisabled");
+   }
+
+   private String biomeMask(List<?> keys) {
       int words = Math.max(1, (this.biomes.size() + 31) / 32);
       int[] mask = new int[words];
       for (Object key : keys) {

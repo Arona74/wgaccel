@@ -18,15 +18,10 @@ public final class WgaCommands {
 
    public static void register(RegisterCommandsEvent event) {
       event.getDispatcher().register(Commands.literal("wgaccel")
-         .executes(context -> {
-            int shown = show(context, Reporter.summary());
-            com.wgaccel.stats.RunProfile.dump();
-            return shown;
-         })
+         .executes(context -> show(context, Reporter.summary()))
          .then(Commands.literal("reset").executes(context -> {
             List<String> before = Reporter.reset(Reporter.timeLabel());
             before.forEach(WorldgenAccelerator.LOG::info);
-            com.wgaccel.stats.RunProfile.start();
             context.getSource().sendSuccess(() -> Component.literal("Worldgen Accelerator: new measurement started (the last one is in the log)"), false);
             return 1;
          })));

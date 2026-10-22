@@ -163,6 +163,10 @@ public final class FillGpu {
    private final long columnsBatch;
    private final long statesBatch;
    private final int columnCount;
+   /** C2: cache slots of the prefilled corner columns (0: the source has none), their kernels. */
+   private final int cornerSlots;
+   private long cornerColumns;
+   private long cornerColumnsBatch;
    private final long noiseData;
    private final long permutations;
    private final int interpolators;
@@ -200,6 +204,22 @@ public final class FillGpu {
     * blockIdx.x and threadIdx.x only and return early past their own chunk's work.
     */
    public static String batchSource(String source) {
+      // C2: cornerColumns (prefilled corner column subtrees) only in sources that have it.
+      boolean prefill = source.contains("extern \"C\" __global__ void cornerColumns(");
+      if (prefill) {
+         source = source.replace("extern \"C\" __global__ void cornerColumns(", "__device__ __forceinline__ void cornerColumns_body(") + """
+            extern "C" __global__ void cornerColumns(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY,
+                                                     int cellCountY, int cellWidth, int cellHeight, int interpolators, int slots, double* corners) {
+                cornerColumns_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, interpolators, slots, corners);
+            }
+            extern "C" __global__ void cornerColumnsBatch(const long long* jobs, const double* nd, const int* np, int interpolators, int slots) {
+                const long long* p = jobs + blockIdx.y * %1$d;
+                cornerColumns_body((const double*)p[0], nd, np, (int)p[10], (int)p[11], (int)p[12], (int)p[13], (int)p[14], (int)p[15], interpolators,
+                                   slots, (double*)p[1]);
+            }
+            """.formatted(PARAMS);
+      }
+
       String[] names = {"densityCorners", "fillColumns", "fillStates"};
       for (String name : names) {
          String entry = "extern \"C\" __global__ void " + name + "(";
@@ -248,6 +268,7 @@ public final class FillGpu {
    public FillGpu(long context, String source, double[] noise, int[] perm, int interpolators, int columnCount) {
       this.context = context;
       this.columnCount = columnCount;
+      this.cornerSlots = cornerSlots(source);
       GpuSelfTest.check(cuCtxSetCurrent(context), "cuCtxSetCurrent");
       this.module = Gpu.loadModule(batchSource(source), "noise_fill.cu");
       try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -264,6 +285,12 @@ public final class FillGpu {
          this.columnsBatch = function.get(0);
          GpuSelfTest.check(cuModuleGetFunction(function, this.module, stack.ASCII("fillStatesBatch")), "cuModuleGetFunction fillStatesBatch");
          this.statesBatch = function.get(0);
+         if (this.cornerSlots > 0) {
+            GpuSelfTest.check(cuModuleGetFunction(function, this.module, stack.ASCII("cornerColumns")), "cuModuleGetFunction cornerColumns");
+            this.cornerColumns = function.get(0);
+            GpuSelfTest.check(cuModuleGetFunction(function, this.module, stack.ASCII("cornerColumnsBatch")), "cuModuleGetFunction cornerColumnsBatch");
+            this.cornerColumnsBatch = function.get(0);
+         }
       }
 
       DoubleBuffer noiseBuffer = MemoryUtil.memAllocDouble(Math.max(1, noise.length)).put(0, noise);
@@ -281,6 +308,31 @@ public final class FillGpu {
       this.interpolators = interpolators;
       float[] none = new float[1];
       this.setBeardKernel(none);
+   }
+
+   /**
+    * C2: the cache slots of a source whose corner kernel reads prefilled corner columns (the highest dc_cc / dc_cm
+    * number + 1), or 0. The prefilled values sit in the corners buffer after the interpolators' corners: slots * 2 per
+    * corner column.
+    */
+   static int cornerSlots(String source) {
+      if (!source.contains("c.ccolumns = corners + (long long)interpolators * per;")) {
+         return 0;
+      }
+
+      int slots = 0;
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("double dc_c[cm](\\d+)\\(").matcher(source);
+      while (m.find()) {
+         slots = Math.max(slots, Integer.parseInt(m.group(1)) + 1);
+      }
+
+      return slots;
+   }
+
+   /** C2: the prefilled corner columns' doubles for a chunk of cells this wide. */
+   private long cornerColumnDoubles(int cellWidth) {
+      int nx = 16 / cellWidth + 1;
+      return (long)this.cornerSlots * 2 * nx * nx;
    }
 
    /** S7: Minecraft's Beardifier.BEARD_KERNEL (13,824 floats), uploaded once; a stand-in until the game gives it. */
@@ -331,7 +383,7 @@ public final class FillGpu {
       int statusOffset = locOffset + 3 * job.cellsUsed;
       int beardOffset = statusOffset + 3 * job.cellsUsed;
       int intsCount = beardOffset + job.beard.length;
-      lane.ensure(8L * cellsCount, 4L * intsCount, 8L * Math.max(1, this.interpolators * per), blocks);
+      lane.ensure(8L * cellsCount, 4L * intsCount, 8L * Math.max(1, this.interpolators * per + this.cornerColumnDoubles(job.cellWidth)), blocks);
       MemoryUtil.memDoubleBuffer(lane.cellsHost, cellsCount).put(0, job.cells, 0, job.cells.length);
       IntBuffer ints = MemoryUtil.memIntBuffer(lane.intsHost, intsCount);
       ints.put(0, job.grid);
@@ -359,6 +411,19 @@ public final class FillGpu {
          params.put(8, MemoryUtil.memAddress(stack.ints(job.cellHeight)));
          params.put(9, MemoryUtil.memAddress(stack.ints(this.interpolators)));
          params.put(10, stack.pointers(lane.cornersDevice).address());
+         if (this.cornerSlots > 0 && this.interpolators > 0) {
+            PointerBuffer prefill = stack.mallocPointer(12);
+            for (int i = 0; i < 10; i++) {
+               prefill.put(i, params.get(i));
+            }
+
+            prefill.put(10, MemoryUtil.memAddress(stack.ints(this.cornerSlots)));
+            prefill.put(11, params.get(10));
+            long threads = this.cornerColumnDoubles(job.cellWidth);
+            GpuSelfTest.check(cuLaunchKernel(this.cornerColumns, (int)((threads + 255) / 256), 1, 1, 256, 1, 1, 0, lane.stream, prefill, null),
+               "cuLaunchKernel cornerColumns");
+         }
+
          if (this.interpolators > 0) {
             GpuSelfTest.check(cuLaunchKernel(this.corners, (this.interpolators * per + 255) / 256, 1, 1, 256, 1, 1, 0, lane.stream, params, null),
                "cuLaunchKernel densityCorners");
@@ -466,7 +531,7 @@ public final class FillGpu {
          intsAt[i] = intsTotal;
          intsTotal += 8 + 256 + 6L * job.cellsUsed + job.beard.length;
          cornersAt[i] = cornersTotal;
-         cornersTotal += Math.max(1L, (long)this.interpolators * pers[i]);
+         cornersTotal += Math.max(1L, (long)this.interpolators * pers[i] + this.cornerColumnDoubles(job.cellWidth));
          codesAt[i] = codesTotal;
          codesTotal += (blockCounts[i] + 15) & ~15;
          maxCorners = Math.max(maxCorners, this.interpolators * pers[i]);
@@ -526,6 +591,19 @@ public final class FillGpu {
          long table = stack.pointers(lane.paramsDevice).address();
          long nd = stack.pointers(this.noiseData).address();
          long np = stack.pointers(this.permutations).address();
+         if (this.cornerSlots > 0 && this.interpolators > 0) {
+            long most = 0;
+            for (Job job : jobs) {
+               most = Math.max(most, this.cornerColumnDoubles(job.cellWidth));
+            }
+
+            PointerBuffer prefill = stack.mallocPointer(5);
+            prefill.put(0, table).put(1, nd).put(2, np).put(3, MemoryUtil.memAddress(stack.ints(this.interpolators)))
+               .put(4, MemoryUtil.memAddress(stack.ints(this.cornerSlots)));
+            GpuSelfTest.check(cuLaunchKernel(this.cornerColumnsBatch, (int)((most + 255) / 256), n, 1, 256, 1, 1, 0, lane.stream, prefill, null),
+               "cuLaunchKernel cornerColumnsBatch");
+         }
+
          if (this.interpolators > 0) {
             PointerBuffer corner = stack.mallocPointer(4);
             corner.put(0, table).put(1, nd).put(2, np).put(3, MemoryUtil.memAddress(stack.ints(this.interpolators)));

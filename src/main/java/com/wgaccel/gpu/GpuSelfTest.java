@@ -22,8 +22,98 @@ import org.lwjgl.system.MemoryUtil;
  * multiply-add off. Uses no Minecraft classes, so the standalone check can run it too.
  */
 public final class GpuSelfTest {
-   /** NVRTC's options for Java-identical floats (checked on compute capability 8.6). */
-   public static final String[] EXACT_OPTIONS = {"--gpu-architecture=compute_86", "--fmad=false", "--prec-div=true", "--prec-sqrt=true", "--ftz=false"};
+   /** NVRTC's options for Java-identical floats, after the architecture (see {@link #exactOptions}). */
+   public static final String[] EXACT_FLAGS = {"--fmad=false", "--prec-div=true", "--prec-sqrt=true", "--ftz=false"};
+   /** The oldest compute capability the GPU parts run on: 6.0 (Pascal, the GTX 10xx). */
+   public static final int MIN_CAPABILITY = 60;
+   private static volatile String[] exactOptions;
+   /** The card, its compute capability and the architecture compiled for, for the logs and the login warning. */
+   public static volatile String deviceName = "unknown";
+   public static volatile int deviceCapability;
+   public static volatile int compiledFor;
+
+   /**
+    * NVRTC's options: the architecture, then {@link #EXACT_FLAGS}. The architecture is the card's own compute
+    * capability when this NVRTC knows it, else the newest it knows below it (the driver translates that PTX for a newer
+    * card); a card older than {@link #MIN_CAPABILITY} is refused. Until 0.10.17 always compute_86 (RTX 30xx), which an
+    * older card cannot load. Only tested on an RTX 3080 (8.6); the self-test and the in-game checks compare every result
+    * with Java's on whatever card it runs.
+    */
+   public static synchronized String[] exactOptions() {
+      String[] options = exactOptions;
+      if (options != null) {
+         return options;
+      }
+
+      configureNvrtc();
+      int capability = 86;
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         check(cuInit(0), "cuInit");
+         IntBuffer device = stack.mallocInt(1);
+         check(cuDeviceGet(device, 0), "cuDeviceGet");
+         IntBuffer value = stack.mallocInt(1);
+         check(cuDeviceGetAttribute(value, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device.get(0)), "cuDeviceGetAttribute");
+         int major = value.get(0);
+         check(cuDeviceGetAttribute(value, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device.get(0)), "cuDeviceGetAttribute");
+         capability = major * 10 + value.get(0);
+         ByteBuffer name = stack.malloc(256);
+         check(cuDeviceGetName(name, device.get(0)), "cuDeviceGetName");
+         deviceName = MemoryUtil.memASCII(name, MemoryUtil.memLengthNT1(name));
+      }
+
+      deviceCapability = capability;
+      if (capability < MIN_CAPABILITY) {
+         throw new IllegalStateException(String.format(Locale.ROOT, "%s has compute capability %d.%d; the GPU parts need %d.%d (a GTX 10xx) or newer",
+            deviceName, capability / 10, capability % 10, MIN_CAPABILITY / 10, MIN_CAPABILITY % 10));
+      }
+
+      int[] supported = supportedArchitectures();
+      // For tests: -Dwgaccel.gpuArch=61 compiles for that architecture (a newer card runs older PTX), so the code an
+      // older card would get can be checked bit for bit on this one.
+      Integer forced = Integer.getInteger("wgaccel.gpuArch");
+      if (forced != null) {
+         supported = new int[] {forced};
+         capability = Math.max(capability, forced);
+      }
+
+      int chosen = -1;
+      for (int arch : supported) {
+         if (arch <= capability && arch > chosen) {
+            chosen = arch;
+         }
+      }
+
+      if (chosen < 0) {
+         throw new IllegalStateException(String.format(Locale.ROOT, "this NVRTC (%s) compiles for none of compute %d.%d or older (it knows %s); for a GTX 10xx use the CUDA Toolkit 12.x",
+            nvrtcVersionText(), capability / 10, capability % 10, java.util.Arrays.toString(supported)));
+      }
+
+      compiledFor = chosen;
+      options = new String[EXACT_FLAGS.length + 1];
+      options[0] = "--gpu-architecture=compute_" + chosen;
+      System.arraycopy(EXACT_FLAGS, 0, options, 1, EXACT_FLAGS.length);
+      exactOptions = options;
+      return options;
+   }
+
+   /** The architectures this NVRTC compiles for (nvrtcGetSupportedArchs, CUDA 11.2 and later), else the usual CUDA 12 list. */
+   private static int[] supportedArchitectures() {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer count = stack.mallocInt(1);
+         if (org.lwjgl.cuda.NVRTC.nvrtcGetNumSupportedArchs(count) == NVRTC_SUCCESS && count.get(0) > 0) {
+            IntBuffer archs = stack.mallocInt(count.get(0));
+            if (org.lwjgl.cuda.NVRTC.nvrtcGetSupportedArchs(archs) == NVRTC_SUCCESS) {
+               int[] out = new int[count.get(0)];
+               archs.get(0, out);
+               return out;
+            }
+         }
+      } catch (Throwable missing) {
+         // An NVRTC without the call (older than 11.2): the list below.
+      }
+
+      return new int[] {50, 52, 53, 60, 61, 62, 70, 72, 75, 80, 86, 87, 89, 90};
+   }
 
    private static final String SOURCE = """
       extern "C" __global__ void terrainLike(const float* a, const float* b, float* out, int n) {
@@ -43,7 +133,16 @@ public final class GpuSelfTest {
    private GpuSelfTest() {
    }
 
-   /** Points LWJGL at the CUDA Toolkit's NVRTC (from CUDA_PATH) once, before NVRTC is first used. */
+   /** Where NVRTC was looked for and what was chosen, for the logs and warnings. */
+   public static volatile String nvrtcState = "not looked for yet";
+
+   /**
+    * Points LWJGL at the CUDA Toolkit's NVRTC once, before NVRTC is first used. Looked for, in order: the system property
+    * wgaccel.nvrtc; the folders of CUDA_PATH and every CUDA_PATH_V* variable; the toolkit's usual install folder
+    * (C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*, newest first); the folders on PATH. In each toolkit both bin
+    * and bin/x64 (newer toolkits keep their DLLs there). A game started from a launcher that was already open when the
+    * toolkit was installed has no CUDA_PATH, hence the later places.
+    */
    public static synchronized void configureNvrtc() {
       if (nvrtcConfigured) {
          return;
@@ -53,16 +152,71 @@ public final class GpuSelfTest {
       String explicit = System.getProperty("wgaccel.nvrtc");
       if (explicit != null) {
          Configuration.CUDA_NVRTC_LIBRARY_NAME.set(explicit);
+         nvrtcState = explicit + " (-Dwgaccel.nvrtc)";
          return;
       }
 
+      List<File> folders = new ArrayList<>();
+      List<String> roots = new ArrayList<>();
       String cuda = System.getenv("CUDA_PATH");
       if (cuda != null) {
-         File[] candidates = new File(cuda, "bin").listFiles((dir, name) -> name.startsWith("nvrtc64_") && name.endsWith(".dll") && !name.contains(".alt."));
-         if (candidates != null && candidates.length > 0) {
-            Configuration.CUDA_NVRTC_LIBRARY_NAME.set(candidates[0].getAbsolutePath());
+         roots.add(cuda);
+      }
+
+      System.getenv().entrySet().stream().filter(e -> e.getKey().toUpperCase(Locale.ROOT).startsWith("CUDA_PATH_V")).map(java.util.Map.Entry::getValue)
+         .sorted(java.util.Comparator.reverseOrder()).forEach(roots::add);
+      File installs = new File(System.getenv().getOrDefault("ProgramFiles", "C:/Program Files"), "NVIDIA GPU Computing Toolkit/CUDA");
+      File[] versions = installs.listFiles(File::isDirectory);
+      if (versions != null) {
+         java.util.Arrays.stream(versions).map(File::getPath).sorted(java.util.Comparator.reverseOrder()).forEach(roots::add);
+      }
+
+      for (String root : roots) {
+         folders.add(new File(root, "bin"));
+         folders.add(new File(root, "bin/x64"));
+      }
+
+      String path = System.getenv("PATH");
+      if (path != null) {
+         for (String entry : path.split(File.pathSeparator)) {
+            if (!entry.isBlank()) {
+               folders.add(new File(entry.trim()));
+            }
          }
       }
+
+      for (File folder : folders) {
+         File[] candidates = folder.listFiles((dir, name) -> {
+            String lower = name.toLowerCase(Locale.ROOT);
+            return lower.startsWith("nvrtc64_") && lower.endsWith(".dll") && !lower.contains(".alt.");
+         });
+         if (candidates != null && candidates.length > 0) {
+            // The newest when several are side by side (nvrtc64_120_0.dll, nvrtc64_130_0.dll).
+            java.util.Arrays.sort(candidates, java.util.Comparator.comparing(File::getName).reversed());
+            Configuration.CUDA_NVRTC_LIBRARY_NAME.set(candidates[0].getAbsolutePath());
+            nvrtcState = candidates[0].getAbsolutePath();
+            return;
+         }
+      }
+
+      nvrtcState = "no nvrtc64_*.dll found (CUDA_PATH " + (cuda == null ? "not set" : cuda) + "; looked in " + folders.size()
+         + " folders: CUDA_PATH*, " + installs.getPath() + "/v*, PATH); install the CUDA Toolkit 12.x or start Java with -Dwgaccel.nvrtc=<path to nvrtc64_*.dll>";
+   }
+
+   /** A failure with its causes and, when NVRTC is involved, where NVRTC was looked for. */
+   public static String describe(Throwable failure) {
+      StringBuilder text = new StringBuilder(failure.toString());
+      boolean nvrtc = false;
+      for (Throwable cause = failure; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+         if (cause != failure) {
+            text.append(" <- ").append(cause);
+         }
+
+         nvrtc |= String.valueOf(cause.getMessage()).contains("NVRTC") || String.valueOf(cause.getMessage()).contains("nvrtc")
+            || cause instanceof ExceptionInInitializerError || cause instanceof NoClassDefFoundError;
+      }
+
+      return nvrtc ? text + " | NVRTC: " + nvrtcState : text.toString();
    }
 
    /** The same expression in Java (strict IEEE floats; square root as FreeTerraForged does it, through double). */
@@ -87,7 +241,9 @@ public final class GpuSelfTest {
          IntBuffer major = stack.mallocInt(1);
          IntBuffer minor = stack.mallocInt(1);
          checkNvrtc(nvrtcVersion(major, minor), "nvrtcVersion");
-         lines.add("GPU: " + MemoryUtil.memASCII(name, MemoryUtil.memLengthNT1(name)) + "; NVRTC " + major.get(0) + "." + minor.get(0));
+         exactOptions();
+      lines.add("GPU: " + MemoryUtil.memASCII(name, MemoryUtil.memLengthNT1(name)) + String.format(Locale.ROOT, " (compute %d.%d, compiled for compute_%d)",
+         deviceCapability / 10, deviceCapability % 10, compiledFor) + "; NVRTC " + major.get(0) + "." + minor.get(0) + " (" + nvrtcState + ")");
 
          PointerBuffer context = stack.mallocPointer(1);
          check(cuCtxCreate(context, 0, device.get(0)), "cuCtxCreate");
@@ -196,7 +352,7 @@ public final class GpuSelfTest {
 
          java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
          digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-         digest.update(String.join(" ", EXACT_OPTIONS).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+         digest.update(String.join(" ", exactOptions()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
          digest.update(nvrtcVersionText().getBytes(java.nio.charset.StandardCharsets.UTF_8));
          return directory.resolve(java.util.HexFormat.of().formatHex(digest.digest()) + deviceTag + ".cubin");
       } catch (Exception failure) {
@@ -205,7 +361,7 @@ public final class GpuSelfTest {
    }
 
    /**
-    * Compiles CUDA C to PTX with NVRTC and {@link #EXACT_OPTIONS}; the caller frees the buffer. With a cache directory,
+    * Compiles CUDA C to PTX with NVRTC and {@link #exactOptions}; the caller frees the buffer. With a cache directory,
     * the PTX is kept by the SHA-256 of the source, the options and NVRTC's version, and the same source is loaded from
     * there next time (the same bytes NVRTC would make).
     */
@@ -217,7 +373,7 @@ public final class GpuSelfTest {
          try {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
             digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            digest.update(String.join(" ", EXACT_OPTIONS).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            digest.update(String.join(" ", exactOptions()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             digest.update(nvrtcVersionText().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             cached = directory.resolve(java.util.HexFormat.of().formatHex(digest.digest()) + ".ptx");
             if (java.nio.file.Files.exists(cached)) {
@@ -269,8 +425,9 @@ public final class GpuSelfTest {
          }
 
          try {
-            PointerBuffer options = stack.mallocPointer(EXACT_OPTIONS.length);
-            for (String option : EXACT_OPTIONS) {
+            String[] exact = exactOptions();
+            PointerBuffer options = stack.mallocPointer(exact.length);
+            for (String option : exact) {
                options.put(stack.UTF8(option));
             }
 

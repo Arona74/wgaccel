@@ -16,7 +16,7 @@ import net.minecraft.world.level.levelgen.RandomState;
  * and FreeTerraForged's OceanClimateProjection (source range and target maximum); and Minecraft's R-tree over the
  * table, flattened (G5.2c): per node its seven parameter bounds (nodeBounds, 14 ints), its children's range (nodeFirst,
  * nodeCount; children of a node are contiguous, the root is node 0) or for a leaf (count 0) its biome's number. Read by reflection from the climate
- * sampler's plan; throws when the plan has more than one provider or a fallback table (the GPU does not know those).
+ * sampler's plan; with several providers the first one's table (C1); throws for a deferred fallback table.
  */
 public final class BiomeTable {
    public final Object providerId;
@@ -36,6 +36,18 @@ public final class BiomeTable {
    public final int[] nodeBiome;
    /** Biome to number (identity), extended by the decoration's tables (G5.4) as {@link #biomes} is. */
    public final Map<Object, Integer> numbering;
+   /**
+    * C1: the other providers (registration order after the first): their ids, candidate tables, tree roots in the node
+    * arrays (after the first's tree), ocean projection maxima; and the number of TerraBlender's deferred placeholder
+    * (-1: none), whose search FreeTerraForged redoes in its fallback table (the CPU's).
+    */
+   public final List<Object> extraIds = new java.util.ArrayList<>();
+   public final List<Climate.ParameterList<?>> extraCandidates = new java.util.ArrayList<>();
+   public int[] extraRoots = new int[0];
+   public long[] extraTargetMax = new long[0];
+   public int deferredNumber = -1;
+   /** C1: FreeTerraForged's spatial resolver (region cell -> provider), or null. */
+   public Object spatialResolver;
 
    private BiomeTable(Object providerId, Climate.ParameterList<?> candidates, List<? extends Pair<Climate.ParameterPoint, ?>> values, int[] points, int[] biomeIds,
          int biomeCount, long sourceMin, long sourceMax, long targetMax, List<Object> biomes, int[] nodeBounds, int[] nodeFirst, int[] nodeCount, int[] nodeBiome, Map<Object, Integer> numbering) {
@@ -60,11 +72,25 @@ public final class BiomeTable {
       Object plan = call(random.sampler(), "getWorldgenPlan");
       Object selection = call(plan, "providerSelection");
       List<?> providers = (List<?>)call(selection, "providers");
-      if (providers.size() != 1 || ((Optional<?>)field(selection, "fallback")).isPresent() || ((Optional<?>)field(selection, "deferredPlaceholder")).isPresent()) {
-         throw new IllegalStateException("the biome plan has " + providers.size() + " providers or a fallback table");
+      // C1: several providers (TerraBlender's regions, as Biomes O' Plenty's) are fine: the GPU's table is the first one's
+      // (registration order) and a cell whose region belongs to another provider is searched on the CPU. A deferred
+      // placeholder (its fallback table) is not known to the GPU.
+      if (providers.isEmpty()) {
+         throw new IllegalStateException("the biome plan has no providers");
       }
 
       Object provider = providers.get(0);
+      // TerraBlender's deferred placeholder ("vanilla decides here") sends a search to the fallback table; fine while the
+      // GPU's table (the first provider's) cannot answer it (FTF's resolveProvider: deferred only when it is selected).
+      Optional<?> deferred = (Optional<?>)field(selection, "deferredPlaceholder");
+      if (deferred.isPresent()) {
+         for (Object entry : ((Climate.ParameterList<?>)call(provider, "candidates")).values()) {
+            if (deferred.get().equals(((Pair<?, ?>)entry).getSecond())) {
+               throw new IllegalStateException("the first provider's table holds the deferred placeholder");
+            }
+         }
+      }
+
       Object id = call(provider, "id");
       Climate.ParameterList<?> table = (Climate.ParameterList<?>)call(provider, "candidates");
       Object projection = ((Map<?, ?>)field(selection, "oceanProjections")).get(id);
@@ -72,6 +98,41 @@ public final class BiomeTable {
       long sourceMin = (Long)staticField(projectionClass, "SOURCE_MIN");
       long sourceMax = (Long)staticField(projectionClass, "SOURCE_MAX");
       long targetMax = projection == null ? sourceMax : (Long)field(projection, "targetMax");
+      List<Climate.ParameterList<?>> extras = new java.util.ArrayList<>();
+      List<Object> extraIds = new java.util.ArrayList<>();
+      long[] extraTargetMax = new long[providers.size() - 1];
+      for (int i = 1; i < providers.size(); i++) {
+         Object other = providers.get(i);
+         Object otherId = call(other, "id");
+         Object otherProjection = ((Map<?, ?>)field(selection, "oceanProjections")).get(otherId);
+         extraIds.add(otherId);
+         extras.add((Climate.ParameterList<?>)call(other, "candidates"));
+         extraTargetMax[i - 1] = otherProjection == null ? sourceMax : (Long)field(otherProjection, "targetMax");
+      }
+
+      BiomeTable result = of(id, table, sourceMin, sourceMax, targetMax, extras);
+      result.extraIds.addAll(extraIds);
+      result.extraCandidates.addAll(extras);
+      result.extraTargetMax = extraTargetMax;
+      result.spatialResolver = ((Optional<?>)call(call(plan, "spatialOwnership"), "resolver")).orElse(null);
+      if (deferred.isPresent()) {
+         Integer number = result.numbering.get(deferred.get());
+         result.deferredNumber = number == null ? -1 : number;
+      }
+
+      return result;
+   }
+
+   /**
+    * C2: the table of a plain Climate.ParameterList (vanilla's MultiNoiseBiomeSource), with no ocean projection (the
+    * kernels skip it when the target and source maxima are equal).
+    */
+   public static BiomeTable ofParameters(Object id, Climate.ParameterList<?> table) throws ReflectiveOperationException {
+      return of(id, table, 0L, 0L, 0L, List.of());
+   }
+
+   private static BiomeTable of(Object id, Climate.ParameterList<?> table, long sourceMin, long sourceMax, long targetMax, List<Climate.ParameterList<?>> extras)
+         throws ReflectiveOperationException {
       List<? extends Pair<Climate.ParameterPoint, ?>> values = table.values();
       int[] points = new int[values.size() * 14];
       int[] biomeIds = new int[values.size()];
@@ -96,8 +157,15 @@ public final class BiomeTable {
       // Minecraft's R-tree over the same table, breadth first so every node's children are contiguous.
       Trees trees = new Trees(distinct, biomes);
       trees.add(table);
-      return new BiomeTable(id, table, values, points, biomeIds, distinct.size(), sourceMin, sourceMax, targetMax, biomes, trees.bounds(), trees.first(),
-         trees.count(), trees.biome(), distinct);
+      int[] roots = new int[extras.size()];
+      for (int i = 0; i < extras.size(); i++) {
+         roots[i] = trees.add(extras.get(i));
+      }
+
+      BiomeTable result = new BiomeTable(id, table, values, points, biomeIds, distinct.size(), sourceMin, sourceMax, targetMax, biomes, trees.bounds(),
+         trees.first(), trees.count(), trees.biome(), distinct);
+      result.extraRoots = roots;
+      return result;
    }
 
    /**

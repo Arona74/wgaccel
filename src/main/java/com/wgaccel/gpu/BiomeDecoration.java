@@ -30,6 +30,13 @@ public final class BiomeDecoration {
    public final int[] first;
    public final int[] count;
    public final int[] biome;
+   /** C1: the other providers' settings (as longs, ints, density and flags above), in BiomeTable's extra order. */
+   public long[][] extraLongs = new long[0][];
+   public int[][] extraInts = new int[0][];
+   public float[] extraDensity = new float[0];
+   public int[][] extraFlags = new int[0][];
+   /** C1: decoration stages after FreeTerraForged's (Lithostitched's injectors), run on the CPU after the GPU's result. */
+   public int laterStages;
 
    private BiomeDecoration(long[] longs, int[] ints, float density, float presetCoverage, int[] flags, int[] bounds, int[] first, int[] count, int[] biome) {
       this.longs = longs;
@@ -47,9 +54,11 @@ public final class BiomeDecoration {
    public static BiomeDecoration of(RandomState random, BiomeTable table) throws ReflectiveOperationException {
       Object plan = BiomeTable.call(random.sampler(), "getWorldgenPlan");
       Object decoration = BiomeTable.call(plan, "selectionDecoration");
+      // C1: several providers (each decorated with its own Layout and river table) and later stages (run on the CPU after
+      // the GPU's result of the first, FreeTerraForged's own; the check below makes sure the first is that one).
       List<?> stages = (List<?>)BiomeTable.call(decoration, "stages");
-      if (stages.size() != 1) {
-         throw new IllegalStateException("the biome plan has " + stages.size() + " decoration stages");
+      if (stages.isEmpty()) {
+         throw new IllegalStateException("the biome plan has no decoration stages");
       }
 
       Object decorator = BiomeTable.call(stages.get(0), "decorator");
@@ -72,28 +81,51 @@ public final class BiomeDecoration {
          throw new IllegalStateException("the decoration stage is not FreeTerraForged's selection policy (" + decorator.getClass().getName() + ")");
       }
 
-      Object layout = layouts.get(table.providerId);
-      if (layout == null) {
-         throw new IllegalStateException("no underground layout for " + table.providerId);
-      }
-
-      BiomeTable.Trees trees = new BiomeTable.Trees(table.numbering, table.biomes);
-      trees.add(table.candidates);
-      Climate.ParameterList<?> original = (Climate.ParameterList<?>)BiomeTable.field(layout, "original");
-      int originalRoot = original == table.candidates ? 0 : trees.add(original);
-      int backgroundRoot = trees.add((Climate.ParameterList<?>)BiomeTable.field(layout, "background"));
-      Climate.ParameterList<?> river = (Climate.ParameterList<?>)((Map<?, ?>)BiomeTable.field(roles, "rivers")).get(table.candidates);
-      int riverRoot = river == null ? -1 : trees.add(river);
-      boolean hasStage = BiomeTable.field(layout, "shallowStage") != null || BiomeTable.field(layout, "deepStage") != null;
-      long[] longs = {(Long)BiomeTable.field(layout, "selectionStart"), (Long)BiomeTable.field(layout, "endDepth"), (Long)BiomeTable.field(layout, "deepStart"),
-         (Long)BiomeTable.field(layout, "fullDensityStart"), Climate.quantizeCoord(0.03125f), (Long)BiomeTable.field(layout, "seed")};
-      int[] ints = {originalRoot, backgroundRoot, riverRoot, hasStage ? 1 : 0, (Boolean)BiomeTable.field(layout, "bandingEnabled") ? 1 : 0,
-         (Integer)BiomeTable.field(layout, "horizontalSize"), (Integer)BiomeTable.field(layout, "verticalSize")};
-      float density = (Float)BiomeTable.field(layout, "density");
       Object shape = BiomeTable.field(BiomeTable.call(preset, "climate"), "biomeShape");
       float presetCoverage = (Float)BiomeTable.call(shape, "undergroundBiomeCoverage");
+      Map<?, ?> rivers = (Map<?, ?>)BiomeTable.field(roles, "rivers");
+      // The node arrays: the providers' own trees first, as BiomeTable laid them out (the extras' roots must match), then
+      // each provider's original, background and river trees.
+      BiomeTable.Trees trees = new BiomeTable.Trees(table.numbering, table.biomes);
+      trees.add(table.candidates);
+      for (int k = 0; k < table.extraCandidates.size(); k++) {
+         int root = trees.add(table.extraCandidates.get(k));
+         if (root != table.extraRoots[k]) {
+            throw new IllegalStateException("provider " + table.extraIds.get(k) + "'s tree at " + root + ", not " + table.extraRoots[k]);
+         }
+      }
+
+      int providers = 1 + table.extraCandidates.size();
+      Object[] layoutsByProvider = new Object[providers];
+      long[][] longsAll = new long[providers][];
+      int[][] intsAll = new int[providers][];
+      float[] densityAll = new float[providers];
+      for (int k = 0; k < providers; k++) {
+         Object id = k == 0 ? table.providerId : table.extraIds.get(k - 1);
+         Climate.ParameterList<?> candidates = k == 0 ? table.candidates : table.extraCandidates.get(k - 1);
+         int ownRoot = k == 0 ? 0 : table.extraRoots[k - 1];
+         Object layout = layouts.get(id);
+         if (layout == null) {
+            throw new IllegalStateException("no underground layout for " + id);
+         }
+
+         Climate.ParameterList<?> original = (Climate.ParameterList<?>)BiomeTable.field(layout, "original");
+         int originalRoot = original == candidates ? ownRoot : trees.add(original);
+         int backgroundRoot = trees.add((Climate.ParameterList<?>)BiomeTable.field(layout, "background"));
+         Climate.ParameterList<?> river = (Climate.ParameterList<?>)rivers.get(candidates);
+         int riverRoot = river == null ? -1 : trees.add(river);
+         boolean hasStage = BiomeTable.field(layout, "shallowStage") != null || BiomeTable.field(layout, "deepStage") != null;
+         longsAll[k] = new long[] {(Long)BiomeTable.field(layout, "selectionStart"), (Long)BiomeTable.field(layout, "endDepth"),
+            (Long)BiomeTable.field(layout, "deepStart"), (Long)BiomeTable.field(layout, "fullDensityStart"), Climate.quantizeCoord(0.03125f),
+            (Long)BiomeTable.field(layout, "seed")};
+         intsAll[k] = new int[] {originalRoot, backgroundRoot, riverRoot, hasStage ? 1 : 0, (Boolean)BiomeTable.field(layout, "bandingEnabled") ? 1 : 0,
+            (Integer)BiomeTable.field(layout, "horizontalSize"), (Integer)BiomeTable.field(layout, "verticalSize")};
+         densityAll[k] = (Float)BiomeTable.field(layout, "density");
+         layoutsByProvider[k] = layout;
+      }
+
       Method isCave = null;
-      for (Method method : layout.getClass().getMethods()) {
+      for (Method method : layoutsByProvider[0].getClass().getMethods()) {
          if (method.getName().equals("isCaveCandidate") && method.getParameterCount() == 1) {
             isCave = method;
          }
@@ -107,14 +139,23 @@ public final class BiomeDecoration {
       int[] first = trees.first();
       int[] count = trees.count();
       int[] biome = trees.biome();
-      int[] flags = new int[table.biomes.size()];
-      for (int b = 0; b < flags.length; b++) {
-         Object value = table.biomes.get(b);
-         @SuppressWarnings("unchecked")
-         Holder<Biome> holder = (Holder<Biome>)value;
-         flags[b] = ((Boolean)isCave.invoke(layout, value) ? 1 : 0) | (holder.is(BiomeTags.IS_RIVER) ? 2 : 0);
+      int[][] flagsAll = new int[providers][table.biomes.size()];
+      for (int k = 0; k < providers; k++) {
+         for (int b = 0; b < table.biomes.size(); b++) {
+            Object value = table.biomes.get(b);
+            @SuppressWarnings("unchecked")
+            Holder<Biome> holder = (Holder<Biome>)value;
+            flagsAll[k][b] = ((Boolean)isCave.invoke(layoutsByProvider[k], value) ? 1 : 0) | (holder.is(BiomeTags.IS_RIVER) ? 2 : 0);
+         }
       }
 
-      return new BiomeDecoration(longs, ints, density, presetCoverage, flags, bounds, first, count, biome);
+      BiomeDecoration result = new BiomeDecoration(longsAll[0], intsAll[0], densityAll[0], presetCoverage, flagsAll[0], bounds, first, count, biome);
+      result.extraLongs = java.util.Arrays.copyOfRange(longsAll, 1, providers);
+      result.extraInts = java.util.Arrays.copyOfRange(intsAll, 1, providers);
+      result.extraDensity = java.util.Arrays.copyOfRange(densityAll, 1, providers);
+      result.extraFlags = java.util.Arrays.copyOfRange(flagsAll, 1, providers);
+      result.laterStages = stages.size() - 1;
+      return result;
+
    }
 }

@@ -2,7 +2,7 @@ package com.wgaccel.gpu;
 
 /**
  * CUDA C versions of vanilla Minecraft's 3D noise (doubles), for the 3D fill on the GPU (step G2), written operation
- * for operation like its Java and compiled with {@link GpuSelfTest#EXACT_OPTIONS}: Mth.floor and lfloor, smoothstep,
+ * for operation like its Java and compiled with {@link GpuSelfTest#EXACT_FLAGS}: Mth.floor and lfloor, smoothstep,
  * lerp, lerp2, lerp3, ImprovedNoise (the gradient table, the byte permutation), PerlinNoise (octaves with wrap) and
  * NormalNoise (two PerlinNoises, the second at 1.0181268882175227 times the coordinates).
  * <p>
@@ -68,6 +68,41 @@ public final class VanillaKernels {
           double g7 = mc_grad_dot(p[(f + k + 1) & 0xFF], d3 - 1.0, yd - 1.0, d5 - 1.0);
           return mc_lerp3(mc_smoothstep(d3), mc_smoothstep(d4), mc_smoothstep(d5), g0, g1, g2, g3, g4, g5, g6, g7);
       }
+      // ImprovedNoise.noise(x, y, z, yScale, yMax): the "smeared" form BlendedNoise asks for (C2: vanilla).
+      __device__ double mc_improved_smear(const int* p, double xo, double yo, double zo, double x, double y, double z, double yScale, double yMax) {
+          double d0 = x + xo;
+          double d1 = y + yo;
+          double d2 = z + zo;
+          int i = mc_floor(d0);
+          int j = mc_floor(d1);
+          int k = mc_floor(d2);
+          double d3 = d0 - (double)i;
+          double d4 = d1 - (double)j;
+          double d5 = d2 - (double)k;
+          double d6;
+          if (yScale != 0.0) {
+              double d7 = yMax >= 0.0 && yMax < d4 ? yMax : d4;
+              d6 = (double)mc_floor(d7 / yScale + (double)1.0E-7f) * yScale;
+          } else {
+              d6 = 0.0;
+          }
+          double yd = d4 - d6;
+          int a = p[i & 0xFF];
+          int b = p[(i + 1) & 0xFF];
+          int c = p[(a + j) & 0xFF];
+          int l = p[(a + j + 1) & 0xFF];
+          int e = p[(b + j) & 0xFF];
+          int f = p[(b + j + 1) & 0xFF];
+          double g0 = mc_grad_dot(p[(c + k) & 0xFF], d3, yd, d5);
+          double g1 = mc_grad_dot(p[(e + k) & 0xFF], d3 - 1.0, yd, d5);
+          double g2 = mc_grad_dot(p[(l + k) & 0xFF], d3, yd - 1.0, d5);
+          double g3 = mc_grad_dot(p[(f + k) & 0xFF], d3 - 1.0, yd - 1.0, d5);
+          double g4 = mc_grad_dot(p[(c + k + 1) & 0xFF], d3, yd, d5 - 1.0);
+          double g5 = mc_grad_dot(p[(e + k + 1) & 0xFF], d3 - 1.0, yd, d5 - 1.0);
+          double g6 = mc_grad_dot(p[(l + k + 1) & 0xFF], d3, yd - 1.0, d5 - 1.0);
+          double g7 = mc_grad_dot(p[(f + k + 1) & 0xFF], d3 - 1.0, yd - 1.0, d5 - 1.0);
+          return mc_lerp3(mc_smoothstep(d3), mc_smoothstep(d4), mc_smoothstep(d5), g0, g1, g2, g3, g4, g5, g6, g7);
+      }
       __device__ __forceinline__ double mc_wrap(double v) {
           return v - (double)mc_lfloor(v / 3.3554432E7 + 0.5) * 3.3554432E7;
       }
@@ -89,6 +124,69 @@ public final class VanillaKernels {
           }
           *used = 3 + n * 5;
           return sum;
+      }
+      // BlendedNoise.compute (vanilla's base_3d_noise). D: xzMultiplier, yMultiplier, xzFactor, yFactor,
+      // smearScaleMultiplier, then minLimitNoise, maxLimitNoise and mainNoise packed as PerlinNoises (see above); P: their
+      // permutations in that order. getOctaveNoise(i) is noiseLevels[n - 1 - i].
+      __device__ double mc_blended(const double* D, const int* P, int x, int y, int z) {
+          const double* minD = D + 5;
+          int nMin = (int)minD[2];
+          const double* maxD = minD + 3 + nMin * 5;
+          int nMax = (int)maxD[2];
+          const double* mainD = maxD + 3 + nMax * 5;
+          int nMain = (int)mainD[2];
+          const int* minP = P;
+          const int* maxP = minP + nMin * 256;
+          const int* mainP = maxP + nMax * 256;
+          double d0 = (double)x * D[0];
+          double d1 = (double)y * D[1];
+          double d2 = (double)z * D[0];
+          double d3 = d0 / D[2];
+          double d4 = d1 / D[3];
+          double d5 = d2 / D[2];
+          double d6 = D[1] * D[4];
+          double d7 = d6 / D[3];
+          double d8 = 0.0;
+          double d9 = 0.0;
+          double d10 = 0.0;
+          double d11 = 1.0;
+          for (int i = 0; i < 8; i++) {
+              int level = nMain - 1 - i;
+              const double* o = mainD + 3 + level * 5;
+              if (o[4] != 0.0) {
+                  d10 += mc_improved_smear(mainP + level * 256, o[1], o[2], o[3], mc_wrap(d3 * d11), mc_wrap(d4 * d11), mc_wrap(d5 * d11), d7 * d11, d4 * d11) / d11;
+              }
+              d11 /= 2.0;
+          }
+          double d16 = (d10 / 10.0 + 1.0) / 2.0;
+          bool flag1 = d16 >= 1.0;
+          bool flag2 = d16 <= 0.0;
+          d11 = 1.0;
+          for (int j = 0; j < 16; j++) {
+              double d12 = mc_wrap(d0 * d11);
+              double d13 = mc_wrap(d1 * d11);
+              double d14 = mc_wrap(d2 * d11);
+              double d15 = d6 * d11;
+              if (!flag1) {
+                  int level = nMin - 1 - j;
+                  const double* o = minD + 3 + level * 5;
+                  if (o[4] != 0.0) {
+                      d8 += mc_improved_smear(minP + level * 256, o[1], o[2], o[3], d12, d13, d14, d15, d1 * d11) / d11;
+                  }
+              }
+              if (!flag2) {
+                  int level = nMax - 1 - j;
+                  const double* o = maxD + 3 + level * 5;
+                  if (o[4] != 0.0) {
+                      d9 += mc_improved_smear(maxP + level * 256, o[1], o[2], o[3], d12, d13, d14, d15, d1 * d11) / d11;
+                  }
+              }
+              d11 /= 2.0;
+          }
+          double lo = d8 / 512.0;
+          double hi = d9 / 512.0;
+          double v = d16 < 0.0 ? lo : (d16 > 1.0 ? hi : mc_lerp(d16, lo, hi));
+          return v / 128.0;
       }
       __device__ double mc_normal(const double* D, const int* P, double x, double y, double z) {
           int used1;
@@ -138,6 +236,11 @@ public final class VanillaKernels {
           const double* corners;
           int cornerStride;
           const double* columns;
+          // C2: the corner kernel's per-thread cache of hoisted column subtrees (two slots each: y >= 0, y < 0).
+          double* ccache = 0;
+          unsigned char* ccflag = 0;
+          // C2: the corner columns' prefilled column subtrees (densityCorners after cornerColumns), or none.
+          const double* ccolumns = 0;
       };
       // A hoisted y-independent subtree's value for the block's column (DensityCodegen's column hoisting): two values
       // per column, for y >= 0 and y < 0, as a noise with y scale 0 still sees the sign of y (0.0 or -0.0).

@@ -26,7 +26,7 @@ import net.minecraft.world.level.block.state.BlockState;
  */
 public final class SurfaceTap {
    public static final int STRATA_MAX = 64;
-   public static final int FIELDS = 12;
+   public static final int FIELDS = 13;
 
    /** A tapped chunk's calls (FIELDS ints each), results (state index, -1 for null), and per-column secondary and strata. */
    public static final class Tap {
@@ -173,6 +173,16 @@ public final class SurfaceTap {
       }
    }
 
+   /** C1: Lithostitched's SlopeCondition input: the highest minus the lowest of the four neighbours' WORLD_SURFACE_WG heights. */
+   private static int slope(net.minecraft.world.level.chunk.ChunkAccess chunk, int x, int z) {
+      net.minecraft.world.level.levelgen.Heightmap.Types type = net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG;
+      int north = chunk.getHeight(type, x, Math.max(z - 1, 0));
+      int south = chunk.getHeight(type, x, Math.min(z + 1, 15));
+      int west = chunk.getHeight(type, Math.max(x - 1, 0), z);
+      int east = chunk.getHeight(type, Math.min(x + 1, 15), z);
+      return Math.max(Math.max(north, south), Math.max(east, west)) - Math.min(Math.min(north, south), Math.min(east, west));
+   }
+
    /** The rule tree made for the chunk: its context, the context's steep condition and FreeTerraForged's strata rule. */
    public static void built(Object context, Object rule) {
       Current current = CURRENT.get();
@@ -241,6 +251,7 @@ public final class SurfaceTap {
       tap.calls[at + 9] = test(current.steep) ? 1 : 0;
       tap.calls[at + 10] = c.wgaccel$minSurface();
       tap.calls[at + 11] = column;
+      tap.calls[at + 12] = slope(current.chunk, x & 15, z & 15);
       tap.secondary[column] = c.wgaccel$secondary();
       tap.results[tap.count] = state == null ? -1 : codegen.state(state);
       tap.count++;

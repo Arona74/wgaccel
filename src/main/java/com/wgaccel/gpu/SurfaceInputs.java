@@ -59,8 +59,31 @@ public final class SurfaceInputs {
       this.secondaryNoise = secondaryNoise.replace("c.nd", "nd").replace("c.np", "np");
       this.seedLo = seedLo;
       this.seedHi = seedHi;
-      this.source = source(f2, g2, frozenNoise, infoNoise, temperatureNoise, surfaceNoise.replace("c.nd", "nd").replace("c.np", "np"), seedLo, seedHi,
-         secondaryNoise.replace("c.nd", "nd").replace("c.np", "np"));
+      this.source = steep(source(f2, g2, frozenNoise, infoNoise, temperatureNoise, surfaceNoise.replace("c.nd", "nd").replace("c.np", "np"), seedLo, seedHi,
+         secondaryNoise.replace("c.nd", "nd").replace("c.np", "np")));
+   }
+
+   /**
+    * The steepness the GPU kernels work out, as the game's SurfaceRules steep condition does: the sources are written
+    * with Worldgen Patches' version (the height difference of the column's neighbours either way, Math.abs); without
+    * Worldgen Patches it is vanilla's (only the south neighbour 4 or more above the north one, or the west one 4 or more
+    * above the east one). The 2026-10-22 09:05 run (Worldgen Patches disabled): snow blocks on mountains came out stone.
+    */
+   public static String steep(String source) {
+      if (worldgenPatches()) {
+         return source;
+      }
+
+      return source.replace("abs(hs - hn) >= 4", "hs >= hn + 4").replace("abs(hw - he) >= 4", "hw >= he + 4");
+   }
+
+   private static boolean worldgenPatches() {
+      try {
+         return net.neoforged.fml.ModList.get().isLoaded("worldgen_patches");
+      } catch (Throwable failure) {
+         // Outside the game (the offline checks): the sources as written.
+         return true;
+      }
    }
 
    /** The CUDA source with its constants (also built by the standalone check with stand-in values). */
@@ -72,7 +95,7 @@ public final class SurfaceInputs {
                                                   const int* np, int* out, double* secondary) {
              int t = blockIdx.x * blockDim.x + threadIdx.x;
              if (t >= count) return;
-             const int* r = calls + t * 12;
+             const int* r = calls + t * 13;
              int x = r[0];
              int y = r[1];
              int z = r[2];

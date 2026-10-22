@@ -89,6 +89,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
       }
 
       com.wgaccel.gen.SurfaceAhead.biomesDone(chunk, random);
+      com.wgaccel.gen.GpuNoiseFill.afterBiomes(chunk, random);
 
       Stats.record(Stage.BIOME_FILL, System.nanoTime() - start);
    }

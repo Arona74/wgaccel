@@ -7,6 +7,64 @@ public final class BiomeKernels {
 
    /** The biome check kernels after a DensityCodegen source: biomeClimate (the six climate functions named) and biomeSearch. */
    public static String source(String[] climate) {
+      return source(climate, 0);
+   }
+
+   /**
+    * C2: with the climate functions' column-only subtrees remembered per thread (DensityCodegen's dc_cmN, {@code slots}
+    * cache slots; 0: none), a thread works out up to 8 cells of one quart column (cells (y * 4 + x) * 4 + z: 16 apart),
+    * so a column's climate noises and height splines are worked out once instead of per cell. The same values.
+    */
+   public static String source(String[] climate, int slots) {
+      return multi(single(climate, slots));
+   }
+
+   /**
+    * C1: one provider per cell (TerraBlender regions): biomeTreeSearchMulti and biomeDecorateMulti pick each cell's
+    * provider by its quart column (provider[16 j + column], worked out on the CPU as FreeTerraForged's spatial resolver
+    * does): its tree root and ocean projection, its Layout settings, flags and density. The decoration is biomeDecorate's
+    * own text with those per provider.
+    */
+   private static String multi(String source) {
+      int from = source.indexOf("extern \"C\" __global__ void biomeDecorate(");
+      int to = source.indexOf("// C1: another provider's table");
+      String decorate = source.substring(from, to)
+         .replace("void biomeDecorate(", "void biomeDecorateMulti(")
+         .replace("const long long* p, const int* q,", "const long long* pAll, const int* qAll, const int* provider, int flagStride, const float* densities,")
+         .replace("float density, float presetCoverage, const int* flags,", "float presetCoverage, const int* flagsAll,")
+         .replace("long long depth = t[4];", "int kp = provider[16 * j + column]; const long long* p = pAll + 6 * kp; const int* q = qAll + 7 * kp; "
+            + "const int* flags = flagsAll + flagStride * kp; float density = densities[kp]; long long depth = t[4];");
+      if (!decorate.contains("int kp = provider[16 * j + column];")) {
+         throw new IllegalStateException("biomeDecorate's text changed: no per-provider version");
+      }
+
+      return source + decorate + """
+         extern "C" __global__ void biomeTreeSearchMulti(const long long* in, int n, int perChunk, const int* at, const int* chunkXZ, const int* provider,
+                                                         const int* roots, const int* targetMaxes, const int* bounds, const int* first, const int* count,
+                                                         const int* biome, int sourceMin, int sourceMax, long long* out, int* chosen, int* tied) {
+             int i = blockIdx.x * blockDim.x + threadIdx.x;
+             if (i >= n) return;
+             int j = i / perChunk;
+             int column = (at[i * 3] - (chunkXZ[2 * j] >> 2)) * 4 + (at[i * 3 + 2] - (chunkXZ[2 * j + 1] >> 2));
+             int kp = column < 0 || column >= 16 ? 0 : provider[16 * j + column];
+             long long t[7];
+             for (int k = 0; k < 6; k++) t[k] = in[i * 6 + k];
+             t[6] = 0;
+             long long cc = t[2];
+             long long smin = sourceMin;
+             long long smax = sourceMax;
+             long long tmax = targetMaxes[kp];
+             if (!(tmax == smax || cc <= smin || cc >= smax)) t[2] = smin + (cc - smin) * (tmax - smin) / (smax - smin);
+             for (int k = 0; k < 6; k++) out[i * 6 + k] = t[k];
+             int tie = 0;
+             int r = bq_treeFind(t, roots[kp], bounds, first, count, biome, &tie);
+             chosen[i] = r < 0 ? 0 : r;
+             tied[i] = tie || r < 0 ? 1 : 0;
+         }
+         """;
+   }
+
+   private static String single(String[] climate, int slots) {
       return """
          // Climate.quantizeCoord of the function's value as Climate.target takes it: (long)((float)v * 10000f).
          __device__ __forceinline__ long long bq_quantize(double v) {
@@ -110,7 +168,8 @@ public final class BiomeKernels {
          }
          __device__ __forceinline__ void bq_climateCell(int i, const int* at, const double* cells, int chunkX, int chunkZ, const double* nd, const int* np,
                                                         int banding, double seedBits, float coverageScale, int size, int vsize, int surface, int end,
-                                                        int add21875, int add03125, const int* minimumSurface, long long* out) {
+                                                        int add21875, int add03125, const int* minimumSurface, long long* out, double* ccache,
+                                                        unsigned char* ccflag) {
              DCtx c;
              c.x = at[i * 3] * 4;
              c.y = at[i * 3 + 1] * 4;
@@ -130,6 +189,8 @@ public final class BiomeKernels {
              c.corners = 0;
              c.cornerStride = 0;
              c.columns = 0;
+             c.ccache = ccache;
+             c.ccflag = ccflag;
              out[i * 6] = bq_quantize(%s(c));
              out[i * 6 + 1] = bq_quantize(%s(c));
              out[i * 6 + 2] = bq_quantize(%s(c));
@@ -148,21 +209,44 @@ public final class BiomeKernels {
          extern "C" __global__ void biomeClimate(const int* at, int n, const double* cells, int chunkX, int chunkZ, const double* nd, const int* np, int banding,
                                                  double seedBits, float coverageScale, int size, int vsize, int surface, int end, int add21875, int add03125,
                                                  const int* minimumSurface, long long* out) {
-             int i = blockIdx.x * blockDim.x + threadIdx.x;
-             if (i >= n) return;
-             bq_climateCell(i, at, cells, chunkX, chunkZ, nd, np, banding, seedBits, coverageScale, size, vsize, surface, end, add21875, add03125,
-                            minimumSurface, out);
+             int t = blockIdx.x * blockDim.x + threadIdx.x;
+             int slices = (n / 16 + BQ_CELLS - 1) / BQ_CELLS;
+             if (t >= 16 * slices) return;
+             double ccache[BQ_SLOTS];
+             unsigned char ccflag[BQ_SLOTS];
+             for (int s = 0; s < BQ_SLOTS; s++) ccflag[s] = 0;
+             int column = t %% 16;
+             int slice = t / 16;
+             for (int k = 0; k < BQ_CELLS; k++) {
+                 int i = (slice * BQ_CELLS + k) * 16 + column;
+                 if (i >= n) break;
+                 bq_climateCell(i, at, cells, chunkX, chunkZ, nd, np, banding, seedBits, coverageScale, size, vsize, surface, end, add21875, add03125,
+                                minimumSurface, out, ccache, ccflag);
+             }
          }
          // Several chunks in one launch (the biome look-ahead): perChunk cells each, chunk j's CellSampler grid at
          // cells + j * cellStride, its corner at chunkXZ[2 j], its 16 minimum surfaces at minimumSurface + 16 j.
          extern "C" __global__ void biomeClimateBatch(const int* at, int n, int perChunk, const double* cells, int cellStride, const int* chunkXZ,
                                                       const double* nd, const int* np, int banding, double seedBits, float coverageScale, int size, int vsize,
                                                       int surface, int end, int add21875, int add03125, const int* minimumSurface, long long* out) {
-             int i = blockIdx.x * blockDim.x + threadIdx.x;
-             if (i >= n) return;
-             int j = i / perChunk;
-             bq_climateCell(i, at, cells + (long long)j * cellStride, chunkXZ[2 * j], chunkXZ[2 * j + 1], nd, np, banding, seedBits, coverageScale, size,
-                            vsize, surface, end, add21875, add03125, minimumSurface + 16 * j, out);
+             int t = blockIdx.x * blockDim.x + threadIdx.x;
+             int slices = (perChunk / 16 + BQ_CELLS - 1) / BQ_CELLS;
+             int perChunkThreads = 16 * slices;
+             int j = t / perChunkThreads;
+             if (j >= n / perChunk) return;
+             int r = t - j * perChunkThreads;
+             double ccache[BQ_SLOTS];
+             unsigned char ccflag[BQ_SLOTS];
+             for (int s = 0; s < BQ_SLOTS; s++) ccflag[s] = 0;
+             int column = r %% 16;
+             int slice = r / 16;
+             for (int k = 0; k < BQ_CELLS; k++) {
+                 int local = (slice * BQ_CELLS + k) * 16 + column;
+                 if (local >= perChunk) break;
+                 int i = j * perChunk + local;
+                 bq_climateCell(i, at, cells + (long long)j * cellStride, chunkXZ[2 * j], chunkXZ[2 * j + 1], nd, np, banding, seedBits, coverageScale,
+                                size, vsize, surface, end, add21875, add03125, minimumSurface + 16 * j, out, ccache, ccflag);
+             }
          }
          // Climate.Parameter.distance.
          __device__ __forceinline__ long long bq_distance(long long v, long long mn, long long mx) {
@@ -411,6 +495,33 @@ public final class BiomeKernels {
              }
              out[i] = tie || r < 0 ? -1 : r;
          }
-         """.formatted((Object[])climate);
+         // C1: another provider's table (TerraBlender regions, as Biomes O' Plenty's): its tree from its root and its own
+         // ocean projection; outProjected its projected target (for the decoration), outCC its projected continentalness (the
+         // only coordinate the projection changes; copied out), chosen its biome's number or -1 and tied 1 (a tie: the CPU's).
+         extern "C" __global__ void biomeTreeSearchRoot(const long long* in, int n, int root, const int* bounds, const int* first, const int* count,
+                                                        const int* biome, int sourceMin, int sourceMax, int targetMax, long long* outProjected,
+                                                        long long* outCC, int* chosen, int* tied) {
+             int i = blockIdx.x * blockDim.x + threadIdx.x;
+             if (i >= n) return;
+             long long t[7];
+             for (int k = 0; k < 6; k++) t[k] = in[i * 6 + k];
+             t[6] = 0;
+             long long cc = t[2];
+             long long smin = sourceMin;
+             long long smax = sourceMax;
+             long long tmax = targetMax;
+             if (!(tmax == smax || cc <= smin || cc >= smax)) t[2] = smin + (cc - smin) * (tmax - smin) / (smax - smin);
+             for (int k = 0; k < 6; k++) outProjected[i * 6 + k] = t[k];
+             outCC[i] = t[2];
+             int tie = 0;
+             int r = bq_treeFind(t, root, bounds, first, count, biome, &tie);
+             chosen[i] = tie || r < 0 ? -1 : r;
+             tied[i] = tie || r < 0 ? 1 : 0;
+         }
+         """.formatted((Object[])climate).replace("BQ_SLOTS", Integer.toString(Math.max(1, slots * 2)))
+         // Cells per thread: 8 of a column with remembered subtrees, else 1 (thread i, cell i, as before).
+         .replace("BQ_CELLS", slots > 0 ? "8" : "1")
+         // No cache without slots: the remembered functions then work everything out (as elsewhere).
+         .replace("c.ccache = ccache;", slots > 0 ? "c.ccache = ccache;" : "c.ccache = 0;");
    }
 }

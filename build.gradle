@@ -24,6 +24,9 @@ configurations {
 dependencies {
     // Optional at run time: FreeTerraForged's tiles are read for the ground height (copy its jar into libs/ to build).
     compileOnly files(project.findProperty('ftfJar') ?: 'libs/freeterraforged-1.0.0010.jar')
+    // Optional at run time: C2ME's chunk system (the 4x4 area step's status and dependency hooks). Copied from the C2ME
+    // jar's META-INF/jars into libs/c2me/ (base-all for flowsched, rewrites-chunk-system, rxjava) to build.
+    compileOnly fileTree(dir: 'libs/c2me', include: '*.jar')
     // The CUDA driver API and NVRTC from Java: LWJGL's CUDA module, matching Minecraft 1.21.1's LWJGL 3.3.3 (its core
     // comes with the game). Its classes are copied into the mod's own jar without its module descriptor (see jar
     // below): as a nested module it required org.lwjgl, which a dedicated server does not have, and the server would
@@ -44,6 +47,10 @@ jar {
 def gameLogs = project.findProperty('logs') ?: 'run/logs'
 tasks.withType(JavaExec).configureEach {
     systemProperty 'wgaccel.logs', gameLogs
+    // Offline checks for another GPU architecture: -PgpuArch=61 (GTX 10xx), 75 (RTX 20xx), ... (a newer card runs older PTX).
+    if (project.findProperty('gpuArch')) {
+        systemProperty 'wgaccel.gpuArch', project.findProperty('gpuArch')
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -105,6 +112,18 @@ tasks.register('cudaErosionCheck', JavaExec) {
     systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
 }
 
+// The End's islands outside the game (C2.5): `gradlew.bat cudaEndIslandsCheck` runs Minecraft's own End islands function
+// against its generated CUDA and compares them bit for bit.
+tasks.register('cudaEndIslandsCheck', JavaExec) {
+    group = 'verification'
+    description = 'Compares the GPU version of the End islands density function with the Minecraft class.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.EndIslandsCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
 // Vanilla's NormalNoise outside the game: `gradlew.bat cudaVanillaNoiseCheck` runs Minecraft's own noise classes against
 // the GPU kernels and compares them bit for bit.
 tasks.register('cudaVanillaNoiseCheck', JavaExec) {
@@ -119,6 +138,30 @@ tasks.register('cudaVanillaNoiseCheck', JavaExec) {
 
 // Generated density functions outside the game: `gradlew.bat cudaDensityCheck` builds stand-in trees of every vanilla
 // density function kind the overworld uses (real NormalNoises), generates their CUDA, compiles it and runs it.
+// C2 (vanilla): `gradlew.bat cudaVanillaDensityCheck` compares the GPU's ShiftA, ShiftB, Shift, ShiftedNoise and
+// BlendedNoise with Minecraft's own Java, bit for bit.
+// C2: `gradlew.bat cudaCornerColumnsCheck`: corners with column subtrees cached per corner column vs worked out per
+// corner, bit for bit, on a vanilla-like tree.
+tasks.register('cudaCornerColumnsCheck', JavaExec) {
+    group = 'verification'
+    description = 'Checks the corner kernel with cached column subtrees against the plain one, bit for bit.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.CornerColumnsCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
+tasks.register('cudaVanillaDensityCheck', JavaExec) {
+    group = 'verification'
+    description = 'Checks the vanilla-only density function kinds on the GPU against Minecraft, bit for bit.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.VanillaDensityCheck'
+    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
+    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
+    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+}
+
 tasks.register('cudaDensityCheck', JavaExec) {
     group = 'verification'
     description = 'Generates, compiles and runs CUDA for stand-in density function trees of every kind.'
@@ -192,6 +235,15 @@ tasks.register('cudaQueueBench', JavaExec) {
     systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
     systemProperty 'connections', project.findProperty('connections') ?: '8'
     systemProperty 'preload', project.findProperty('preload') ?: 'false'
+}
+
+// Where the mod finds NVRTC when the game has no CUDA_PATH (started before the toolkit was installed).
+tasks.register('cudaNvrtcLookupCheck', JavaExec) {
+    group = 'verification'
+    description = 'Finds and loads NVRTC as the mod does, with CUDA_PATH and CUDA_PATH_V* removed.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.NvrtcLookupCheck'
+    environment.keySet().removeIf { it.toUpperCase().startsWith('CUDA_PATH') }
 }
 
 tasks.register('cudaSurfaceInputsCheck', JavaExec) {

@@ -18,7 +18,10 @@
     "CliffRelaxationMixin",
     "TileNoiseGeneratorMixin",
     "TileNoiseHeightmapMixin",
-    "TileNoisePopulatorMixin"
+    "TileNoisePopulatorMixin",
+    "FtfPlacementScopesMixin",
+    "ChunkCellsMixin",
+    "SurfaceEnvelopeMixin"
   ],
   "injectors": {
     "defaultRequire": 0

@@ -39,7 +39,15 @@ public final class BiomeBench {
          climate[i] = names.group(1);
       }
 
-      String source = saved.substring(0, split) + BiomeKernels.source(climate).trim();
+      // The cache slots the saved code's remembered subtrees use (dc_ccN / dc_cmN: the highest N + 1; 0 without).
+      int slots = 0;
+      Matcher memo = Pattern.compile("double dc_c[cm](\\d+)\\(").matcher(saved);
+      while (memo.find()) {
+         slots = Math.max(slots, Integer.parseInt(memo.group(1)) + 1);
+      }
+
+      System.out.printf(Locale.ROOT, "cache slots in the saved code: %d%n", slots);
+      String source = saved.substring(0, split) + BiomeKernels.source(climate, slots).trim();
       BiomeDump dump = BiomeDump.read(logs.resolve("wgaccel-biome-table.bin"), logs.resolve("wgaccel-biome-jobs.bin"));
       System.out.printf(Locale.ROOT, "biome bench: %d chunks, %d points, %d tree nodes%n", dump.jobs.size(), dump.biomeIds.length, dump.nodeCount.length);
       long context = Gpu.createContext();
