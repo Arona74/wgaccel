@@ -54,6 +54,8 @@ public final class Config {
    public static final Setting<Boolean> GPU_AREA_BATCHES;
    public static final Setting<Boolean> GPU_STRUCTURES;
    public static final Setting<Boolean> GPU_CUBIN_CACHE;
+   public static final Setting<Integer> GPU_FILL_CHECK_EVERY;
+   public static final Setting<java.util.List<? extends String>> GPU_FILL_DEBUG_CHUNKS;
 
    public enum GpuMode {
       OFF,
@@ -395,6 +397,14 @@ public final class Config {
          .comment("S2: the GPU programs are kept on disk also as the driver's finished machine code (cubin), so a world loads them",
             "without the driver translating them again (the same code the driver would make).")
          .define("gpuCubinCache", true), true, true);
+      GPU_FILL_CHECK_EVERY = Setting.custom(builder
+         .comment("Every how many GPU noise fills one is also done the normal way and compared (64: about 1.5%; 1: every chunk, much",
+            "slower, for finding a difference). The first difference turns the GPU fill off.")
+         .defineInRange("gpuFillCheckEvery", 64, 1, 4096));
+      GPU_FILL_DEBUG_CHUNKS = Setting.custom(builder
+         .comment("Chunks whose GPU noise fill is always checked, diagnosed in the log and saved (logs/wgaccel-noise-fill-sample-1NN.bin)",
+            "with the game's own blocks, as \"x,z\" chunk coordinates (as the log's chunk [x, z]). Empty: none.")
+         .defineListAllowEmpty("gpuFillDebugChunks", java.util.List.of(), () -> "0,0", value -> value instanceof String));
       builder.pop();
       builder.pop();
       SPEC = builder.build();

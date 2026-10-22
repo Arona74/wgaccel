@@ -67,7 +67,27 @@ import net.neoforged.fml.loading.FMLPaths;
  * GPU path cached).
  */
 public final class GpuNoiseFill {
-   private static final int CHECK_EVERY = 64;
+   /** Every how many GPU chunks one is checked (config gpuFillCheckEvery, default 64; 1 checks every chunk). */
+   private static int checkEvery() {
+      return Math.max(1, Config.GPU_FILL_CHECK_EVERY.get());
+   }
+
+   /** Config gpuFillDebugChunks: chunks always checked, diagnosed and saved with the game's blocks ("x,z" chunk coordinates). */
+   static boolean debugChunk(ChunkAccess chunk) {
+      java.util.List<? extends String> list = Config.GPU_FILL_DEBUG_CHUNKS.get();
+      if (list.isEmpty()) {
+         return false;
+      }
+
+      String key = chunk.getPos().x + "," + chunk.getPos().z;
+      for (String each : list) {
+         if (each.replace(" ", "").equals(key)) {
+            return true;
+         }
+      }
+
+      return false;
+   }
    private static final BlockState AIR = Blocks.AIR.defaultBlockState();
 
    private record Program(RandomState random, FillGpu gpu, com.wgaccel.gpu.FillBatcher batcher, List<Object> cellSamplers, long seedLo, long seedHi,
@@ -96,6 +116,8 @@ public final class GpuNoiseFill {
       private boolean fromAhead;
       /** From the look-ahead, made from the chunk's own noise chunk at its biome step (structure chunks), not a stand-in. */
       private boolean real;
+      /** A chunk named in gpuFillDebugChunks: diagnosed and saved even when it is the same. */
+      private boolean debug;
       private long[] oceanFloor;
       private long[] worldSurface;
       private ShortList[] marks;
@@ -433,9 +455,11 @@ public final class GpuNoiseFill {
          if (sample < SAMPLES && main) {
             writeSample(p, job, codes, 256 * cellCountY * cellHeight, sample);
          }
-         boolean check = Config.GPU_NOISE_FILL.get() == Config.GpuFilterMode.CHECK || ELIGIBLE.getAndIncrement() % CHECK_EVERY == 0;
+         boolean debug = debugChunk(chunk);
+         boolean check = Config.GPU_NOISE_FILL.get() == Config.GpuFilterMode.CHECK || ELIGIBLE.getAndIncrement() % checkEvery() == 0 || debug;
          Pending pending = new Pending(chunk, minCellY, cellCountY, cellWidth, cellHeight, codes, check, gpuStart - start, end - gpuStart);
          pending.program = p;
+         pending.debug = debug;
          PREP_NANOS.add(pending.prepNanos);
          GPU_NANOS.add(pending.gpuNanos);
          if (check && !snapshot(pending)) {
@@ -623,8 +647,12 @@ public final class GpuNoiseFill {
       private static final int BATCH = 64;
 
       /** real: made from the chunk's own noise chunk at its biome step (structure pieces included), not a stand-in. */
-      private record Result(int minCellY, int cellCountY, int cellWidth, int cellHeight, byte[] codes, boolean real) {
+      private record Result(int minCellY, int cellCountY, int cellWidth, int cellHeight, byte[] codes, boolean real, FillGpu.Job job) {
       }
+
+      /** Results whose inputs were no longer the chunk's at its noise step (not used; the chunk filled the usual way). */
+      final LongAdder inputsChanged = new LongAdder();
+      private final AtomicInteger inputsLogged = new AtomicInteger();
 
       /** Jobs made from real chunks (structure chunks at their biome step), used instead of a stand-in for their keys. */
       private final java.util.concurrent.ConcurrentHashMap<Long, FillGpu.Job> prepared = new java.util.concurrent.ConcurrentHashMap<>();
@@ -820,10 +848,27 @@ public final class GpuNoiseFill {
             return null;
          }
 
+         // The identical-world rule (the user, 2026-10-22): a result made earlier (a stand-in's, or a structure chunk's at
+         // its biome step) is used only if the chunk's own inputs now are the same as the ones it was made from (0.11.0's
+         // only fill difference: a structure chunk's job made at its biome step, its inputs changed by the noise step;
+         // the GPU from the noise step's inputs gave the game's blocks). The same inputs give the same blocks.
+         String changed = this.changedInputs(chunk, result.job);
+         if (changed != null) {
+            this.inputsChanged.increment();
+            if (this.inputsLogged.incrementAndGet() <= 8) {
+               WorldgenAccelerator.LOG.info("WGA GPU look-ahead: chunk {}'s inputs changed since its {} was made ({}); filled the usual way", chunk.getPos(),
+                  result.real ? "structure-chunk job (at its biome step)" : "stand-in", changed);
+            }
+
+            return null;
+         }
+
          this.used.increment();
-         boolean check = ELIGIBLE.getAndIncrement() % CHECK_EVERY == 0;
+         boolean debug = debugChunk(chunk);
+         boolean check = ELIGIBLE.getAndIncrement() % checkEvery() == 0 || debug;
          Pending pending = new Pending(chunk, minCellY, cellCountY, cellWidth, cellHeight, result.codes, check, 0L, 0L);
          pending.fromAhead = true;
+         pending.debug = debug;
          pending.real = result.real;
          pending.program = this.p;
          if (check && !snapshot(pending)) {
@@ -832,6 +877,28 @@ public final class GpuNoiseFill {
          }
 
          return pending;
+      }
+
+      private final ThreadLocal<Scratch> verify = ThreadLocal.withInitial(Scratch::new);
+
+      /** The first input in which the chunk's own inputs now differ from the job's, or null when they are the same. */
+      private String changedInputs(ChunkAccess chunk, FillGpu.Job made) {
+         try {
+            NoiseChunk noise = ((com.wgaccel.mixin.access.ChunkAccessAccessor)chunk).wgaccel$noiseChunk();
+            if (noise == null || made == null) {
+               return "no noise chunk to compare with";
+            }
+
+            Scratch scratch = this.verify.get();
+            if (!inputs(this.p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), made.cellMinY, made.cellCountY, made.cellWidth,
+               made.cellHeight, scratch.job, scratch)) {
+               return "its aquifer has something the GPU does not know";
+            }
+
+            return difference(scratch.job, made);
+         } catch (Throwable failure) {
+            return failure.toString();
+         }
       }
 
       private void run() {
@@ -930,7 +997,7 @@ public final class GpuNoiseFill {
                   this.preparedMade.increment();
                }
 
-               Result result = new Result(job.cellMinY, job.cellCountY, job.cellWidth, job.cellHeight, codes.get(i), real);
+               Result result = new Result(job.cellMinY, job.cellCountY, job.cellWidth, job.cellHeight, codes.get(i), real, job);
                if (this.states.replace(key, QUEUED, result)) {
                   this.made.increment();
                   this.readyCount.incrementAndGet();
@@ -959,9 +1026,9 @@ public final class GpuNoiseFill {
       String summary() {
          long b = Math.max(1, this.batches.sum());
          long m = Math.max(1, this.made.sum());
-         return String.format(Locale.ROOT, "; look-ahead: %,d noticed (%,d as area mates, %,d with structure terrain skipped), %,d made in %,d launches (%.1f chunks each; inputs %.2f ms and GPU %.2f ms per chunk on its own threads), %,d used, %,d not ready in time (%,d waited for, %,d of them in time), %,d other cell range, %,d dropped, %,d waiting of %,d, structure chunks made at their biome step %,d (%,d used)",
+         return String.format(Locale.ROOT, "; look-ahead: %,d noticed (%,d as area mates, %,d with structure terrain skipped), %,d made in %,d launches (%.1f chunks each; inputs %.2f ms and GPU %.2f ms per chunk on its own threads), %,d used, %,d not ready in time (%,d waited for, %,d of them in time), %,d other cell range, %,d dropped, %,d waiting of %,d, structure chunks made at their biome step %,d (%,d used), %,d not used: inputs changed since made",
             this.noticed.sum(), this.areaMates.sum(), this.structuredSkipped.sum(), this.made.sum(), this.batches.sum(), (double)this.made.sum() / b, this.inputNanos.sum() / 1.0e6 / m, this.gpuNanos.sum() / 1.0e6 / m,
-            this.used.sum(), this.late.sum(), this.waited.sum(), this.waitedInTime.sum(), this.mismatched.sum(), this.dropped.sum(), this.readyCount.get(), this.budget, this.preparedMade.sum(), this.preparedUsed.sum());
+            this.used.sum(), this.late.sum(), this.waited.sum(), this.waitedInTime.sum(), this.mismatched.sum(), this.dropped.sum(), this.readyCount.get(), this.budget, this.preparedMade.sum(), this.preparedUsed.sum(), this.inputsChanged.sum());
       }
    }
 
@@ -1076,9 +1143,16 @@ public final class GpuNoiseFill {
             out.append("; a new stand-in's inputs: ").append(difference == null ? "the same as the chunk's" : difference);
          }
 
+         byte[] game = gameCodes(p, chunk, pending.minCellY * pending.cellHeight, blocks);
+         int gameDiffer = 0;
+         for (int i = 0; i < blocks; i++) {
+            gameDiffer += (again[i] & 15) != game[i] ? 1 : 0;
+         }
+
+         out.append(String.format(Locale.ROOT, "; and %,d differ from the game's blocks", gameDiffer));
          int index = DIFFER_SAMPLES.getAndIncrement();
-         if (index < 4) {
-            writeSample(p, scratch.job, again, blocks, 100 + index);
+         if (index < 8) {
+            writeSample(p, scratch.job, again, blocks, 100 + index, game);
             out.append("; saved as wgaccel-noise-fill-sample-").append(100 + index).append(".bin");
          }
       } catch (Throwable failure) {
@@ -1086,6 +1160,36 @@ public final class GpuNoiseFill {
       }
 
       return out.toString();
+   }
+
+   /**
+    * The game's blocks of a chunk just filled on the CPU, as the fill's state codes (the code's table index; 15: a state
+    * the table does not have), in the kernel's order (y, then z, then x).
+    */
+   private static byte[] gameCodes(Program p, ChunkAccess chunk, int minY, int blocks) {
+      byte[] out = new byte[blocks];
+      LevelChunkSection[] sections = chunk.getSections();
+      java.util.Map<BlockState, Integer> index = new java.util.IdentityHashMap<>();
+      for (int i = p.table.length - 1; i >= 0; i--) {
+         index.put(p.table[i], i);
+      }
+
+      net.minecraft.world.level.chunk.PalettedContainer<BlockState> states = null;
+      int section = Integer.MIN_VALUE;
+      for (int t = 0; t < blocks; t++) {
+         int y = minY + t / 256;
+         int s = chunk.getSectionIndex(y);
+         if (s != section) {
+            section = s;
+            states = s >= 0 && s < sections.length ? sections[s].getStates().copy() : null;
+         }
+
+         BlockState state = states == null ? AIR : states.get(t % 16, y & 15, t % 256 / 16);
+         Integer code = index.get(state);
+         out[t] = (byte)(code == null ? 15 : code);
+      }
+
+      return out;
    }
 
    /** CHECK: the stand-in's inputs for this chunk against the real ones just made (the job). */
@@ -1132,6 +1236,15 @@ public final class GpuNoiseFill {
          return "lava levels or sea";
       }
 
+      if (!Arrays.equals(a.beard, b.beard)) {
+         return String.format(Locale.ROOT, "structure terrain (Beardifier): real %d ints, made %d", a.beard == null ? -1 : a.beard.length,
+            b.beard == null ? -1 : b.beard.length);
+      }
+
+      if (a.veins != b.veins || a.aquifer != b.aquifer || a.seedLo != b.seedLo || a.seedHi != b.seedHi) {
+         return "ore veins or aquifer kind";
+      }
+
       for (int i = 0; i < 3 * a.cellsUsed; i++) {
          if (a.loc[i] != b.loc[i]) {
             return "aquifer cell centre " + i / 3;
@@ -1151,11 +1264,16 @@ public final class GpuNoiseFill {
     * the fill can be timed and changed outside the game against real data (gradlew.bat cudaFillBench).
     */
    private static void writeSample(Program p, FillGpu.Job job, byte[] codes, int blocks, int index) {
+      writeSample(p, job, codes, blocks, index, null);
+   }
+
+   /** As above; with the game's own block codes (version 3), for cudaFillBench to compare the GPU with the game. */
+   private static void writeSample(Program p, FillGpu.Job job, byte[] codes, int blocks, int index, byte[] game) {
       java.nio.file.Path path = FMLPaths.GAMEDIR.get().resolve("logs").resolve("wgaccel-noise-fill-sample-" + index + ".bin");
       try (java.io.DataOutputStream out = new java.io.DataOutputStream(new java.io.BufferedOutputStream(Files.newOutputStream(path)))) {
          // Version 2: the chunk's structure pieces and the Beardifier's kernel table at the end (version 1 had none, so
          // offline its structure chunks were worked out without their structure terrain and looked different).
-         out.writeInt(2);
+         out.writeInt(game == null ? 2 : 3);
          out.writeInt(p.noise.length);
          for (double value : p.noise) {
             out.writeDouble(value);
@@ -1210,6 +1328,11 @@ public final class GpuNoiseFill {
          out.writeInt(kernel.length);
          for (float value : kernel) {
             out.writeFloat(value);
+         }
+
+         if (game != null) {
+            out.writeInt(game.length);
+            out.write(game);
          }
       } catch (Exception failure) {
          WorldgenAccelerator.LOG.warn("WGA GPU noise fill: could not save a sample: {}", failure.toString());
@@ -1646,6 +1769,12 @@ public final class GpuNoiseFill {
 
          CHECKED.increment();
          CHECKED_BLOCKS.add(256L * pending.cellCountY * pending.cellHeight);
+         if (pending.debug) {
+            WorldgenAccelerator.LOG.info("WGA GPU noise fill debug chunk {} (the GPU's blocks from {}): {}{}", chunk.getPos(),
+               !pending.fromAhead ? "its own noise step" : pending.real ? "the structure-chunk job made at its biome step" : "the look-ahead's stand-in chunk",
+               differences.isEmpty() ? "IDENTICAL" : String.join("; ", differences), diagnose(pending));
+         }
+
          if (!differences.isEmpty()) {
             DIFFERENT.increment();
             String origin = !pending.fromAhead ? "its own noise step" : pending.real ? "the structure-chunk job made at its biome step"

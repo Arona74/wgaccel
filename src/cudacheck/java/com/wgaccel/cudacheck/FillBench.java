@@ -21,7 +21,8 @@ import java.util.concurrent.Future;
  * 14 threads at once (as C2ME's workers ask). For changing the fill's code against real data without a game run.
  */
 public final class FillBench {
-   private record Sample(FillGpu.Job job, byte[] codes, double[] noise, int[] permutations, int interpolators, int columns, float[] beardKernel) {
+   private record Sample(FillGpu.Job job, byte[] codes, double[] noise, int[] permutations, int interpolators, int columns, float[] beardKernel,
+         byte[] game, String name) {
    }
 
    private FillBench() {
@@ -40,6 +41,13 @@ public final class FillBench {
       List<Sample> samples = new ArrayList<>();
       for (int i = 0; Files.exists(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin")); i++) {
          samples.add(read(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin")));
+      }
+
+      // Chunks saved after a difference or named in gpuFillDebugChunks (100 to 107), with the game's own blocks.
+      for (int i = 100; i < 108; i++) {
+         if (Files.exists(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin"))) {
+            samples.add(read(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin")));
+         }
       }
 
       if (samples.isEmpty()) {
@@ -68,6 +76,27 @@ public final class FillBench {
       }
 
       System.out.printf(Locale.ROOT, "codes: %d of %d samples IDENTICAL to the game's%n", same, samples.size());
+      for (Sample sample : samples) {
+         if (sample.game == null) {
+            continue;
+         }
+
+         byte[] codes = new byte[sample.codes.length];
+         gpu.fill(sample.job, codes);
+         int differ = 0;
+         StringBuilder where = new StringBuilder();
+         for (int t = 0; t < sample.game.length; t++) {
+            if ((codes[t] & 15) != sample.game[t]) {
+               if (differ++ < 8) {
+                  where.append(String.format(Locale.ROOT, " (%d, %d, %d) gpu %d game %d;", sample.job.chunkX + t % 16, sample.job.cellMinY * sample.job.cellHeight
+                     + t / 256, sample.job.chunkZ + t % 256 / 16, codes[t] & 15, sample.game[t]));
+               }
+            }
+         }
+
+         System.out.printf(Locale.ROOT, "%s (chunk at block %d %d): the GPU here against the game's blocks: %,d of %,d differ%s%n", sample.name,
+            sample.job.chunkX, sample.job.chunkZ, differ, sample.game.length, where);
+      }
       if (com.wgaccel.gpu.Gpu.linkProblem != null) {
          System.out.println("link to machine code: " + com.wgaccel.gpu.Gpu.linkProblem);
       }
@@ -147,7 +176,7 @@ public final class FillBench {
    private static Sample read(Path path) throws Exception {
       try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
          int version = in.readInt();
-         if (version != 1 && version != 2) {
+         if (version < 1 || version > 3) {
             throw new IllegalStateException("unknown sample version in " + path);
          }
 
@@ -215,7 +244,13 @@ public final class FillBench {
             }
          }
 
-         return new Sample(job, codes, noise, permutations, interpolators, columns, kernel);
+         byte[] game = null;
+         if (version >= 3) {
+            game = new byte[in.readInt()];
+            in.readFully(game);
+         }
+
+         return new Sample(job, codes, noise, permutations, interpolators, columns, kernel, game, path.getFileName().toString());
       }
    }
 }
