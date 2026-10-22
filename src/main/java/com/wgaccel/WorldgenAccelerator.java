@@ -73,16 +73,29 @@ public final class WorldgenAccelerator {
     * S1: Chunky's chunks in flight (config chunkyMaxWorkingCount), set before Chunky first reads it (its GenerationTask
     * reads the system property once, when its first task starts). A value given on the command line is kept.
     */
-   private static void chunkyWorkingCount() {
+   private static void chunkyWorkingCount(net.minecraft.server.level.ServerLevel level) {
       int wanted = Config.CHUNKY_MAX_WORKING_COUNT.get();
       if (wanted < 0 || System.getProperty("chunky.maxWorkingCount") != null) {
          LOG.info("WGA Chunky: chunks in flight left as they are ({})", System.getProperty("chunky.maxWorkingCount", "Chunky's default, 50"));
          return;
       }
 
-      int count = wanted > 0 ? wanted : Runtime.getRuntime().maxMemory() > 10L * 1024 * 1024 * 1024 ? 512 : 192;
+      int count = wanted > 0 ? wanted : automaticWorkingCount(Runtime.getRuntime().maxMemory(), level.getSectionsCount());
       System.setProperty("chunky.maxWorkingCount", Integer.toString(count));
       LOG.info("WGA Chunky: {} chunks in flight (chunky.maxWorkingCount)", count);
+   }
+
+   /**
+    * chunkyMaxWorkingCount 0: as many chunks in flight as the heap holds. Each chunk in flight keeps about 220 chunks
+    * loaded (its neighbours at earlier steps; 0.11.4's memory report: 512 in flight, ~112,000 chunks, about 2.4 KB per
+    * section with light and palettes), so the loaded chunks are kept under about 45% of the heap: a 16 GB heap and a
+    * 768-block FreeTerraForged world get ~300 (512 filled it and slowed a radius 2000 run from 430 to 170 chunks/s), a
+    * vanilla-height world or a bigger heap 512. Between 64 and 512, in steps of 32.
+    */
+   static int automaticWorkingCount(long maxHeap, int sections) {
+      double perChunk = Math.max(1, sections) * 2400.0;
+      double count = 0.45 * maxHeap / (220.0 * perChunk);
+      return Math.max(64, Math.min(512, (int)(count / 32) * 32));
    }
 
    /**
@@ -102,7 +115,7 @@ public final class WorldgenAccelerator {
          return;
       }
 
-      chunkyWorkingCount();
+      chunkyWorkingCount(level);
       com.wgaccel.gpu.SurfaceCheck.reset(level.getChunkSource().randomState());
       com.wgaccel.gpu.BiomeCheck.reset();
       com.wgaccel.gpu.GpuPrepare.reset();
@@ -157,6 +170,7 @@ public final class WorldgenAccelerator {
       DensityInventory.log(event.getServer().overworld());
       com.wgaccel.gen.BiomePlanInventory.log(event.getServer().overworld());
       Reporter.start();
+      com.wgaccel.stats.MemoryWatch.reset();
       if (Config.GPU_MODE.get() != Config.GpuMode.OFF && !com.wgaccel.gpu.Lwjgl.PRESENT) {
          LOG.warn("WGA GPU unavailable: {}; everything runs on the CPU", com.wgaccel.gpu.Lwjgl.MISSING);
       } else if (Config.GPU_MODE.get() != Config.GpuMode.OFF) {

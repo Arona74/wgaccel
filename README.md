@@ -105,6 +105,7 @@ The same on a dedicated server (same PC, the card free): 0:47.
 | Setup | Without | With | Speed-up |
 | --- | --- | --- | --- |
 | FreeTerraForged + Terralith + Biomes O' Plenty + Regions Unexplored, overworld r1000 | 2:49 | 0:57 | 2.9x |
+| FreeTerraForged 1.0.0010 (22 Oct unstable, a 1,152-block world), overworld r2000 (63,001 chunks) | not measured | 3:14 (325 chunks/s) | |
 | FreeTerraForged 1.0.0013 "deleteTiles", overworld r1000: before and after the mod's fixes for its new chunk cells (with `gpuAreaStep` on) | 60-90 chunks/s | 1:53 (152 chunks/s) | about 2x |
 | FreeTerraForged 1.0.0010 with the 4 x 4 area step (`gpuAreaStep`, off by default) | 0:46 | 0:44 | 1.05x |
 | Vanilla overworld, radius 2000 (63,001 chunks), with `gpuAreaStep` on (it turns the GPU on in vanilla) | 2:15 | 1:22 | 1.65x |
@@ -193,8 +194,12 @@ Players joining the server don't need the mod: world generation happens on the s
 | Pregenerating with Chunky | 10-16 GB (16 GB tested) |
 | With big biome or structure mods on top | add 2-4 GB |
 
-During the radius 1000 runs the heap used 4-10 GB of 16. With more than 10 GB the mod lets Chunky keep 512 chunks in
-flight, otherwise 192 (`chunkyMaxWorkingCount = 0`, automatic). ZGC (`-XX:+UseZGC -XX:+ZGenerational`) was used on
+Most of the memory during pregeneration is the chunks Chunky keeps loaded: each chunk in flight keeps about 220 chunks
+loaded (its neighbours at earlier steps), and a 768-block FreeTerraForged world's chunks are twice the size of vanilla's.
+So the mod picks Chunky's chunks in flight from the heap and the world's height (`chunkyMaxWorkingCount = 0`,
+automatic): about 300 with 16 GB and a 768-block world, 512 with a bigger heap or a vanilla-height world. The
+FreeTerraForged tile cache (`tileCacheTiles = 256`) takes about 1.7 GB more. With too little heap the game slows down a
+lot once it fills (the collector runs all the time): give it more, or lower `chunkyMaxWorkingCount`. ZGC (`-XX:+UseZGC -XX:+ZGenerational`) was used on
 the test PC; leave the rest of the JVM flags as your launcher sets them. Graphics card memory: a few hundred MB.
 
 **Java:** Java 21 (Minecraft 1.21.1's own) works. All the measurements above were made on Java 25; the difference
@@ -208,7 +213,7 @@ say how much they gained on the test PC.
 | Section | What's in it |
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
-| `[general]` | `chunkyMaxWorkingCount` |
+| `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report) |
 | `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastBlockPredicates` (off: it was slower) |
 | `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat warning), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |

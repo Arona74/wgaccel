@@ -146,6 +146,7 @@ public final class Reporter {
       Runtime runtime = Runtime.getRuntime();
       double usedGb = (runtime.totalMemory() - runtime.freeMemory()) / 1.073741824e9;
       double maxGb = runtime.maxMemory() / 1.073741824e9;
+      MemoryWatch.check(runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory());
       log(String.format(Locale.ROOT, "WGA %.0fs: %,d new chunks (%.1f/s), %,d full | CPU %.1f of %d threads | GC pauses %,d ms (%d) | heap %.1f / %.1f GB",
          seconds, newChunks, newChunks / seconds, window.calls(Stage.FULL), cpu / 1.0e9 / seconds, THREADS, gc[0], gc[1], usedGb, maxGb) + com.wgaccel.c2me.AreaStep.summary());
       log("WGA work per chunk (ms, share): " + work(window, null) + layers(window));

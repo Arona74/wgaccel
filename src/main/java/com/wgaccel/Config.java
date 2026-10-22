@@ -27,6 +27,7 @@ public final class Config {
    public static final Setting<Boolean> FTF_SHARED_CHUNK_CELLS;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
+   public static final Setting<Boolean> MEMORY_REPORT;
    public static final Setting<Integer> GPU_BATCH_CHUNKS;
    public static final Setting<Integer> GPU_SURFACE_BATCH_CHUNKS;
    public static final Setting<Integer> GPU_SURFACE_BATCH_THREADS;
@@ -120,10 +121,16 @@ public final class Config {
       builder.comment("General settings.").push("general");
       CHUNKY_MAX_WORKING_COUNT = Setting.of(builder
          .comment("How many chunks Chunky keeps in flight while pregenerating (its chunky.maxWorkingCount; Chunky's own default is 50,",
-            "which leaves the generation threads and the GPU waiting). 0: automatic (512 with more than 10 GB of memory, else 192).",
+            "which leaves the generation threads and the GPU waiting). 0: automatic, from the heap and the world's height (each chunk in",
+            "flight keeps ~220 chunks loaded; kept under ~45% of the heap: 16 GB with a 768-block FreeTerraForged world ~300, a",
+            "vanilla-height world or a bigger heap 512; 512 on 16 GB filled the heap in a radius 2000 run and slowed it).",
             "-1: leave Chunky's setting alone. A value set on the command line (-Dchunky.maxWorkingCount) always wins.",
             "Takes effect for a pregeneration started after the world has loaded.")
          .defineInRange("chunkyMaxWorkingCount", 0, -1, 65536), 0, 0);
+      MEMORY_REPORT = Setting.custom(builder
+         .comment("For a bug report about memory: when the heap first passes 80% and 95% of its maximum, log what holds it (a class",
+            "histogram after a full collection, a pause of about a second, and the mod's cache sizes). Off by default.")
+         .define("memoryReport", false));
       builder.pop();
       builder.comment("CPU improvements: exact speed-ups of FreeTerraForged's and Minecraft's own CPU work (no GPU needed; any PC).").push("cpu");
       CPU_IMPROVEMENTS = Setting.custom(builder

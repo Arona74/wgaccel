@@ -881,6 +881,11 @@ public final class GpuNoiseFill {
 
       private final ThreadLocal<Scratch> verify = ThreadLocal.withInitial(Scratch::new);
 
+      String memorySummary() {
+         return String.format(Locale.ROOT, "fill look-ahead states %,d (results %,d), prepared %,d, real keys %,d, queues %,d + %,d, done %,d", this.states.size(),
+            this.readyCount.get(), this.prepared.size(), this.realKeys.size(), this.wanted.size(), this.soon.size(), this.doneCount.get());
+      }
+
       /** The first input in which the chunk's own inputs now differ from the job's, or null when they are the same. */
       private String changedInputs(ChunkAccess chunk, FillGpu.Job made) {
          try {
@@ -1877,5 +1882,11 @@ public final class GpuNoiseFill {
          WRITE_NANOS.sum() / 1.0e6 / gpuChunks, checked == 0 ? "" : String.format(Locale.ROOT, ", the CPU fill of checked chunks %.2f ms", CPU_NANOS.sum() / 1.0e6 / checked))
          + String.format(Locale.ROOT, "; %,d one-block and %,d mixed sections written at once; %,d chunks with structures on the GPU", UNIFORM_SECTIONS.sum(),
             MIXED_SECTIONS.sum(), STRUCTURED.sum()));
+   }
+
+   /** For the memory report: what the fill's look-ahead holds now. */
+   public static String memorySummary() {
+      Ahead look = ahead;
+      return look == null ? "fill look-ahead off" : look.memorySummary();
    }
 }

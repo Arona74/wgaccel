@@ -487,4 +487,10 @@ public final class SurfaceAhead {
          MADE.sum(), BATCHES.sum(), INPUT_NANOS.sum() / 1.0e6 / made, GPU_NANOS.sum() / 1.0e6 / made, NO_NEIGHBOURS.sum(), USED.sum(), WAITED.sum(),
          WAIT_NANOS_SUM.sum() / 1.0e6 / Math.max(1, WAITED.sum()), MISSING.sum());
    }
+
+   /** For the memory report: what the surface look-ahead holds now. */
+   public static String memorySummary() {
+      return String.format(java.util.Locale.ROOT, "surface codes %,d, surface biomes %,d, surface results %,d, surface queue %,d", CODES.size(), BIOMES.size(),
+         RESULTS.size(), QUEUE.size());
+   }
 }

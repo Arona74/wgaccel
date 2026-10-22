@@ -525,4 +525,11 @@ public final class BiomesAhead {
          this.noticed.sum(), this.made.sum(), this.batches.sum(), this.inputNanos.sum() / 1.0e6 / m, this.gpuNanos.sum() / 1.0e6 / m, GpuBiomes.program() == null ? "-" : GpuBiomes.program().gpu().batchTimings(), this.used.sum(), this.late.sum(),
          this.waited.sum(), this.waitedInTime.sum(), this.mismatched.sum(), this.dropped.sum(), this.skipped.sum(), this.readyCount.get());
    }
+
+   /** For the memory report: what the biome look-ahead holds now. */
+   public static String memorySummary() {
+      BiomesAhead look = current;
+      return look == null ? "biome look-ahead off" : String.format(java.util.Locale.ROOT, "biome look-ahead states %,d (results %,d), queues %,d + %,d",
+         look.states.size(), look.readyCount.get(), look.wanted.size(), look.soon.size());
+   }
 }

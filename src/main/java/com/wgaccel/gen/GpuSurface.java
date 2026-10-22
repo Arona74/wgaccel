@@ -1453,4 +1453,9 @@ public final class GpuSurface {
                SurfaceAhead.FROM_CODES.sum()) + (AHEAD_DIFFERENT.sum() == 0 ? "" : String.format(Locale.ROOT,
             ", %,d chunks' inputs made ahead DIFFER", AHEAD_DIFFERENT.sum())));
    }
+
+   /** For the memory report: chunks the surface check still holds. */
+   public static String memorySummary() {
+      return String.format(java.util.Locale.ROOT, "surface traced chunks %,d, foreign marks %,d", TRACED.size(), FOREIGN.size());
+   }
 }

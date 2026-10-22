@@ -454,4 +454,9 @@ public final class TileNoiseGpu {
          TILES.sum(), BATCHES.sum(), DRY_NANOS.sum() / 1.0e6 / batches, GPU_NANOS.sum() / 1.0e6 / batches, MADE.sum(), USED.sum(), CPU.sum(), CHECKED.sum(),
          DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER");
    }
+
+   /** For the memory report: tiles whose GPU table is still held. */
+   public static String memorySummary() {
+      return "tile noise tables " + TABLES.size();
+   }
 }
