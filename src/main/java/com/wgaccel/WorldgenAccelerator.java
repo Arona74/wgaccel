@@ -161,10 +161,10 @@ public final class WorldgenAccelerator {
 
       String tested;
       if (com.wgaccel.gpu.GpuBackend.HIP) {
-         // The AMD route (HIP): checked outside the game on a Radeon 680M (gfx1035) only.
+         // The AMD route (HIP): checked on a Radeon 680M (gfx1035) and a Radeon RX 9070 XT (gfx1201) only.
          String arch = com.wgaccel.gpu.HipSelfTest.architecture;
          String card = arch == null ? "" : " (this one: " + com.wgaccel.gpu.HipSelfTest.deviceName + ", " + arch + ")";
-         tested = "The GPU parts on AMD cards (HIP) are experimental, checked only on a Radeon 680M. On this card" + card;
+         tested = "The GPU parts on AMD cards (HIP) are experimental, checked only on a Radeon RX 9070 XT and a Radeon 680M. On this card" + card;
       } else {
          int capability = GpuSelfTest.deviceCapability;
          String card = capability == 0 ? "" : String.format(java.util.Locale.ROOT, " (this one: %s, compute %d.%d)", GpuSelfTest.deviceName, capability / 10,

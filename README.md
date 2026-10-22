@@ -4,17 +4,19 @@ Faster world generation for Minecraft 1.21.1 (NeoForge), built first for **FreeT
 same, block for block: every speed-up is checked against Minecraft's and FreeTerraForged's own results while you
 play, and a part whose answer differs turns itself off and the game carries on with the normal code.
 
-On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster** (radius 1000: 2:23 -> 0:46).
+On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster** (radius 1000: 2:23 -> 0:46), and
+**4.3x faster** on a PC with an AMD Radeon RX 9070 XT (4:20 -> 1:00).
 
 > [!WARNING]
 > **This mod is AI-generated.** All of its code, these instructions and its config descriptions were written by
-> Claude (an AI made by Anthropic), directed and tested in game by one person. It has been tested on two PCs only (below).
+> Claude (an AI made by Anthropic), directed and tested in game by one person. It has been tested on three PCs only (below).
 > It changes how chunks are generated, so **back up your worlds**, try it on a copy first, and report problems with your
 > log (`logs/latest.log`). The self-checks catch a wrong result and turn that part off, but no check catches everything.
 
 > [!WARNING]
 > **The GPU parts run on NVIDIA cards (CUDA) and, experimental since 0.16.0, on AMD cards under Windows (HIP).** They
-> were tested on an NVIDIA RTX 3080 and an AMD Radeon 680M (a laptop's integrated graphics) only. NVIDIA cards from
+> were tested on an NVIDIA RTX 3080, an AMD Radeon RX 9070 XT and an AMD Radeon 680M (a laptop's integrated graphics)
+> only. NVIDIA cards from
 > the GTX 10xx (compute capability 6.0) to the newest are supported, and each card, NVIDIA or AMD, gets code compiled
 > for its own architecture. On other cards the GPU parts **may not work, or may crash the game**. On Intel cards, on
 > AMD cards under Linux, or without the CUDA Toolkit (NVIDIA) or the HIP SDK (AMD), the mod still runs with its CPU
@@ -116,6 +118,19 @@ The same on a dedicated server (same PC, the card free): 0:47.
 
 Every check in these runs was identical. Your PC, mods and settings will give other numbers.
 
+**AMD desktop (0.16.1, HIP):** AMD Ryzen 7 7800X3D (8 cores, 16 threads), AMD Radeon RX 9070 XT 16 GB, Windows 11,
+Java 25, 16 GB heap (`-Xmx16G`, ZGC), AMD HIP SDK 6.4, NeoForge 21.1.264, C2ME 0.4.0-alpha.0.123 (its default
+threads), Lithium, ScalableLux, Sodium. FreeTerraForged 1.0.0010, Chunky radius 1000 (16,129 chunks), a new world
+each time:
+
+| Setup | Time | Chunks/s | Speed-up |
+| --- | --- | --- | --- |
+| Without Worldgen Accelerator | 4:20 | 62 | 1.00x |
+| CPU improvements only (`gpuImprovements = false`) | 2:31 | 107 | 1.72x |
+| CPU and GPU improvements (4 runs: 1:02, 0:59, 0:59, 1:00) | **1:00** | **269** | **4.3x** |
+
+The card made the CPU improvements alone 2.5x faster again. Every GPU check was identical.
+
 **AMD laptop (0.16.0, HIP):** AMD Ryzen 9 6900HX (8 cores, 16 threads), AMD Radeon 680M (integrated, shares the
 system memory), 32 GB DDR5, Windows 11, Java 21, 12 GB heap, AMD HIP SDK 6.4, C2ME 0.4.0-alpha.0.123 (its default 7
 threads), Sodium, Iris. FreeTerraForged 1.0.0010, Chunky radius 300 (1,521 chunks), a new world each time. Short runs,
@@ -134,7 +149,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | | Version | Notes |
 | --- | --- | --- |
 | Minecraft | 1.21.1 | |
-| NeoForge | 21.1.x (tested 21.1.249 to 21.1.255) | no Fabric version |
+| NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | no Fabric version |
 | FreeTerraForged | **1.0.0010 from the `1.21.1_unstable` branch** (22 Oct 2026), and **1.0.0013 from the `deleteTiles` branch** | both checked; older 1.0.0010 builds work too. The GPU tile parts are for 1.0.0010 (tiles); 1.0.0013 has no tiles and gets its own CPU fixes. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
 | C2ME | 0.4.0-alpha.0.123 (recommended) | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
 | C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off |
@@ -183,8 +198,9 @@ settings. If one doesn't, the checks turn the affected part off and the log says
    `WGA GPU self-test: BIT-IDENTICAL` and lines like `WGA GPU noise fill: ready`. If the GPU can't be used it says
    `WGA GPU unavailable: <why>` and the mod carries on with the CPU part.
 
-**NVIDIA or AMD:** when NVIDIA's driver is installed the mod uses CUDA (so a laptop with an NVIDIA card and AMD
-integrated graphics uses the NVIDIA card); otherwise HIP, if AMD's runtime sees a card. Start Java with
+**NVIDIA or AMD:** when NVIDIA's driver is installed and sees a card the mod uses CUDA (so a laptop with an NVIDIA
+card and AMD integrated graphics uses the NVIDIA card); otherwise HIP, if AMD's runtime sees a card. An NVIDIA driver
+left behind from a former card doesn't count. Start Java with
 `-Dwgaccel.gpuBackend=cuda` or `hip` to choose yourself.
 
 **Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, for example)
@@ -237,8 +253,8 @@ FreeTerraForged tile cache (`tileCacheTiles = 256`) takes about 1.7 GB more. Wit
 lot once it fills (the collector runs all the time): give it more, or lower `chunkyMaxWorkingCount`. ZGC (`-XX:+UseZGC -XX:+ZGenerational`) was used on
 the test PC; leave the rest of the JVM flags as your launcher sets them. Graphics card memory: a few hundred MB.
 
-**Java:** Java 21 (Minecraft 1.21.1's own) works. All the measurements above were made on Java 25; the difference
-between Java 21 and 25 for this mod **has not been measured**.
+**Java:** Java 21 (Minecraft 1.21.1's own) works. The radius 1000 measurements above were made on Java 25 (the AMD
+laptop's on Java 21); the difference between Java 21 and 25 for this mod **has not been measured**.
 
 ## Config
 

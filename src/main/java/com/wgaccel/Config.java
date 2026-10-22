@@ -202,7 +202,7 @@ public final class Config {
          .define("gpuImprovements", true));
       GPU_TESTED_WARNING = Setting.custom(builder
          .comment("A chat message to each player joining a world: the GPU parts are tested only on an NVIDIA RTX 3080 (and, through HIP,",
-            "an AMD Radeon 680M) and may not work, or may crash the game, on other cards (NVIDIA GTX 10xx and newer are supported).",
+            "an AMD Radeon RX 9070 XT and Radeon 680M) and may not work, or may crash the game, on other cards (NVIDIA GTX 10xx and newer are supported).",
             "false: no message.")
          .define("gpuTestedWarning", true));
       GPU_DEVICE = Setting.custom(builder

@@ -9,8 +9,8 @@ import org.lwjgl.system.Platform;
  * ({@link Hip}). HIP's functions mirror CUDA's one for one, so the same kernels and calls run on either; only the
  * compiler and its options differ ({@link GpuSelfTest}, {@link HipSelfTest}).
  * <p>
- * -Dwgaccel.gpuBackend=cuda or hip chooses; without it, CUDA when NVIDIA's driver is installed (so a PC with an NVIDIA
- * card and an AMD integrated one uses the NVIDIA card), else HIP when AMD's driver has a HIP runtime that sees a card,
+ * -Dwgaccel.gpuBackend=cuda or hip chooses; without it, CUDA when NVIDIA's driver is installed and sees a card (so a PC
+ * with an NVIDIA card and an AMD integrated one uses the NVIDIA card), else HIP when AMD's driver has a HIP runtime that sees a card,
  * else CUDA (whose self-test then says what is missing). Decided once, the first time the GPU is used.
  */
 public final class GpuBackend {
@@ -36,13 +36,16 @@ public final class GpuBackend {
          return asked.toLowerCase(Locale.ROOT).equals("hip");
       }
 
-      if (nvidiaDriver()) {
+      boolean nvidia = nvidiaDriver();
+      if (nvidia && cudaSeesCard()) {
          reason = "NVIDIA's driver is installed";
          return false;
       }
 
       if (Hip.runtimePresent()) {
-         reason = "no NVIDIA driver; AMD's HIP runtime sees a card";
+         // 22 Oct 2026, RX 9070 XT PC: an NVIDIA driver left behind from a former card (nvcuda.dll, CUDA 12.9) with no
+         // NVIDIA card in the machine; choosing CUDA by the file alone left the GPU parts off.
+         reason = nvidia ? "NVIDIA's driver is installed but sees no card; AMD's HIP runtime sees one" : "no NVIDIA driver; AMD's HIP runtime sees a card";
          return true;
       }
 
@@ -67,6 +70,20 @@ public final class GpuBackend {
       }
 
       return false;
+   }
+
+   /**
+    * Whether NVIDIA's driver, once its file is known to be there, sees a card (cuInit fails with CUDA_ERROR_NO_DEVICE
+    * when it doesn't). Runs after {@link GpuEnv#deviceConnections}, which has to come before the first cuInit.
+    */
+   private static boolean cudaSeesCard() {
+      try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+         java.nio.IntBuffer count = stack.mallocInt(1);
+         return org.lwjgl.cuda.CU.cuInit(0) == org.lwjgl.cuda.CU.CUDA_SUCCESS && org.lwjgl.cuda.CU.cuDeviceGetCount(count) == org.lwjgl.cuda.CU.CUDA_SUCCESS
+            && count.get(0) > 0;
+      } catch (Throwable missing) {
+         return false;
+      }
    }
 
    /** The backend's name, for the logs. */

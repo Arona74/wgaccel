@@ -669,19 +669,67 @@ public final class GpuSurface {
             CODES_CHECKED.increment();
          } else {
             CODES_DIFFERENT.increment();
-            if (CODES_DIFFERENT.sum() <= 5) {
-               int y = minY + first / 256;
-               int t = first % 256;
+            // Only air in the codes where the chunk holds water, stone or ice, with some water: FreeTerraForged's river
+            // step (MixinSurfaceSystem.placeRiverWater, at the start of the surface step, before this; it sets those
+            // three). 22 Oct 2026, RX 9070 XT, radius 1000: 11 of 214 checked chunks differed, all of them this (two with
+            // 1-2 stone blocks among 40-odd of water at the same height). Counted apart so any other difference shows.
+            boolean onlyWater = true;
+            boolean water = false;
+            for (int i = first; i < 256 * height && onlyWater; i++) {
+               if (fromCodes[i] != kinds[i]) {
+                  water |= kinds[i] == 1;
+                  onlyWater = fromCodes[i] == 0 && (kinds[i] == 1 || kinds[i] == 2 || before[i] != null && before[i].is(Blocks.ICE));
+               }
+            }
+
+            onlyWater &= water;
+
+            if (onlyWater) {
+               CODES_WATER.increment();
+            }
+
+            // The river step's only the first 3; every other one (22 Oct 2026: 2 of 213 were not logged behind 5 of water).
+            if (onlyWater ? CODES_WATER.sum() <= 3 : CODES_DIFFERENT.sum() - CODES_WATER.sum() <= 20) {
+               // The first block that is not river water (or the first at all), and each kind pair's count and y range.
+               int at = first;
+               for (int i = first; i < 256 * height && !onlyWater; i++) {
+                  if (fromCodes[i] != kinds[i] && !(fromCodes[i] == 0 && kinds[i] == 1)) {
+                     at = i;
+                     break;
+                  }
+               }
+
+               int y = minY + at / 256;
+               int t = at % 256;
                int ly = y - codes.fillMinY();
                int raw = ly >= 0 && ly < codes.fillHeight() ? codes.codes()[(ly * 16 + t % 16) * 16 + t / 16] : -1;
                int count = 0;
+               int[] pairs = new int[16];
+               int[] pairLow = new int[16];
+               int[] pairHigh = new int[16];
                for (int i = 0; i < 256 * height; i++) {
-                  count += fromCodes[i] != kinds[i] ? 1 : 0;
+                  if (fromCodes[i] != kinds[i]) {
+                     count++;
+                     int pair = (fromCodes[i] & 3) * 4 + (kinds[i] & 3);
+                     int py = minY + i / 256;
+                     pairLow[pair] = pairs[pair] == 0 ? py : Math.min(pairLow[pair], py);
+                     pairHigh[pair] = Math.max(pairHigh[pair], py);
+                     pairs[pair]++;
+                  }
                }
 
-               WorldgenAccelerator.LOG.warn("WGA GPU surface codes check: chunk {}: {} blocks differ; first at ({}, {}, {}): kind from the codes {} (code {}, state {}), from the blocks {} ({}); fill y {}..{}, status {}, filled by {}",
-                  chunk.getPos(), count, minX + t / 16, y, minZ + t % 16, fromCodes[first], raw, raw < 0 ? "-" : codes.table()[raw & 15], kinds[first], before[first],
-                  codes.fillMinY(), codes.fillMinY() + codes.fillHeight() - 1, chunk.getPersistedStatus(), codes.origin());
+               StringBuilder kindPairs = new StringBuilder();
+               for (int pair = 0; pair < 16; pair++) {
+                  if (pairs[pair] > 0) {
+                     kindPairs.append(kindPairs.isEmpty() ? "" : ", ").append(pair / 4).append("->").append(pair % 4).append(' ').append(pairs[pair])
+                        .append(" (y ").append(pairLow[pair]).append("..").append(pairHigh[pair]).append(')');
+                  }
+               }
+
+               WorldgenAccelerator.LOG.warn("WGA GPU surface codes check: chunk {}: {} blocks differ ({}; codes->blocks: {}); first at ({}, {}, {}): kind from the codes {} (code {}, state {}), from the blocks {} ({}); fill y {}..{}, status {}, filled by {}",
+                  chunk.getPos(), count, onlyWater ? "only FreeTerraForged's river step" : "NOT only FreeTerraForged's river step", kindPairs, minX + t / 16, y, minZ + t % 16, fromCodes[at], raw,
+                  raw < 0 ? "-" : codes.table()[raw & 15], kinds[at], before[at], codes.fillMinY(), codes.fillMinY() + codes.fillHeight() - 1, chunk.getPersistedStatus(),
+                  codes.origin());
             }
          }
       }
@@ -1199,6 +1247,7 @@ public final class GpuSurface {
    private static final LongAdder WRITE_CHECKED = new LongAdder();
    private static final LongAdder CODES_CHECKED = new LongAdder();
    private static final LongAdder CODES_DIFFERENT = new LongAdder();
+   private static final LongAdder CODES_WATER = new LongAdder();
    private static volatile boolean writeCheckOff;
    private static final LongAdder WRITE_DIFFERENT = new LongAdder();
 
@@ -1449,7 +1498,8 @@ public final class GpuSurface {
             + String.format(Locale.ROOT, "; heightmaps after the writes %s (rule checked in %,d chunks)", mapsAfterOff ? "OFF (a difference)" : "on", MAPS_CHECKED.sum())
             + String.format(Locale.ROOT, "; %,d writes skipped (already that block); %,d sections made at once (%,d with over 256 states not); writes checked %,d%s; codes checked %,d%s; %,d chunks' inputs from the fill's codes", SAME_SKIPPED.sum(),
                BULK_SECTIONS.sum(), SectionBuilder.TOO_MANY.sum(), WRITE_CHECKED.sum(), WRITE_DIFFERENT.sum() == 0 ? " IDENTICAL" : String.format(Locale.ROOT, ", %,d DIFFER", WRITE_DIFFERENT.sum()),
-               CODES_CHECKED.sum(), CODES_DIFFERENT.sum() == 0 ? " IDENTICAL" : String.format(Locale.ROOT, ", %,d DIFFER", CODES_DIFFERENT.sum()),
+               CODES_CHECKED.sum(), CODES_DIFFERENT.sum() == 0 ? " IDENTICAL"
+                  : String.format(Locale.ROOT, ", %,d DIFFER (%,d only FreeTerraForged's river step: air in the codes, water, stone or ice in the chunk; %,d otherwise)", CODES_DIFFERENT.sum(), CODES_WATER.sum(), CODES_DIFFERENT.sum() - CODES_WATER.sum()),
                SurfaceAhead.FROM_CODES.sum()) + (AHEAD_DIFFERENT.sum() == 0 ? "" : String.format(Locale.ROOT,
             ", %,d chunks' inputs made ahead DIFFER", AHEAD_DIFFERENT.sum())));
    }
