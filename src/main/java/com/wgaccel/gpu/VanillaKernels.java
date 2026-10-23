@@ -405,8 +405,16 @@ public final class VanillaKernels {
           r.hi = mc_rotl(j, 28);
           return k;
       }
+      // OpenCL builds the float from its bits, without converting the 24-bit integer: inside the fill kernel, Intel's
+      // optimizer (Arc iGPU, driver 32.0.101.8332) converted it as signed 24 bits whatever the shift, mask or cast (value
+      // - 1 below 0.5), so the ore veins differed; right with -cl-opt-disable and alone in a small kernel (23 Oct 2026).
+      // 1 + (v >> 1) * 2^-23 minus 1, plus the last bit's 2^-24: exact, so the same bits as Java's.
       __device__ __forceinline__ float mc_next_float(Xrs& r) {
+      #ifdef __OPENCL_VERSION__
+          uint v = as_uint2(mc_next_long(r)).s1 >> 8; return (as_float(0x3F800000u | (v >> 1)) - 1.0f) + ((v & 1u) != 0u ? 5.9604645E-8f : 0.0f);
+      #else
           return (float)(long long)(mc_next_long(r) >> 40) * 5.9604645E-8f;
+      #endif
       }
       __device__ __forceinline__ int mc_next_int(Xrs& r, int bound) {
           unsigned long long i = (unsigned long long)(unsigned int)(int)mc_next_long(r);

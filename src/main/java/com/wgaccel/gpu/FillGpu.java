@@ -172,6 +172,11 @@ public final class FillGpu {
    private final int interpolators;
    private long beardKernel;
    private final ThreadLocal<Lane> lanes = ThreadLocal.withInitial(Lane::new);
+   /**
+    * The standalone fill bench's vein debug only (FillBench, -Dwgaccel.veinDebug): a device buffer passed to fillStates as
+    * a 26th argument, for a source patched to take it. 0 in the game: the kernel keeps its 25.
+    */
+   public static volatile long debugBuffer;
    /** Every 16th fill of a lane timed on the GPU by events: samples, then microseconds of corners, columns, states, copy out. */
    private final java.util.concurrent.atomic.LongAdder[] timings = {new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(),
       new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()};
@@ -220,6 +225,8 @@ public final class FillGpu {
             """.formatted(PARAMS);
       }
 
+      // The standalone bench's vein debug (debugBuffer): its patched fillStates takes the buffer last, the batches none.
+      boolean debug = debugBuffer != 0L;
       String[] names = {"densityCorners", "fillColumns", "fillStates"};
       for (String name : names) {
          String entry = "extern \"C\" __global__ void " + name + "(";
@@ -242,9 +249,9 @@ public final class FillGpu {
          extern "C" __global__ void fillStates(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                int cellWidth, int cellHeight, const double* corners, int cornerStride, long long seedLo, long long seedHi,
                                                int veins, const int* grid, const int* loc, const int* status, const int* lava, int sea, int seaType,
-                                               int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel) {
+                                               int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel%2$s) {
              fillStates_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, corners, cornerStride, seedLo, seedHi, veins, grid,
-                             loc, status, lava, sea, seaType, aquifer, codes, columns, beard, beardKernel);
+                             loc, status, lava, sea, seaType, aquifer, codes, columns, beard, beardKernel%3$s);
          }
          extern "C" __global__ void densityCornersBatch(const long long* jobs, const double* nd, const int* np, int interpolators) {
              const long long* p = jobs + blockIdx.y * %1$d;
@@ -259,9 +266,9 @@ public final class FillGpu {
              const long long* p = jobs + blockIdx.y * %1$d;
              fillStates_body((const double*)p[0], nd, np, (int)p[10], (int)p[11], (int)p[12], (int)p[13], (int)p[14], (int)p[15], (const double*)p[1],
                              (int)p[16], p[8], p[9], (int)p[17], (const int*)p[3], (const int*)p[4], (const int*)p[5], (const int*)p[6], (int)p[18],
-                             (int)p[19], (int)p[20], (unsigned char*)p[7], (const double*)p[2], (const int*)p[21], beardKernel);
+                             (int)p[19], (int)p[20], (unsigned char*)p[7], (const double*)p[2], (const int*)p[21], beardKernel%4$s);
          }
-         """.formatted(PARAMS);
+         """.formatted(PARAMS, debug ? ", double* dbgOut" : "", debug ? ", dbgOut" : "", debug ? ", (double*)0" : "");
    }
 
    /** Compiles the fill source (with its batch entries) into the context (made current on this thread) and uploads the packed noises. */
@@ -449,7 +456,7 @@ public final class FillGpu {
             GpuSelfTest.check(cuEventRecord(lane.events[2], lane.stream), "cuEventRecord");
          }
 
-         PointerBuffer state = stack.mallocPointer(25);
+         PointerBuffer state = stack.mallocPointer(debugBuffer != 0L ? 26 : 25);
          for (int i = 0; i < 9; i++) {
             state.put(i, params.get(i));
          }
@@ -470,6 +477,9 @@ public final class FillGpu {
          state.put(22, stack.pointers(lane.columnsDevice).address());
          state.put(23, stack.pointers(lane.intsDevice + 4L * beardOffset).address());
          state.put(24, stack.pointers(this.beardKernel).address());
+         if (debugBuffer != 0L) {
+            state.put(25, stack.pointers(debugBuffer).address());
+         }
          GpuSelfTest.check(cuLaunchKernel(this.states, (blocks + 255) / 256, 1, 1, 256, 1, 1, 0, lane.stream, state, null), "cuLaunchKernel fillStates");
          if (timed) {
             GpuSelfTest.check(cuEventRecord(lane.events[3], lane.stream), "cuEventRecord");

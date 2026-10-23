@@ -303,6 +303,10 @@ public final class GpuSelfTest {
          return text + " | backend HIP (" + GpuBackend.reason + "); hipRTC: " + Hip.hiprtcState;
       }
 
+      if (GpuBackend.OPENCL) {
+         return text + " | backend OpenCL (" + GpuBackend.reason + ")";
+      }
+
       return nvrtc ? text + " | NVRTC: " + nvrtcState : text.toString();
    }
 
@@ -562,7 +566,8 @@ public final class GpuSelfTest {
 
    static void check(int result, String what) {
       if (result != CUDA_SUCCESS) {
-         throw new IllegalStateException(what + " failed: " + (GpuBackend.HIP ? "HIP error " + result + " (" + Hip.hipGetErrorString(result) + ")" : "CUDA error " + result));
+         throw new IllegalStateException(what + " failed: " + (GpuBackend.OPENCL ? "OpenCL error " + result + " (" + OpenCl.errorName(result) + ")"
+            : GpuBackend.HIP ? "HIP error " + result + " (" + Hip.hipGetErrorString(result) + ")" : "CUDA error " + result));
       }
    }
 

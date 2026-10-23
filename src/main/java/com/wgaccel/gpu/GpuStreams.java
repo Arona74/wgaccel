@@ -44,7 +44,8 @@ public final class GpuStreams {
     * RAM of its own (GpuMemoryCheck, RX 9070 XT): ~16 MB, plus scratch sized for the largest kernel run on it (~40 MB per
     * KB a thread spills, 80 on the first stream); a stream per thread and part came to ~3 GB. A shared stream
     * still gives each lane its own work in order; a lane's wait (stream synchronize) then also covers its sharers' work
-    * queued before it. Streams are never destroyed, so sharing needs no counting. Set before the GPU starts.
+    * queued before it. Streams are never destroyed, so sharing needs no counting. Set before the GPU starts. OpenCL's
+    * queues are pooled the same way (each is a queue of the driver's own).
     */
    public static volatile int pool = 2;
    private static final long[][] POOLED = new long[3][];
@@ -54,7 +55,7 @@ public final class GpuStreams {
    /** A non-blocking stream in the current context, its priority by the calling thread (under HIP, one of a pool). */
    public static long create() {
       int size = pool;
-      if (!GpuBackend.HIP || size <= 0) {
+      if (!GpuBackend.HIP && !GpuBackend.OPENCL || size <= 0) {
          return made();
       }
 
@@ -83,6 +84,10 @@ public final class GpuStreams {
    }
 
    private static long make() {
+      if (GpuBackend.OPENCL) {
+         return OpenCl.createQueue(priorities ? TIER.get() : -1);
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer pointer = stack.mallocPointer(1);
          if (GpuBackend.HIP) {

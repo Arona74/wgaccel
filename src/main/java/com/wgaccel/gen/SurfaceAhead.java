@@ -124,7 +124,7 @@ public final class SurfaceAhead {
       BIOME_ORDER.clear();
       RESULTS.clear();
       QUEUE.clear();
-      enabled = Config.GPU_SURFACE_AHEAD.get() && Config.GPU_SURFACE.get() == Config.GpuFilterMode.ON;
+      enabled = Config.GPU_SURFACE_AHEAD.get() && Config.GPU_SURFACE.get() == Config.GpuFilterMode.ON && !com.wgaccel.gpu.OpenCl.intel();
       if (enabled && THREADS_RUNNING.isEmpty()) {
          for (int i = 0; i < THREADS; i++) {
             Thread thread = new Thread(SurfaceAhead::run, "WGA GPU surface ahead " + i);

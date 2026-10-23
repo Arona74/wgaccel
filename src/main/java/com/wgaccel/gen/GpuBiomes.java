@@ -890,6 +890,18 @@ public final class GpuBiomes {
          searched = current.extraChosen[k * n + cell];
       }
 
+      // A number no biome has is a broken GPU result (the OpenCL backend's first in-game run, 23 Oct 2026: the game stopped
+      // on biomes.get(3172) of 53): the CPU decorates, and it is counted as a difference.
+      if (searched >= table.biomes.size() || value >= table.biomes.size()) {
+         DECOR_DIFFERENT.increment();
+         if (DECOR_LOGGED.incrementAndGet() <= 12) {
+            WorldgenAccelerator.LOG.warn("WGA GPU biome decoration: chunk {}: the GPU gave biome numbers {} and {} of {}; decorated on the CPU",
+               current.chunk == null ? "?" : current.chunk.getPos(), searched, value, table.biomes.size());
+         }
+
+         return -1;
+      }
+
       // The GPU decorated its own search's result: only for a selection that is exactly that (C1: a deferred placeholder's
       // fallback search, or a CPU search, may differ).
       if (selection.usedFallback() || searched < 0 || !table.biomes.get(searched).equals(selection.biome()) || selection.biome() != selection.baseBiome()) {

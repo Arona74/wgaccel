@@ -16,16 +16,17 @@ import org.lwjgl.system.Platform;
 
 /**
  * Every graphics adapter of the PC (the OS's list, through OSHI) and which of them the mod can use: the devices NVIDIA's
- * CUDA and AMD's HIP see, each matched to its adapter by name. For the GPU screen, on PCs with more than one GPU (a laptop's
- * Intel Arc beside an NVIDIA card, a Ryzen's own Radeon beside a graphics card). Listing starts both drivers but chooses
- * nothing: {@link GpuBackend} and {@link GpuDevice} still decide once, from the config, when the GPU is first used.
+ * CUDA, AMD's HIP and OpenCL see, each matched to its adapter by name (CUDA's and HIP's first, so a card both see is
+ * offered with its own API; OpenCL's for the rest, Intel's GPUs). For the GPU screen, on PCs with more than one GPU (a
+ * laptop's Intel Arc beside an NVIDIA card, a Ryzen's own Radeon beside a graphics card). Listing starts the drivers but
+ * chooses nothing: {@link GpuBackend} and {@link GpuDevice} still decide once, from the config, when the GPU is first used.
  */
 public final class GpuInventory {
-   /** A device one of the mod's backends can run on: its backend ("CUDA" or "HIP") and its number there (config gpuDevice). */
+   /** A device one of the mod's backends can run on: its backend ("CUDA", "HIP" or "OpenCL") and its number there (config gpuDevice). */
    public record Device(String backend, int index, String name, int units, boolean integrated, long memory) {
    }
 
-   /** One adapter of the PC; device is null when neither backend can use it (Intel until a oneAPI backend exists). */
+   /** One adapter of the PC; device is null when no backend can use it. */
    public record Adapter(String name, String vendor, long memory, Device device) {
    }
 
@@ -80,11 +81,25 @@ public final class GpuInventory {
          // No AMD driver with a HIP runtime: normal on NVIDIA and Intel PCs.
       }
 
+      List<Device> openCl = new ArrayList<>();
+      try {
+         List<OpenCl.Device> found = OpenCl.devices();
+         for (int d = 0; d < found.size(); d++) {
+            OpenCl.Device device = found.get(d);
+            if (device.usable()) {
+               openCl.add(new Device("OpenCL", d, device.name(), device.units(), device.integrated(), device.memory()));
+            }
+         }
+      } catch (Throwable failure) {
+         problems.add("OpenCL: " + failure);
+      }
+
+      List<List<Device>> backends = List.of(cuda, hip, openCl);
       List<Adapter> adapters = new ArrayList<>();
       Set<Device> matched = new HashSet<>();
       try {
          for (oshi.hardware.GraphicsCard card : new oshi.SystemInfo().getHardware().getGraphicsCards()) {
-            Device device = match(card.getName(), cuda, hip, matched);
+            Device device = match(card.getName(), backends, matched);
             adapters.add(new Adapter(card.getName(), card.getVendor(), card.getVRam(), device));
          }
       } catch (Throwable failure) {
@@ -99,12 +114,22 @@ public final class GpuInventory {
          }
       }
 
-      return new Inventory(List.copyOf(adapters), automatic(cuda, hip), List.copyOf(problems));
+      // OpenCL also lists the cards CUDA and HIP see: only a device no adapter has a name like is added.
+      for (Device device : openCl) {
+         if (!matched.contains(device) && adapters.stream().noneMatch(adapter -> alike(adapter.name(), device.name()))) {
+            adapters.add(new Adapter(device.name(), OpenCl.devices().get(device.index()).vendor(), device.memory(), device));
+         }
+      }
+
+      return new Inventory(List.copyOf(adapters), automatic(cuda, hip, openCl), List.copyOf(problems));
    }
 
-   /** As GpuBackend and GpuDevice choose with AUTO and -1: CUDA when it sees a card, else HIP; then the most units, a separate card first. */
-   private static Device automatic(List<Device> cuda, List<Device> hip) {
-      List<Device> list = !cuda.isEmpty() ? cuda : hip;
+   /**
+    * As GpuBackend and GpuDevice choose with AUTO and -1: CUDA when it sees a card, else HIP, else OpenCL's separate GPUs
+    * (an integrated one never automatically, {@link OpenCl#automaticDevicePresent}); then the most units, a separate card first.
+    */
+   private static Device automatic(List<Device> cuda, List<Device> hip, List<Device> openCl) {
+      List<Device> list = !cuda.isEmpty() ? cuda : !hip.isEmpty() ? hip : openCl.stream().filter(device -> !device.integrated()).toList();
       Device best = null;
       long bestScore = -1L;
       for (Device device : list) {
@@ -119,12 +144,10 @@ public final class GpuInventory {
    }
 
    /** The first device not taken yet whose name is the adapter's (letters and digits compared, one inside the other). */
-   private static Device match(String adapter, List<Device> cuda, List<Device> hip, Set<Device> matched) {
-      String wanted = plain(adapter);
-      for (List<Device> list : List.of(cuda, hip)) {
+   private static Device match(String adapter, List<List<Device>> backends, Set<Device> matched) {
+      for (List<Device> list : backends) {
          for (Device device : list) {
-            String name = plain(device.name());
-            if (!matched.contains(device) && !wanted.isEmpty() && !name.isEmpty() && (wanted.contains(name) || name.contains(wanted))) {
+            if (!matched.contains(device) && alike(adapter, device.name())) {
                matched.add(device);
                return device;
             }
@@ -132,6 +155,12 @@ public final class GpuInventory {
       }
 
       return null;
+   }
+
+   private static boolean alike(String one, String other) {
+      String a = plain(one);
+      String b = plain(other);
+      return !a.isEmpty() && !b.isEmpty() && (a.contains(b) || b.contains(a));
    }
 
    private static String plain(String name) {

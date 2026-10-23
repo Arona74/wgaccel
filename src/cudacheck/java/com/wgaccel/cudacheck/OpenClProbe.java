@@ -306,6 +306,11 @@ public final class OpenClProbe {
                if (noise != 0L) {
                   noiseCheck(queue, context, noise);
                }
+
+               long doubles = build(context, device, DOUBLE_OPS, exact + std, "double arithmetic");
+               if (doubles != 0L) {
+                  doubleCheck(queue, context, doubles);
+               }
             } else {
                out.println("   vanilla noise (doubles): skipped, no double precision");
             }
@@ -314,6 +319,249 @@ public final class OpenClProbe {
             CL10.clReleaseContext(context);
          }
       }
+   }
+
+   /**
+    * Double precision op by op, and the 64-bit integer steps of Minecraft's Xoroshiro random (a GPU without double
+    * hardware emulates both; the ore veins compare Mth.clampedMap's division with a random float: an Intel Arc
+    * integrated GPU gave other vein blocks than the game, 23 Oct 2026).
+    */
+   private static final String DOUBLE_OPS = """
+      #pragma OPENCL EXTENSION cl_khr_fp64 : enable
+      #pragma OPENCL FP_CONTRACT OFF
+      __kernel void dops(__global const double* a, __global const double* b, __global const double* c, __global double* out, int n) {
+          int i = get_global_id(0);
+          if (i >= n) return;
+          double x = a[i], y = b[i], z = c[i];
+          out[i * 9 + 0] = x + y;
+          out[i * 9 + 1] = x - y;
+          out[i * 9 + 2] = x * y;
+          out[i * 9 + 3] = x / y;
+          out[i * 9 + 4] = sqrt(fabs(x));
+          out[i * 9 + 5] = fma(x, y, z);
+          out[i * 9 + 6] = floor(x);
+          double t = (x - 0.4000000059604645) / (0.6000000238418579 - 0.4000000059604645);
+          out[i * 9 + 7] = t < 0.0 ? 0.10000000149011612 : (t > 1.0 ? 0.30000001192092896 : 0.10000000149011612 + t * (0.30000001192092896 - 0.10000000149011612));
+          out[i * 9 + 8] = (double)(float)x;
+      }
+      __kernel void lops(__global const ulong* a, __global const ulong* b, __global ulong* out, int n) {
+          int i = get_global_id(0);
+          if (i >= n) return;
+          ulong lo = a[i], hi = b[i];
+          ulong s = lo + hi;
+          ulong k = ((s << 17) | (s >> 47)) + lo;
+          ulong j = hi ^ lo;
+          out[i * 4 + 0] = k;
+          out[i * 4 + 1] = ((lo << 49) | (lo >> 15)) ^ j ^ (j << 21);
+          out[i * 4 + 2] = lo * hi;
+          out[i * 4 + 3] = (ulong)((long)lo >> 16);
+      }
+      // Minecraft's XoroshiroRandomSource.nextFloat ((nextLong() >>> 40) * 2^-24) written seven ways, the long from a real
+      // Xoroshiro step: Intel's compiler gave 255 + the value for the first when bit 63 was set.
+      __kernel void nfloat(__global const ulong* a, __global const ulong* b, __global float* out, int n) {
+          int i = get_global_id(0);
+          if (i >= n) return;
+          ulong lo = a[i], hi = b[i];
+          ulong s = lo + hi;
+          ulong x = ((s << 17) | (s >> 47)) + lo;
+          out[i * 7 + 0] = (float)(long)(x >> 40) * 5.9604645E-8f;
+          out[i * 7 + 1] = (float)(long)((x >> 40) & 16777215UL) * 5.9604645E-8f;
+          out[i * 7 + 2] = (float)(int)(((uint)(x >> 32)) >> 8) * 5.9604645E-8f;
+          out[i * 7 + 3] = (float)(int)(as_uint2(x).s1 >> 8) * 5.9604645E-8f;
+          volatile ulong t = x >> 40;
+          out[i * 7 + 4] = (float)(long)t * 5.9604645E-8f;
+          out[i * 7 + 5] = (float)((double)(x >> 40) * 5.9604644775390625E-8);
+          out[i * 7 + 6] = (float)(uint)(x >> 40) * 5.9604645E-8f;
+      }
+      """;
+
+   private static final String[] FLOAT_WAYS = {"A (float)(long)(x >> 40)", "B masked to 24 bits", "C high word >> 8 (32-bit)", "D as_uint2(x).s1 >> 8",
+      "E through a volatile", "F through double", "G (float)(uint)(x >> 40)"};
+
+   private static void nextFloatCheck(long queue, long context, long program) {
+      int n = 1 << 18;
+      long[] los = new long[n];
+      long[] his = new long[n];
+      Random random = new Random(5L);
+      for (int i = 0; i < n; i++) {
+         los[i] = random.nextLong();
+         his[i] = random.nextLong();
+      }
+
+      java.nio.LongBuffer a = MemoryUtil.memAllocLong(n).put(0, los);
+      java.nio.LongBuffer b = MemoryUtil.memAllocLong(n).put(0, his);
+      FloatBuffer result = MemoryUtil.memAllocFloat(7 * n);
+      long ka = buffer(context, 8L * n);
+      long kb = buffer(context, 8L * n);
+      long ko = buffer(context, 28L * n);
+      CL10.nclEnqueueWriteBuffer(queue, ka, 1, 0L, 8L * n, MemoryUtil.memAddress(a), 0, 0L, 0L);
+      CL10.nclEnqueueWriteBuffer(queue, kb, 1, 0L, 8L * n, MemoryUtil.memAddress(b), 0, 0L, 0L);
+      long kernel = kernel(program, "nfloat");
+      CL10.clSetKernelArg1p(kernel, 0, ka);
+      CL10.clSetKernelArg1p(kernel, 1, kb);
+      CL10.clSetKernelArg1p(kernel, 2, ko);
+      CL10.clSetKernelArg1i(kernel, 3, n);
+      run(queue, kernel, n);
+      CL10.clEnqueueReadBuffer(queue, ko, true, 0L, result, null, null);
+      int[] different = new int[7];
+      String[] example = new String[7];
+      for (int i = 0; i < n; i++) {
+         long x = Long.rotateLeft(los[i] + his[i], 17) + los[i];
+         float expected = (float)(x >>> 40) * 5.9604645E-8F;
+         for (int k = 0; k < 7; k++) {
+            float got = result.get(i * 7 + k);
+            if (Float.floatToRawIntBits(got) != Float.floatToRawIntBits(expected) && different[k]++ == 0) {
+               example[k] = String.format(Locale.ROOT, "java %s, gpu %s", expected, got);
+            }
+         }
+      }
+
+      for (int k = 0; k < 7; k++) {
+         out.printf(Locale.ROOT, "   nextFloat %-28s %,d values: %s%n", FLOAT_WAYS[k], n, different[k] == 0 ? "BIT-IDENTICAL" : different[k] + " DIFFER, e.g. " + example[k]);
+      }
+
+      CL10.clReleaseMemObject(ka);
+      CL10.clReleaseMemObject(kb);
+      CL10.clReleaseMemObject(ko);
+      CL10.clReleaseKernel(kernel);
+      MemoryUtil.memFree(a);
+      MemoryUtil.memFree(b);
+      MemoryUtil.memFree(result);
+   }
+
+   private static final String[] DOUBLE_NAMES = {"a + b", "a - b", "a * b", "a / b", "sqrt", "fma", "floor", "clampedMap (veins)", "(float) cast"};
+
+   private static void doubleCheck(long queue, long context, long program) {
+      int n = 1 << 18;
+      double[] xs = new double[n];
+      double[] ys = new double[n];
+      double[] zs = new double[n];
+      Random random = new Random(3L);
+      for (int i = 0; i < n; i++) {
+         switch (i % 4) {
+            // As the veins: |noise| near 0.4..0.6, and distances 0..20 over 20.
+            case 0 -> {
+               xs[i] = 0.3 + random.nextDouble() * 0.4;
+               ys[i] = 20.0;
+               zs[i] = random.nextDouble();
+            }
+            case 1 -> {
+               xs[i] = random.nextInt(21);
+               ys[i] = 20.0;
+               zs[i] = -0.2;
+            }
+            // Any magnitude, either sign, subnormals among them.
+            case 2 -> {
+               xs[i] = Double.longBitsToDouble(random.nextLong());
+               ys[i] = Double.longBitsToDouble(random.nextLong());
+               zs[i] = Double.longBitsToDouble(random.nextLong());
+            }
+            default -> {
+               xs[i] = (random.nextDouble() - 0.5) * Math.pow(2.0, random.nextInt(80) - 40);
+               ys[i] = (random.nextDouble() - 0.5) * Math.pow(2.0, random.nextInt(80) - 40);
+               zs[i] = (random.nextDouble() - 0.5) * Math.pow(2.0, random.nextInt(80) - 40);
+            }
+         }
+      }
+
+      DoubleBuffer a = MemoryUtil.memAllocDouble(n).put(0, xs);
+      DoubleBuffer b = MemoryUtil.memAllocDouble(n).put(0, ys);
+      DoubleBuffer c = MemoryUtil.memAllocDouble(n).put(0, zs);
+      DoubleBuffer result = MemoryUtil.memAllocDouble(9 * n);
+      long ka = buffer(context, 8L * n);
+      long kb = buffer(context, 8L * n);
+      long kc = buffer(context, 8L * n);
+      long ko = buffer(context, 72L * n);
+      CL10.clEnqueueWriteBuffer(queue, ka, true, 0L, a, null, null);
+      CL10.clEnqueueWriteBuffer(queue, kb, true, 0L, b, null, null);
+      CL10.clEnqueueWriteBuffer(queue, kc, true, 0L, c, null, null);
+      long kernel = kernel(program, "dops");
+      CL10.clSetKernelArg1p(kernel, 0, ka);
+      CL10.clSetKernelArg1p(kernel, 1, kb);
+      CL10.clSetKernelArg1p(kernel, 2, kc);
+      CL10.clSetKernelArg1p(kernel, 3, ko);
+      CL10.clSetKernelArg1i(kernel, 4, n);
+      run(queue, kernel, n);
+      CL10.clEnqueueReadBuffer(queue, ko, true, 0L, result, null, null);
+      int[] different = new int[9];
+      String[] example = new String[9];
+      for (int i = 0; i < n; i++) {
+         double x = xs[i];
+         double y = ys[i];
+         double z = zs[i];
+         double t = (x - (double)0.4f) / ((double)0.6f - (double)0.4f);
+         double[] expected = {x + y, x - y, x * y, x / y, Math.sqrt(Math.abs(x)), Math.fma(x, y, z), Math.floor(x),
+            t < 0.0 ? (double)0.1f : (t > 1.0 ? (double)0.3f : (double)0.1f + t * ((double)0.3f - (double)0.1f)), (double)(float)x};
+         for (int k = 0; k < 9; k++) {
+            double got = result.get(i * 9 + k);
+            boolean same = Double.doubleToRawLongBits(got) == Double.doubleToRawLongBits(expected[k]) || Double.isNaN(got) && Double.isNaN(expected[k]);
+            if (!same && different[k]++ == 0) {
+               example[k] = String.format(Locale.ROOT, "a=%s b=%s c=%s: java %s, gpu %s", x, y, z, expected[k], got);
+            }
+         }
+      }
+
+      for (int k = 0; k < 9; k++) {
+         out.printf(Locale.ROOT, "   double %-20s %,d values: %s%n", DOUBLE_NAMES[k], n, different[k] == 0 ? "BIT-IDENTICAL" : different[k] + " DIFFER, e.g. " + example[k]);
+      }
+
+      CL10.clReleaseMemObject(ka);
+      CL10.clReleaseMemObject(kb);
+      CL10.clReleaseMemObject(kc);
+      CL10.clReleaseMemObject(ko);
+      CL10.clReleaseKernel(kernel);
+      MemoryUtil.memFree(a);
+      MemoryUtil.memFree(b);
+      MemoryUtil.memFree(c);
+      MemoryUtil.memFree(result);
+      longCheck(queue, context, program);
+   }
+
+   private static void longCheck(long queue, long context, long program) {
+      int n = 1 << 18;
+      long[] los = new long[n];
+      long[] his = new long[n];
+      Random random = new Random(4L);
+      for (int i = 0; i < n; i++) {
+         los[i] = random.nextLong();
+         his[i] = random.nextLong();
+      }
+
+      java.nio.LongBuffer a = MemoryUtil.memAllocLong(n).put(0, los);
+      java.nio.LongBuffer b = MemoryUtil.memAllocLong(n).put(0, his);
+      java.nio.LongBuffer result = MemoryUtil.memAllocLong(4 * n);
+      long ka = buffer(context, 8L * n);
+      long kb = buffer(context, 8L * n);
+      long ko = buffer(context, 32L * n);
+      CL10.nclEnqueueWriteBuffer(queue, ka, 1, 0L, 8L * n, MemoryUtil.memAddress(a), 0, 0L, 0L);
+      CL10.nclEnqueueWriteBuffer(queue, kb, 1, 0L, 8L * n, MemoryUtil.memAddress(b), 0, 0L, 0L);
+      long kernel = kernel(program, "lops");
+      CL10.clSetKernelArg1p(kernel, 0, ka);
+      CL10.clSetKernelArg1p(kernel, 1, kb);
+      CL10.clSetKernelArg1p(kernel, 2, ko);
+      CL10.clSetKernelArg1i(kernel, 3, n);
+      run(queue, kernel, n);
+      CL10.nclEnqueueReadBuffer(queue, ko, 1, 0L, 32L * n, MemoryUtil.memAddress(result), 0, 0L, 0L);
+      int different = 0;
+      for (int i = 0; i < n; i++) {
+         long lo = los[i];
+         long hi = his[i];
+         long j = hi ^ lo;
+         long[] expected = {Long.rotateLeft(lo + hi, 17) + lo, Long.rotateLeft(lo, 49) ^ j ^ (j << 21), lo * hi, lo >> 16};
+         for (int k = 0; k < 4; k++) {
+            different += result.get(i * 4 + k) == expected[k] ? 0 : 1;
+         }
+      }
+
+      out.printf(Locale.ROOT, "   64-bit integers (Xoroshiro steps, multiply, shift) %,d values: %s%n", 4 * n, different == 0 ? "BIT-IDENTICAL" : different + " DIFFER");
+      nextFloatCheck(queue, context, program);
+      CL10.clReleaseMemObject(ka);
+      CL10.clReleaseMemObject(kb);
+      CL10.clReleaseMemObject(ko);
+      CL10.clReleaseKernel(kernel);
+      MemoryUtil.memFree(a);
+      MemoryUtil.memFree(b);
+      MemoryUtil.memFree(result);
    }
 
    private static long build(long context, long device, String source, String options, String what) {

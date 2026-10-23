@@ -163,6 +163,14 @@ public final class SurfaceGpu {
    public final LongAdder batches = new LongAdder();
    public final LongAdder batchChunks = new LongAdder();
 
+   /**
+    * Config gpuSurfaceWarpPrepass, except under OpenCL: the warp prepass takes 32 threads to vote and shuffle together,
+    * and an OpenCL sub-group is not 32 threads on every card (8, 16 or 32 on Intel's).
+    */
+   private static boolean warpPrepass() {
+      return Config.GPU_SURFACE_WARP_PREPASS.get() && !GpuBackend.OPENCL;
+   }
+
    private static String bodies(String source, String... names) {
       for (String name : names) {
          String entry = "extern \"C\" __global__ void " + name + "(";
@@ -426,7 +434,7 @@ public final class SurfaceGpu {
          pre.put(0, stack.pointers(lane.params).address());
          pre.put(1, stack.pointers(this.ind).address());
          pre.put(2, stack.pointers(this.inp).address());
-         if (Config.GPU_SURFACE_WARP_PREPASS.get()) {
+         if (warpPrepass()) {
             // I3: a warp per column, 8 columns per block.
             GpuSelfTest.check(cuLaunchKernel(this.prepassWarpBatch, 32, chunks, 1, 256, 1, 1, 0, lane.stream, pre, null), "cuLaunchKernel surfacePrepassWarpBatch");
          } else {
@@ -676,7 +684,7 @@ public final class SurfaceGpu {
          pre.put(14, stack.pointers(lane.columnDepth).address());
          pre.put(15, stack.pointers(lane.columnSecondary).address());
          pre.put(16, stack.pointers(lane.specialDevice).address());
-         if (Config.GPU_SURFACE_WARP_PREPASS.get()) {
+         if (warpPrepass()) {
             GpuSelfTest.check(cuLaunchKernel(this.prepassWarp, 32, 1, 1, 256, 1, 1, 0, lane.stream, pre, null), "cuLaunchKernel surfacePrepassWarp");
          } else {
             GpuSelfTest.check(cuLaunchKernel(this.prepass, 1, 1, 1, 256, 1, 1, 0, lane.stream, pre, null), "cuLaunchKernel surfacePrepass");

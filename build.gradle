@@ -37,6 +37,10 @@ dependencies {
     shade('org.lwjgl:lwjgl-cuda:3.3.3') {
         transitive = false
     }
+    // OpenCL (gpu/OpenCl): GPUs with neither CUDA nor HIP (Intel's). Java only: the library is the driver's OpenCL.dll.
+    shade('org.lwjgl:lwjgl-opencl:3.3.3') {
+        transitive = false
+    }
 }
 
 jar {
@@ -140,6 +144,29 @@ tasks.register('openClProbeJar', Jar) {
     }
 }
 
+// The noise fill bench for another PC (`gradlew.bat fillCheckJar`): java -Dwgaccel.gpuBackend=opencl -Dwgaccel.gpuDevice=1
+// -Dwgaccel.logs=<instance logs> -Dwgaccel.veinDebug=true -jar wgaccel-fillcheck.jar. The mod's GPU classes and LWJGL only.
+tasks.register('fillCheckJar', Jar) {
+    group = 'verification'
+    description = 'Makes the standalone noise fill bench jar (game-saved chunks against a GPU backend).'
+    dependsOn 'cudacheckClasses', 'classes'
+    archiveFileName = 'wgaccel-fillcheck.jar'
+    destinationDirectory = layout.buildDirectory.dir('libs')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.cudacheck.output) {
+        include 'com/wgaccel/cudacheck/FillBench.class', 'com/wgaccel/cudacheck/FillBench$*.class'
+    }
+    from(sourceSets.main.output) {
+        include 'com/wgaccel/gpu/**'
+    }
+    from({ configurations.cudacheckRuntimeClasspath.filter { it.name.startsWith('lwjgl') }.collect { zipTree(it) } }) {
+        exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**'
+    }
+    manifest {
+        attributes 'Main-Class': 'com.wgaccel.cudacheck.FillBench'
+    }
+}
+
 tasks.register('openclCheck', JavaExec) {
     group = 'verification'
     description = 'Runs the OpenCL probe here.'
@@ -155,6 +182,33 @@ tasks.register('gpuMemoryCheck', JavaExec) {
     classpath = sourceSets.cudacheck.runtimeClasspath
     mainClass = 'com.wgaccel.cudacheck.GpuMemoryCheck'
 }
+
+// Any check on another backend: `gradlew.bat cudaErosionCheck -PgpuBackend=opencl` (or hip).
+tasks.withType(JavaExec).configureEach {
+    if (project.findProperty('gpuBackend')) {
+        systemProperty 'wgaccel.gpuBackend', project.findProperty('gpuBackend')
+    }
+}
+
+// The OpenCL backend outside the game: the self-test and the fixed kernel sources translated and built.
+tasks.register('openclSelfCheck', JavaExec) {
+    group = 'verification'
+    description = 'Runs the self-test through the OpenCL backend and builds the fixed kernel sources.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.OpenClCheck'
+    systemProperty 'wgaccel.gpuBackend', 'opencl'
+    if (project.findProperty('gpuDevice')) {
+        systemProperty 'wgaccel.gpuDevice', project.findProperty('gpuDevice')
+    }
+}
+
+// The game's saved noise trees on a backend: `gradlew.bat treeReplay -Pcu=<logs>/wgaccel-tile-noise.cu -Pout=<file> -PgpuBackend=hip`.
+tasks.register('treeReplay', JavaExec) {
+    group = 'verification'
+    description = 'Runs every root of a saved noise-tree source at fixed points and writes the values.'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.TreeReplay'
+    args project.findProperty('cu') ?: 'missing.cu', project.findProperty('out') ?: 'tree-replay.bin'}
 
 tasks.register('hipCheck', JavaExec) {
     group = 'verification'
@@ -257,6 +311,9 @@ tasks.register('cudaFillBench', JavaExec) {
     description = 'Runs the game-made noise fill code on the GPU against the chunks the game saved, and times it.'
     classpath = sourceSets.cudacheck.runtimeClasspath
     mainClass = 'com.wgaccel.cudacheck.FillBench'
+    if (project.hasProperty('veinDebug')) {
+        systemProperty 'wgaccel.veinDebug', 'true'
+    }
     def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
     environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
     systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"

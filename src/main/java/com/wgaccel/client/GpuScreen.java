@@ -14,7 +14,7 @@ import net.minecraft.util.FormattedCharSequence;
 
 /**
  * The GPU screen (Options' WGA button, or the mods list's Config): every graphics adapter of the PC, which ones the mod
- * can use (CUDA, HIP; Intel's not yet), which one it uses now, and a choice of Automatic or one of them, saved as config
+ * can use (CUDA, HIP, OpenCL for Intel's), which one it uses now, and a choice of Automatic or one of them, saved as config
  * gpuBackend and gpuDevice. The GPU is chosen once per game, so a new choice applies after a restart. For PCs with more
  * than one GPU (a laptop's Intel Arc beside an NVIDIA card, a Ryzen's own Radeon beside a graphics card).
  */
@@ -53,7 +53,8 @@ public final class GpuScreen extends Screen {
                button.setTooltip(Tooltip.create(Component.literal(unusable(adapter))));
             } else {
                boolean selected = !automatic && chosen(device);
-               button = this.choice(selected, false, left, y, () -> this.choose(Config.GpuBackendChoice.valueOf(device.backend()), device.index()));
+               button = this.choice(selected, false, left, y, () -> this.choose(Config.GpuBackendChoice.valueOf(device.backend().toUpperCase(Locale.ROOT)),
+                  device.index()));
             }
 
             this.addRenderableWidget(button);
@@ -67,7 +68,7 @@ public final class GpuScreen extends Screen {
    private Button choice(boolean selected, boolean automatic, int x, int y, Runnable choose) {
       Button button = Button.builder(Component.literal(selected ? "Selected" : "Use"), pressed -> choose.run()).bounds(x, y, 60, 20).build();
       button.active = !selected;
-      button.setTooltip(Tooltip.create(Component.literal(automatic ? "Let the mod choose: CUDA when NVIDIA's driver sees a card, else AMD's HIP; then the card with the most compute units, a separate card before an integrated one."
+      button.setTooltip(Tooltip.create(Component.literal(automatic ? "Let the mod choose: CUDA when NVIDIA's driver sees a card, else AMD's HIP, else OpenCL; then the card with the most compute units, a separate card before an integrated one."
          : "Use this GPU (after a restart of the game).")));
       return button;
    }
@@ -86,7 +87,7 @@ public final class GpuScreen extends Screen {
    private static boolean chosen(GpuInventory.Device device) {
       Config.GpuBackendChoice backend = Config.GPU_BACKEND.written();
       String wanted = backend == Config.GpuBackendChoice.AUTO ? automaticBackend() : backend.name();
-      return device.backend().equals(wanted) && device.index() == Config.GPU_DEVICE.written();
+      return device.backend().equalsIgnoreCase(wanted) && device.index() == Config.GPU_DEVICE.written();
    }
 
    private static String automaticBackend() {
@@ -97,10 +98,10 @@ public final class GpuScreen extends Screen {
    private static String unusable(GpuInventory.Adapter adapter) {
       String vendor = adapter.vendor() == null ? "" : adapter.vendor().toLowerCase(Locale.ROOT);
       if (vendor.contains("intel")) {
-         return "Intel GPUs are not supported yet (no oneAPI backend).";
+         return "OpenCL does not offer this GPU with what the mod needs (double precision, shared virtual memory, OpenCL 2.0 or 3.0): update Intel's graphics driver.";
       }
 
-      return "Neither NVIDIA's CUDA nor AMD's HIP sees this GPU (driver missing, or AMD's HIP SDK not installed).";
+      return "Neither NVIDIA's CUDA, AMD's HIP nor OpenCL sees this GPU with what the mod needs (driver missing, or AMD's HIP SDK not installed).";
    }
 
    private int left() {
@@ -197,6 +198,10 @@ public final class GpuScreen extends Screen {
 
    private static String automaticText(GpuInventory.Inventory inventory) {
       GpuInventory.Device automatic = inventory.automatic();
+      if (automatic == null && inventory.adapters().stream().anyMatch(adapter -> adapter.device() != null && adapter.device().integrated())) {
+         return "now: the CPU (an integrated GPU is used only when chosen below: slower than the CPU on the one tested)";
+      }
+
       return automatic == null ? "no usable GPU found" : "now: " + automatic.name() + " (" + automatic.backend() + ")";
    }
 
@@ -256,7 +261,7 @@ public final class GpuScreen extends Screen {
 
    private static boolean inUse(GpuInventory.Device device) {
       return device != null && GpuDevice.chosenName != null && device.name().equals(GpuDevice.chosenName)
-         && device.backend().equals(com.wgaccel.gpu.GpuBackend.name()) && device.index() == GpuDevice.index();
+         && device.backend().equalsIgnoreCase(com.wgaccel.gpu.GpuBackend.name()) && device.index() == GpuDevice.index();
    }
 
    @Override

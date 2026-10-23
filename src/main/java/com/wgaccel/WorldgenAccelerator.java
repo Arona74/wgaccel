@@ -167,7 +167,11 @@ public final class WorldgenAccelerator {
       }
 
       String tested;
-      if (com.wgaccel.gpu.GpuBackend.HIP) {
+      if (com.wgaccel.gpu.GpuBackend.OPENCL) {
+         com.wgaccel.gpu.OpenCl.Device device = com.wgaccel.gpu.OpenCl.chosen();
+         String card = device == null ? "" : " (this one: " + device.name() + ")";
+         tested = "The GPU parts through OpenCL are new and tested only on a Radeon RX 9070 XT and Intel Arc graphics. On other GPUs" + card;
+      } else if (com.wgaccel.gpu.GpuBackend.HIP) {
          // The AMD route (HIP): checked on a Radeon 680M (gfx1035) and a Radeon RX 9070 XT (gfx1201) only.
          String arch = com.wgaccel.gpu.HipSelfTest.architecture;
          String card = arch == null ? "" : " (this one: " + com.wgaccel.gpu.HipSelfTest.deviceName + ", " + arch + ")";
@@ -203,7 +207,8 @@ public final class WorldgenAccelerator {
    private static void gpuSelfTest() {
       try {
          LOG.info("WGA GPU backend: {} ({})", com.wgaccel.gpu.GpuBackend.name(), com.wgaccel.gpu.GpuBackend.reason);
-         for (String line : com.wgaccel.gpu.GpuBackend.HIP ? com.wgaccel.gpu.HipSelfTest.run() : GpuSelfTest.run()) {
+         for (String line : com.wgaccel.gpu.GpuBackend.OPENCL ? com.wgaccel.gpu.OpenClSelfTest.run()
+            : com.wgaccel.gpu.GpuBackend.HIP ? com.wgaccel.gpu.HipSelfTest.run() : GpuSelfTest.run()) {
             LOG.info("WGA GPU self-test: {}", line);
          }
       } catch (Throwable failure) {

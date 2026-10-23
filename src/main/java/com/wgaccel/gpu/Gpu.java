@@ -21,6 +21,9 @@ import org.lwjgl.system.MemoryUtil;
  * With {@link GpuBackend#HIP} the same on an AMD card: HIP's calls in place of CUDA's, the module compiled by hipRTC
  * ({@link HipSelfTest#compile}). HIP has no contexts of its own to manage here: the "context" is the device's primary
  * one, made current by selecting device 0 on the calling thread.
+ * <p>
+ * With {@link GpuBackend#OPENCL} through {@link OpenCl}: one context for every thread, the module a program built from
+ * the translated source, device addresses shared virtual memory.
  */
 public final class Gpu implements AutoCloseable {
    /** The context value under HIP (any non-zero value: there is only the device's primary context). */
@@ -31,7 +34,8 @@ public final class Gpu implements AutoCloseable {
    private long stream;
    private final boolean ownsContext;
    private final long module;
-   private final List<Long> buffers = new ArrayList<>();
+   /** Shared by threads (tile noise's program is one Gpu for every thread making tables): a plain list lost entries. */
+   private final List<Long> buffers = java.util.Collections.synchronizedList(new ArrayList<>());
 
    public Gpu(String source, String name) {
       this(createContext(), true, source, name);
@@ -49,7 +53,7 @@ public final class Gpu implements AutoCloseable {
          makeCurrent(context);
          this.module = loadModule(source, name);
       } catch (RuntimeException failure) {
-         if (ownsContext && !GpuBackend.HIP) {
+         if (ownsContext && !GpuBackend.HIP && !GpuBackend.OPENCL) {
             cuCtxDestroy(context);
          }
 
@@ -59,6 +63,11 @@ public final class Gpu implements AutoCloseable {
 
    /** A new CUDA context on the chosen device ({@link GpuDevice}), current on this thread. */
    public static long createContext() {
+      if (GpuBackend.OPENCL) {
+         OpenCl.init();
+         return HIP_CONTEXT;
+      }
+
       if (GpuBackend.HIP) {
          Hip.check(Hip.hipInit(0), "hipInit");
          Hip.check(Hip.hipSetDevice(GpuDevice.index()), "hipSetDevice");
@@ -79,7 +88,7 @@ public final class Gpu implements AutoCloseable {
    public static long loadModule(String source, String name) {
       long before = GpuMemory.committed();
       try {
-         return GpuBackend.HIP ? loadHipModule(source, name) : loadCudaModule(source, name);
+         return GpuBackend.OPENCL ? OpenCl.loadModule(source, name) : GpuBackend.HIP ? loadHipModule(source, name) : loadCudaModule(source, name);
       } finally {
          GpuMemory.moduleLoaded(before);
       }
@@ -256,6 +265,11 @@ public final class Gpu implements AutoCloseable {
    }
 
    private void sync(String what) {
+      if (GpuBackend.OPENCL) {
+         OpenCl.check(OpenCl.synchronize(this.stream), "clFinish " + what);
+         return;
+      }
+
       if (GpuBackend.HIP) {
          Hip.check(Hip.hipStreamSynchronize(this.stream), "hipStreamSynchronize " + what);
          return;
@@ -273,6 +287,11 @@ public final class Gpu implements AutoCloseable {
    /** Copies a float, int or double buffer into an existing device buffer. */
    public void copyIn(long device, Buffer buffer) {
       this.current();
+      if (GpuBackend.OPENCL) {
+         OpenCl.check(OpenCl.copy(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream, true), "copy in");
+         return;
+      }
+
       if (GpuBackend.HIP) {
          if (this.stream != 0L) {
             Hip.check(Hip.hipMemcpyHtoDAsync(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream), "copy in");
@@ -307,6 +326,11 @@ public final class Gpu implements AutoCloseable {
     */
    public void enqueueCopyIn(long device, Buffer buffer) {
       this.current();
+      if (GpuBackend.OPENCL) {
+         OpenCl.check(OpenCl.copy(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream, false), "copy in");
+         return;
+      }
+
       if (GpuBackend.HIP) {
          Hip.check(Hip.hipMemcpyHtoDAsync(device, MemoryUtil.memAddress(buffer), bytes(buffer), this.stream), "copy in");
          return;
@@ -318,6 +342,11 @@ public final class Gpu implements AutoCloseable {
    /** Copies one device buffer into another. */
    public void copy(long from, long to, long bytes) {
       this.current();
+      if (GpuBackend.OPENCL) {
+         OpenCl.check(OpenCl.copy(to, from, bytes, this.stream, true), "copy on the GPU");
+         return;
+      }
+
       if (GpuBackend.HIP) {
          if (this.stream != 0L) {
             Hip.check(Hip.hipMemcpyDtoDAsync(to, from, bytes, this.stream), "copy on the GPU");
@@ -343,7 +372,9 @@ public final class Gpu implements AutoCloseable {
       this.current();
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer pointer = stack.mallocPointer(1);
-         if (GpuBackend.HIP) {
+         if (GpuBackend.OPENCL) {
+            OpenCl.check(OpenCl.allocate(pointer, Math.max(4L, bytes)), "clSVMAlloc");
+         } else if (GpuBackend.HIP) {
             Hip.check(Hip.hipMalloc(pointer, Math.max(4L, bytes)), "hipMalloc");
          } else {
             GpuSelfTest.check(cuMemAlloc(pointer, Math.max(4L, bytes)), "cuMemAlloc");
@@ -365,7 +396,9 @@ public final class Gpu implements AutoCloseable {
 
    private static void freeDevice(long device) {
       GpuMemory.deviceFreed(device);
-      if (GpuBackend.HIP) {
+      if (GpuBackend.OPENCL) {
+         OpenCl.free(device);
+      } else if (GpuBackend.HIP) {
          Hip.hipFree(device);
       } else {
          cuMemFree(device);
@@ -378,6 +411,10 @@ public final class Gpu implements AutoCloseable {
    }
 
    private static void makeCurrent(long context) {
+      if (GpuBackend.OPENCL) {
+         return;
+      }
+
       if (GpuBackend.HIP) {
          Hip.check(Hip.hipSetDevice(GpuDevice.index()), "hipSetDevice");
       } else {
@@ -386,6 +423,11 @@ public final class Gpu implements AutoCloseable {
    }
 
    private boolean downloadOnStream(long device, Buffer into) {
+      if (GpuBackend.OPENCL) {
+         OpenCl.check(OpenCl.copy(MemoryUtil.memAddress(into), device, bytes(into), this.stream, true), "copy out");
+         return true;
+      }
+
       if (GpuBackend.HIP) {
          if (this.stream != 0L) {
             Hip.check(Hip.hipMemcpyDtoHAsync(MemoryUtil.memAddress(into), device, bytes(into), this.stream), "copy out");
@@ -436,7 +478,9 @@ public final class Gpu implements AutoCloseable {
       this.current();
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer function = stack.mallocPointer(1);
-         if (GpuBackend.HIP) {
+         if (GpuBackend.OPENCL) {
+            OpenCl.check(OpenCl.getFunction(function, this.module, stack.ASCII(kernel)), "clCreateKernel " + kernel);
+         } else if (GpuBackend.HIP) {
             Hip.check(Hip.hipModuleGetFunction(function, this.module, stack.ASCII(kernel)), "hipModuleGetFunction " + kernel);
          } else {
             GpuSelfTest.check(cuModuleGetFunction(function, this.module, stack.ASCII(kernel)), "cuModuleGetFunction " + kernel);
@@ -460,7 +504,9 @@ public final class Gpu implements AutoCloseable {
             }
          }
 
-         if (GpuBackend.HIP) {
+         if (GpuBackend.OPENCL) {
+            OpenCl.check(OpenCl.launch(function.get(0), gridX, gridY, 1, 256, 1, 1, 0, this.stream, params), "launch " + kernel);
+         } else if (GpuBackend.HIP) {
             Hip.check(Hip.hipModuleLaunchKernel(function.get(0), gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, 0L), "hipModuleLaunchKernel " + kernel);
          } else {
             GpuSelfTest.check(cuLaunchKernel(function.get(0), gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, null), "cuLaunchKernel " + kernel);
@@ -490,7 +536,9 @@ public final class Gpu implements AutoCloseable {
          Long function = this.functions.get(kernel);
          if (function == null) {
             PointerBuffer found = stack.mallocPointer(1);
-            if (GpuBackend.HIP) {
+            if (GpuBackend.OPENCL) {
+               OpenCl.check(OpenCl.getFunction(found, this.module, stack.ASCII(kernel)), "clCreateKernel " + kernel);
+            } else if (GpuBackend.HIP) {
                Hip.check(Hip.hipModuleGetFunction(found, this.module, stack.ASCII(kernel)), "hipModuleGetFunction " + kernel);
             } else {
                GpuSelfTest.check(cuModuleGetFunction(found, this.module, stack.ASCII(kernel)), "cuModuleGetFunction " + kernel);
@@ -517,7 +565,9 @@ public final class Gpu implements AutoCloseable {
          }
 
          // The launch copies the argument values, so the stack may be released before the kernel runs.
-         if (GpuBackend.HIP) {
+         if (GpuBackend.OPENCL) {
+            OpenCl.check(OpenCl.launch(function, gridX, gridY, 1, 256, 1, 1, 0, this.stream, params), "launch " + kernel);
+         } else if (GpuBackend.HIP) {
             Hip.check(Hip.hipModuleLaunchKernel(function, gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, 0L), "hipModuleLaunchKernel " + kernel);
          } else {
             GpuSelfTest.check(cuLaunchKernel(function, gridX, gridY, 1, 256, 1, 1, 0, this.stream, params, null), "cuLaunchKernel " + kernel);
@@ -551,8 +601,13 @@ public final class Gpu implements AutoCloseable {
    @Override
    public void close() {
       this.current();
-      for (long device : this.buffers) {
+      for (long device : this.buffers.toArray(new Long[0])) {
          freeDevice(device);
+      }
+
+      if (GpuBackend.OPENCL) {
+         OpenCl.unloadModule(this.module);
+         return;
       }
 
       if (GpuBackend.HIP) {

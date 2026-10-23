@@ -28,6 +28,123 @@ public final class FillBench {
    private FillBench() {
    }
 
+   /**
+    * -Dwgaccel.veinDebug=true: OreVeinifier's steps per block written by mc_ore_vein (vein noise, first random float,
+    * ridged noise, d3, second random float, gap noise; -12345 for a step not reached), for comparing backends block by
+    * block (an Intel Arc iGPU gave other vein blocks than the game, 23 Oct 2026). The buffer is fillStates' 26th
+    * argument (FillGpu.debugBuffer), kept in DCtx: a pointer in a program-scope variable set by another kernel hung the
+    * Radeon's driver twice.
+    */
+   private static String veinDebugSource(String source) {
+      String helpers = """
+         __device__ void wga_dbg(const DCtx& c, int k, double v) {
+             int i = ((c.y - c.cellMinY * c.cellHeight) * 256 + (c.z - c.chunkZ) * 16 + (c.x - c.chunkX)) * 8 + k;
+             if (c.dbg != 0 && i >= 0 && i < 8 * 256 * 1024) c.dbg[i] = v;
+         }
+         """;
+      // DCtx gets the buffer, fillStates takes it last and stores it.
+      source = replaceOnce(source, "const double* ccolumns = 0;", "const double* ccolumns = 0;\n    double* dbg = 0;");
+      int kernel = source.indexOf("void fillStates(");
+      int open = source.indexOf(") {", kernel);
+      int z = source.indexOf("c.z = chunkZ + lz;", open);
+      if (kernel < 0 || open < 0 || z < 0) {
+         throw new IllegalStateException("vein debug: fillStates not found as expected in the source");
+      }
+
+      source = source.substring(0, open) + ", double* dbgOut" + source.substring(open, z) + "c.z = chunkZ + lz; c.dbg = dbgOut;"
+         + source.substring(z + "c.z = chunkZ + lz;".length());
+      int at = source.indexOf("__device__ int mc_ore_vein(");
+      int end = at < 0 ? -1 : source.indexOf("\n}", at) >= 0 ? source.indexOf("return base + 2;", at) : -1;
+      if (at < 0 || end < 0) {
+         throw new IllegalStateException("vein debug: mc_ore_vein not found in the source");
+      }
+
+      String patched = source.substring(at, end);
+      patched = patched.replaceFirst("(double d0 = \\w+\\(c\\);)", "$1 wga_dbg(c, 0, d0);");
+      patched = patched.replaceFirst("if \\(mc_next_float\\(r\\) > 0\\.7f\\) return 0;", "float f1 = mc_next_float(r); wga_dbg(c, 1, f1); if (f1 > 0.7f) return 0;");
+      patched = patched.replaceFirst("if \\((\\w+)\\(c\\) >= 0\\.0\\) return 0;", "double rv = $1(c); wga_dbg(c, 2, rv); if (rv >= 0.0) return 0;");
+      patched = patched.replaceFirst("(double d3 = [^;]+;)", "$1 wga_dbg(c, 3, d3);");
+      patched = patched.replaceFirst("if \\(\\(double\\)mc_next_float\\(r\\) < d3 && (\\w+)\\(c\\) > \\(double\\)-0\\.3f\\)",
+         "float f2 = mc_next_float(r); double gv = $1(c); wga_dbg(c, 4, f2); wga_dbg(c, 5, gv); if ((double)f2 < d3 && gv > (double)-0.3f)");
+      if (!patched.contains("wga_dbg(c, 0, d0)") || !patched.contains("wga_dbg(c, 2, rv)") || !patched.contains("wga_dbg(c, 5, gv)")) {
+         throw new IllegalStateException("vein debug: mc_ore_vein not as expected:\n" + patched);
+      }
+
+      return source.substring(0, at) + helpers + patched + source.substring(end);
+   }
+
+   private static String replaceOnce(String text, String what, String with) {
+      int at = text.indexOf(what);
+      if (at < 0) {
+         throw new IllegalStateException("vein debug: '" + what + "' not found in the source");
+      }
+
+      return text.substring(0, at) + with + text.substring(at + what.length());
+   }
+
+   private static void ok(int result, String what) {
+      if (result != 0) {
+         throw new IllegalStateException(what + " failed: " + result);
+      }
+   }
+
+   private static final int DEBUG_DOUBLES = 8 * 256 * 1024;
+
+   /** The debug buffer, made before the first fill (the patched fillStates always takes it). */
+   private static long debugBuffer(long context) {
+      try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+         ok(com.wgaccel.gpu.GpuApi.cuCtxSetCurrent(context), "cuCtxSetCurrent");
+         org.lwjgl.PointerBuffer pointer = stack.mallocPointer(1);
+         ok(com.wgaccel.gpu.GpuApi.cuMemAlloc(pointer, 8L * DEBUG_DOUBLES), "cuMemAlloc");
+         return pointer.get(0);
+      }
+   }
+
+   private static void veinDebug(FillGpu gpu, long context, List<Sample> samples, long debug) throws Exception {
+      int doubles = DEBUG_DOUBLES;
+      {
+         java.nio.DoubleBuffer host = org.lwjgl.system.MemoryUtil.memAllocDouble(doubles);
+         for (Sample sample : samples) {
+            // The game's blocks when saved with them (chunks after a difference), else the game's own codes.
+            byte[] expected = sample.game;
+            if (expected == null) {
+               expected = new byte[sample.codes.length];
+               for (int i = 0; i < expected.length; i++) {
+                  expected[i] = (byte)(sample.codes[i] & 15);
+               }
+            }
+
+            for (int i = 0; i < doubles; i++) {
+               host.put(i, -12345.0);
+            }
+
+            ok(com.wgaccel.gpu.GpuApi.cuMemcpyHtoD(debug, host), "clear");
+            byte[] codes = new byte[sample.codes.length];
+            gpu.fill(sample.job, codes);
+            ok(com.wgaccel.gpu.GpuApi.ncuMemcpyDtoHAsync(org.lwjgl.system.MemoryUtil.memAddress(host), debug, 8L * doubles, 0L), "copy");
+            ok(com.wgaccel.gpu.GpuApi.cuStreamSynchronize(0L), "sync");
+            System.out.printf(Locale.ROOT, "%s: blocks where the game placed a vein block or the GPU's code differs (x y z: game gpu | vein noise, random 1, ridged, d3, random 2, gap)%n",
+               sample.name);
+            int shown = 0;
+            for (int t = 0; t < expected.length && shown < 40; t++) {
+               int game = expected[t];
+               int mine = codes[t] & 15;
+               if (game != mine || game >= 1 && game <= 6) {
+                  shown++;
+                  StringBuilder steps = new StringBuilder();
+                  for (int k = 0; k < 6; k++) {
+                     double v = host.get(t * 8 + k);
+                     steps.append(v == -12345.0 ? "        -" : String.format(Locale.ROOT, " %s", Double.toString(v)));
+                  }
+
+                  System.out.printf(Locale.ROOT, "  %d %d %d: %d %d |%s%n", sample.job.chunkX + t % 16, sample.job.cellMinY * sample.job.cellHeight + t / 256,
+                     sample.job.chunkZ + t % 256 / 16, game, mine, steps);
+               }
+            }
+         }
+      }
+   }
+
    public static void main(String[] args) throws Exception {
       Path logs = Path.of(System.getProperty("wgaccel.logs", "run/logs"));
       String source = Files.readString(Path.of(System.getProperty("wgaccel.fillSource", logs.resolve("wgaccel-noise-fill.cu").toString())));
@@ -38,6 +155,33 @@ public final class FillBench {
             "int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel) {");
       }
 
+      // A source saved before 0.20.0's OpenCL mc_next_float (Intel's optimizer converted the 24 bits as signed).
+      String bits = "uint v = as_uint2(mc_next_long(r)).s1 >> 8; return (as_float(0x3F800000u | (v >> 1)) - 1.0f) + ((v & 1u) != 0u ? 5.9604645E-8f : 0.0f);";
+      String word = "return (float)(int)(as_uint2(mc_next_long(r)).s1 >> 8) * 5.9604645E-8f;";
+      String nextFloat = "\n#ifdef __OPENCL_VERSION__\n" + bits + "\n#else\nreturn (float)(long long)(mc_next_long(r) >> 40) * 5.9604645E-8f;\n#endif\n";
+      String masked = "return (float)(long long)((mc_next_long(r) >> 40) & 16777215ull) * 5.9604645E-8f;";
+      if (source.contains(word)) {
+         source = source.replace(word, bits);
+      } else if (source.contains(masked)) {
+         source = source.replace(masked, nextFloat);
+      } else if (!source.contains(bits)) {
+         source = source.replace("return (float)(long long)(mc_next_long(r) >> 40) * 5.9604645E-8f;", nextFloat);
+      }
+
+      // -Dwgaccel.nextFloat=bits|split|shift|word: OpenCL's mc_next_float written another way, for finding one that
+      // Intel's optimizer gets right inside the fill (bits is the mod's).
+      String form = System.getProperty("wgaccel.nextFloat");
+      if (form != null) {
+         String line = switch (form) {
+            case "bits" -> bits;
+            case "split" -> "uint v = as_uint2(mc_next_long(r)).s1 >> 8; return (float)(v >> 12) * 0.000244140625f + (float)(v & 4095u) * 5.9604645E-8f;";
+            case "shift" -> "return (float)(long)(mc_next_long(r) >> 40) * 5.9604645E-8f;";
+            case "word" -> word;
+            default -> throw new IllegalArgumentException("wgaccel.nextFloat: bits, split, shift or word");
+         };
+         source = source.replace(bits, line);
+         System.out.println("OpenCL nextFloat: " + line);
+      }
       List<Sample> samples = new ArrayList<>();
       for (int i = 0; Files.exists(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin")); i++) {
          samples.add(read(logs.resolve("wgaccel-noise-fill-sample-" + i + ".bin")));
@@ -60,9 +204,16 @@ public final class FillBench {
          System.out.println("cache: " + com.wgaccel.gpu.GpuSelfTest.cacheDirectory);
       }
 
+      boolean veinDebug = Boolean.getBoolean("wgaccel.veinDebug");
+      if (veinDebug) {
+         source = veinDebugSource(source);
+      }
+
       Sample first = samples.get(0);
       long context = Gpu.createContext();
       long start = System.nanoTime();
+      long debug = veinDebug ? debugBuffer(context) : 0L;
+      FillGpu.debugBuffer = debug;
       FillGpu gpu = new FillGpu(context, source, first.noise, first.permutations, first.interpolators, first.columns);
       if (first.beardKernel() != null) {
          gpu.setBeardKernel(first.beardKernel());
@@ -99,6 +250,11 @@ public final class FillBench {
       }
       if (com.wgaccel.gpu.Gpu.linkProblem != null) {
          System.out.println("link to machine code: " + com.wgaccel.gpu.Gpu.linkProblem);
+      }
+
+      if (veinDebug) {
+         veinDebug(gpu, context, samples, debug);
+         return;
       }
       // G4a: all samples in one batch (each twice, so a batch holds repeats), compared the same way, then timed.
       List<FillGpu.Job> batchJobs = new ArrayList<>();

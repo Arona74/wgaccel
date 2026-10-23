@@ -19,7 +19,7 @@ public final class GpuDevice {
    /** Set from config gpuDevice before the GPU is first used; -1: automatic. */
    public static volatile int configured = Integer.getInteger("wgaccel.gpuDevice", -1);
    /**
-    * Config gpuBackend (AUTO, CUDA or HIP), set before the GPU is first used. Here rather than in {@link GpuBackend},
+    * Config gpuBackend (AUTO, CUDA, HIP or OPENCL), set before the GPU is first used. Here rather than in {@link GpuBackend},
     * whose class makes its choice as it loads.
     */
    public static volatile String configuredBackend = "AUTO";
@@ -32,7 +32,7 @@ public final class GpuDevice {
    private GpuDevice() {
    }
 
-   /** The device ordinal the GPU parts use (CUDA's cuDeviceGet, HIP's hipSetDevice). */
+   /** The device ordinal the GPU parts use (CUDA's cuDeviceGet, HIP's hipSetDevice, OpenCL's {@link OpenCl#devices}). */
    public static int index() {
       int index = chosen;
       return index >= 0 ? index : choose();
@@ -55,8 +55,10 @@ public final class GpuDevice {
             int units = attribute(d, false);
             boolean integrated = attribute(d, true) != 0;
             names.add(name(d));
-            seen.add(d + " " + names.get(d) + " (" + units + " units" + (integrated ? ", integrated" : "") + ")");
-            long score = (integrated ? 0L : 1L << 32) + units;
+            // OpenCL lists GPUs the mod cannot run on too (NVIDIA's has no generic address space): never chosen automatically.
+            String missing = GpuBackend.OPENCL ? OpenCl.devices().get(d).missing() : "";
+            seen.add(d + " " + names.get(d) + " (" + units + " units" + (integrated ? ", integrated" : "") + (missing.isEmpty() ? "" : ", no " + missing) + ")");
+            long score = missing.isEmpty() ? (integrated ? 0L : 1L << 32) + units : -1L;
             if (score > bestScore) {
                bestScore = score;
                best = d;
@@ -82,6 +84,10 @@ public final class GpuDevice {
    }
 
    private static int count() {
+      if (GpuBackend.OPENCL) {
+         return OpenCl.devices().size();
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer value = stack.mallocInt(1);
          if (GpuBackend.HIP) {
@@ -98,6 +104,11 @@ public final class GpuDevice {
 
    /** The device's multiprocessor count, or whether it is integrated (1) or not (0). */
    private static int attribute(int ordinal, boolean integrated) {
+      if (GpuBackend.OPENCL) {
+         OpenCl.Device device = OpenCl.devices().get(ordinal);
+         return integrated ? (device.integrated() ? 1 : 0) : device.units();
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer value = stack.mallocInt(1);
          if (GpuBackend.HIP) {
@@ -115,6 +126,10 @@ public final class GpuDevice {
    }
 
    private static String name(int ordinal) {
+      if (GpuBackend.OPENCL) {
+         return OpenCl.devices().get(ordinal).name();
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          ByteBuffer name = stack.malloc(256);
          if (GpuBackend.HIP) {

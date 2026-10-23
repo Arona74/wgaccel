@@ -140,6 +140,11 @@ public final class GpuSurface {
          return;
       }
 
+      if (com.wgaccel.gpu.OpenCl.intel()) {
+         WorldgenAccelerator.LOG.info("WGA GPU surface: off on Intel graphics through OpenCL (its compiler takes many minutes on the surface code); the CPU does the surface");
+         return;
+      }
+
       com.wgaccel.gpu.GpuPrepare.Task task = com.wgaccel.gpu.GpuPrepare.begin("surface");
       Thread thread = new Thread(() -> {
          long start = System.nanoTime();
