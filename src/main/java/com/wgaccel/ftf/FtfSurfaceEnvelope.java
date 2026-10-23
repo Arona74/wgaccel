@@ -55,7 +55,7 @@ public final class FtfSurfaceEnvelope {
             }
          }
 
-         if (NEXT_REPORT.get() <= SHARED.intValue() && NEXT_REPORT.compareAndSet(NEXT_REPORT.get(), NEXT_REPORT.get() * 2)) {
+         if (Due.due(NEXT_REPORT, SHARED.sum(), 2)) {
             WorldgenAccelerator.LOG.info(summary());
          }
 

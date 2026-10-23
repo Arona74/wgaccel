@@ -21,6 +21,7 @@ import org.lwjgl.system.MemoryUtil;
  */
 final class ErosionGridBatch {
    static final int MAX = 64;
+   private static final long WAIT_SECONDS = 30L;
    private static final ConcurrentLinkedQueue<ErosionFilterGpu.Job> PENDING = new ConcurrentLinkedQueue<>();
    /** The GPU thread's buffers (only that thread touches them). */
    private static final ThreadLocal<Device> DEVICE = new ThreadLocal<>();
@@ -36,7 +37,11 @@ final class ErosionGridBatch {
       PENDING.add(job);
       GpuService.post(ErosionGridBatch::drain);
       try {
-         job.done.get();
+         // Never forever (0.17.3: a world once did not finish closing; a stuck GPU must not hold a chunk up): past this
+         // the grid is FreeTerraForged's own and the GPU erosion turns off.
+         job.done.get(WAIT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (java.util.concurrent.TimeoutException late) {
+         throw new IllegalStateException("a batch did not finish in " + WAIT_SECONDS + " s");
       } catch (ExecutionException failure) {
          throw failure.getCause() instanceof Exception exception ? exception : new IllegalStateException(failure.getCause());
       }

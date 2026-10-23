@@ -26,6 +26,7 @@ public final class Config {
    public static final Setting<Boolean> FTF_FAST_PLACEMENT_SCOPES;
    public static final Setting<Boolean> FTF_SHARED_CHUNK_CELLS;
    public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
+   public static final Setting<Boolean> FTF_FAST_RIVERS;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
    public static final Setting<Boolean> MEMORY_REPORT;
@@ -198,6 +199,12 @@ public final class Config {
             "(r1000, 15,680 chunks) had 22,745 misses, about 6,000 of them chunks made again after being dropped (~4% of the CPU).",
             "The cells are the same either way; 0 keeps FreeTerraForged's own size.")
          .defineInRange("ftfRawChunkCache", 4096, 0, 65536), 4096, 4096).under(CPU_IMPROVEMENTS, 0);
+      FTF_FAST_RIVERS = Setting.of(builder
+         .comment("FreeTerraForged's river carving without the noise of rivers too far away to touch a column: its carver samples",
+            "four noises for every river of a network before finding the column out of reach (~9% of all CPU in a 1.0.0013",
+            "profile). A safe upper bound of the reach is worked out first; about 1 skip in 2,048 is carved anyway and compared, and a",
+            "difference turns this off. The same world (FreeTerraForged 1.0.0010 and 1.0.0013).")
+         .define("ftfFastRivers", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_BLOCK_PREDICATES = Setting.custom(builder
          .comment("Block predicates (placement filters, rule-based block choices) read each block once per evaluation: a block read",
             "again in the same evaluation comes from that evaluation's own reads (nothing writes blocks while a predicate runs).",

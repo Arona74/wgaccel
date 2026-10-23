@@ -113,7 +113,7 @@ public final class FtfChunkCells {
          }
       }
 
-      if (NEXT_REPORT.get() <= SHARED.intValue() && NEXT_REPORT.compareAndSet(NEXT_REPORT.get(), NEXT_REPORT.get() * 2)) {
+      if (Due.due(NEXT_REPORT, SHARED.sum(), 2)) {
          WorldgenAccelerator.LOG.info(summary());
       }
 
@@ -131,7 +131,7 @@ public final class FtfChunkCells {
    }
 
    /** The first difference between two cell arrays (every instance field of Cell), or null. */
-   private static String compare(Cell[] a, Cell[] b) {
+   static String compare(Cell[] a, Cell[] b) {
       if (a.length != b.length) {
          return "length " + a.length + " vs " + b.length;
       }

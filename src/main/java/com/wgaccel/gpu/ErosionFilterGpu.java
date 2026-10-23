@@ -101,6 +101,11 @@ public final class ErosionFilterGpu {
                GpuService.call(job::run);
             }
          } catch (Exception | LinkageError failure) {
+            if (job.pooled) {
+               // A batch that did not finish may still write into the thread's buffers later: this thread takes new ones.
+               POOL.remove();
+            }
+
             disable(failure.toString());
             original.run();
             return;

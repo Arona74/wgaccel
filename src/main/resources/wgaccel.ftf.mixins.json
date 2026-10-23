@@ -23,6 +23,8 @@
     "FtfPlacementScopesMixin",
     "ChunkCellsMixin",
     "RawChunkCacheMixin",
+    "RawChunkBlocksMixin",
+    "RiverSkipMixin",
     "SurfaceEnvelopeMixin"
   ],
   "injectors": {

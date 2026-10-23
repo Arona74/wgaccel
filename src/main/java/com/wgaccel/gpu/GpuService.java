@@ -125,7 +125,10 @@ public final class GpuService {
          }
       });
       try {
-         return result.get();
+         // Never forever: a job past this is the caller's failure (it then does the work on the CPU and turns its part off).
+         return result.get(60L, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (java.util.concurrent.TimeoutException late) {
+         throw new IllegalStateException("a GPU job did not finish in 60 s");
       } catch (ExecutionException failure) {
          throw failure.getCause() instanceof Exception exception ? exception : new IllegalStateException(failure.getCause());
       }

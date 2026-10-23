@@ -33,7 +33,10 @@ public final class FtfSlowPaths {
     * 1.7 s per area for them, the CPU 15 of 24 busy).
     */
    public static int lookAheadThreads(int usual) {
-      return chunkCells() && com.wgaccel.Config.FTF_SHARED_CHUNK_CELLS.get() ? Math.max(usual, 6) : usual;
+      // Whenever stand-ins make chunk grids (1.0.0013), shared or not: from 0.17.0 the sharing was off on builds whose
+      // grids fill the surface envelope, and the look-aheads fell back to 3 and 2 threads; the 23 Oct 2026 run then had
+      // 2,661 chunks' biomes not ready in time (19%, each a whole CPU biome step, ~18 ms, against ~6 ms for a stand-in).
+      return standInCells() ? Math.max(usual, 6) : usual;
    }
 
    public static boolean chunkCells() {

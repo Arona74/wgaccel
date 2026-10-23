@@ -34,6 +34,12 @@ import org.lwjgl.system.MemoryUtil;
 public final class TileNoiseGpu {
    /** A populator is put on the GPU when the summed cost of its trees is at least this share of the costliest's. */
    private static final double COST_SHARE = 0.2;
+   /**
+    * T2 (FreeTerraForged 1.0.0013's raw chunk blocks, {@link com.wgaccel.ftf.FtfRawBlocks}): every populator with a GPU
+    * version, not only the costliest. There the others would run twice on the CPU (in the dry pass and the real one);
+    * the 23 Oct 2026 profile had them at 28% of the blocks' time with only 4 of 42 on the GPU. Set before the program is made.
+    */
+   public static volatile boolean allPopulators;
    private static final long LAUNCH_SAMPLES = 400_000_000L;
 
    /** One heightmap's program: per chosen populator its number (rows 4n..4n+3: base, height, erosion, weirdness). */
@@ -369,7 +375,7 @@ public final class TileNoiseGpu {
       List<String> names = new ArrayList<>();
       for (int i = 0; i < supported.size(); i++) {
          long[] cost = costs.get(i);
-         if (cost[0] + cost[1] + cost[2] + cost[3] < COST_SHARE * maxCost) {
+         if (!allPopulators && cost[0] + cost[1] + cost[2] + cost[3] < COST_SHARE * maxCost) {
             continue;
          }
 
