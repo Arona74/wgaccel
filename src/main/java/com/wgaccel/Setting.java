@@ -97,4 +97,23 @@ public final class Setting<T> implements Supplier<T>, BooleanSupplier, IntSuppli
    public ModConfigSpec.ConfigValue<T> raw() {
       return this.raw;
    }
+
+   /**
+    * The value the preset gives (SERVER's with that preset, CLIENT's otherwise, CUSTOM included), or null for a setting
+    * the presets leave alone: what the world-loading screen calls normal.
+    */
+   public T normal() {
+      return Config.preset() == Config.Preset.SERVER ? this.server : this.client;
+   }
+
+   /** Whether this setting's section switch (cpuImprovements, gpuImprovements) is off, so it reads as off. */
+   public boolean sectionOff() {
+      return this.master != null && !this.master.get();
+   }
+
+   /** Its key in the config file (gpuNoiseFill). */
+   public String key() {
+      java.util.List<String> path = this.raw.getPath();
+      return path.isEmpty() ? "?" : path.get(path.size() - 1);
+   }
 }

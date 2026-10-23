@@ -98,7 +98,8 @@ public final class Config {
          .comment("Worldgen Accelerator: faster world generation, the same world block for block. AI-generated (written by Claude, an",
             "AI, under a person's direction): back up your worlds and report problems.",
             "",
-            "Sections: [general]; [cpu] the CPU improvements (any PC); [gpu] the GPU improvements (NVIDIA cards only, CUDA);",
+            "Sections: [general]; [cpu] the CPU improvements (any PC); [gpu] the GPU improvements (NVIDIA cards with CUDA, or AMD",
+            "cards on Windows with HIP);",
             "[gpu.tuning] how the GPU work is queued (the defaults are the measured best). cpuImprovements and gpuImprovements",
             "turn a whole section on or off.",
             "",
@@ -106,8 +107,11 @@ public final class Config {
             "16 GB heap, C2ME (19 threads), Chunky radius 1000 (16,129 chunks) with FreeTerraForged 1.0.0010 unless it says",
             "otherwise; each gain is over the run before it, the whole chain 2:23 -> 0:46 (3.1x). Your PC and mods will differ.",
             "",
-            "Needed for the GPU parts: an NVIDIA card (GTX 10xx or newer), its driver, and NVRTC from the NVIDIA CUDA Toolkit 12.x",
-            "(the toolkit sets CUDA_PATH, where the mod finds nvrtc64_*.dll; or start Java with -Dwgaccel.nvrtc=<path to the dll>).",
+            "Needed for the GPU parts, NVIDIA: a GTX 10xx or newer, its driver, and NVRTC from the NVIDIA CUDA Toolkit 12.x (the",
+            "toolkit sets CUDA_PATH, where the mod finds nvrtc64_*.dll; or start Java with -Dwgaccel.nvrtc=<path to the dll>).",
+            "AMD (Windows): the Adrenalin driver (its HIP runtime) and hipRTC from the AMD HIP SDK 6.4 or newer (found",
+            "through HIP_PATH or C:/Program Files/AMD/ROCm; or -Dwgaccel.hiprtc=<path to hiprtc*.dll>). The mod uses CUDA when",
+            "NVIDIA's driver sees a card, else HIP; -Dwgaccel.gpuBackend=cuda or hip chooses.",
             "Without them the mod still runs, with only the CPU section. A dedicated server also needs LWJGL: see the README.",
             "",
             "With C2ME's OpenCL module installed this mod turns itself off (the two do the same work).",
@@ -202,7 +206,7 @@ public final class Config {
             "The presets leave this one alone (being measured): always the value written here.")
          .define("fastBlockPredicates", false)).under(CPU_IMPROVEMENTS, false);
       builder.pop();
-      builder.comment("GPU improvements: world generation work done on an NVIDIA card (CUDA) or, experimental, an AMD card (HIP). Every GPU",
+      builder.comment("GPU improvements: world generation work done on an NVIDIA card (CUDA) or an AMD card (HIP, Windows). Every GPU",
          "result is checked against the CPU's now and then; a part that differs turns itself off.").push("gpu");
       GPU_IMPROVEMENTS = Setting.custom(builder
          .comment("All GPU improvements on or off at once (false: the GPU is never touched; the CPU section still applies).")

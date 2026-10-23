@@ -21,6 +21,8 @@ public final class GpuDevice {
    /** How the device was chosen and the devices seen, for the logs. */
    public static volatile String reason = "not chosen yet";
    private static volatile int chosen = -1;
+   /** The chosen device's name once chosen (the world-loading screen's hardware list), else null. */
+   public static volatile String chosenName;
 
    private GpuDevice() {
    }
@@ -41,12 +43,14 @@ public final class GpuDevice {
       int best = 0;
       long bestScore = -1L;
       int count = 0;
+      List<String> names = new ArrayList<>();
       try {
          count = count();
          for (int d = 0; d < count; d++) {
             int units = attribute(d, false);
             boolean integrated = attribute(d, true) != 0;
-            seen.add(d + " " + name(d) + " (" + units + " units" + (integrated ? ", integrated" : "") + ")");
+            names.add(name(d));
+            seen.add(d + " " + names.get(d) + " (" + units + " units" + (integrated ? ", integrated" : "") + ")");
             long score = (integrated ? 0L : 1L << 32) + units;
             if (score > bestScore) {
                bestScore = score;
@@ -68,6 +72,7 @@ public final class GpuDevice {
             + devices;
       }
 
+      chosenName = chosen < names.size() ? names.get(chosen) : null;
       return chosen;
    }
 

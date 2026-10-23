@@ -248,16 +248,21 @@ public final class GpuNoiseFill {
          return;
       }
 
+      // On the world-loading screen's list too (0.17.2): loaded after the overworld, so after its reset.
+      com.wgaccel.gpu.GpuPrepare.Task task = com.wgaccel.gpu.GpuPrepare.begin("noise fill (" + level.dimension().location().getPath() + ")");
       Thread thread = new Thread(() -> {
          long start = System.nanoTime();
          try {
             Program built = build(level);
             OTHERS.put(built.random(), built);
+            task.done();
             WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU noise fill (%s): ready in %.0f ms (aquifer %s, ore veins %s)", name,
                (System.nanoTime() - start) / 1.0e6, built.aquiferKind == 0 ? "disabled" : built.aquiferKind == 2 ? "C2ME's" : "vanilla's", built.veins ? "on" : "off"));
          } catch (DensityCodegen.Unsupported unsupported) {
+            task.failed(unsupported.kind);
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off in " + name + ": the density function kind {} has no GPU version", unsupported.kind);
          } catch (Throwable failure) {
+            task.failed(failure.toString());
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off in " + name + ": {}", failure.toString());
          }
       }, "WGA GPU noise fill compile " + name);

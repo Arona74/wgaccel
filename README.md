@@ -14,7 +14,7 @@ On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster**
 > log (`logs/latest.log`). The self-checks catch a wrong result and turn that part off, but no check catches everything.
 
 > [!WARNING]
-> **The GPU parts run on NVIDIA cards (CUDA) and, experimental since 0.16.0, on AMD cards under Windows (HIP).** They
+> **The GPU parts run on NVIDIA cards (CUDA) and, since 0.16.0, on AMD cards under Windows (HIP).** They
 > were tested on an NVIDIA RTX 3080, an AMD Radeon RX 9070 XT and an AMD Radeon 680M (a laptop's integrated graphics)
 > only. NVIDIA cards from
 > the GTX 10xx (compute capability 6.0) to the newest are supported, and each card, NVIDIA or AMD, gets code compiled
@@ -189,7 +189,7 @@ settings. If one doesn't, the checks turn the affected part off and the log says
       dropped it); an RTX 50xx needs 12.8 or newer.
    3. **Restart the launcher** (or the PC): a launcher that was open during the install doesn't see the new
       `CUDA_PATH`.
-4. **For the GPU parts on an AMD card (Windows, experimental):**
+4. **For the GPU parts on an AMD card (Windows):**
    1. Update the AMD Adrenalin driver. It comes with AMD's HIP runtime (`amdhip64_6.dll` in `C:\Windows\System32`).
    2. Install the **AMD HIP SDK for Windows** (6.4 was tested) from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html.
       Only its **hipRTC** part (the runtime compiler, `hiprtc*.dll`) is used.

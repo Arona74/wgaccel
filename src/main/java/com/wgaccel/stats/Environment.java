@@ -82,7 +82,8 @@ public final class Environment {
       return ModList.get().getModContainerById(WorldgenAccelerator.MOD_ID).map(c -> c.getModInfo().getVersion().toString()).orElse("?");
    }
 
-   private static String c2meParallelism() {
+   /** C2ME's globalExecutorParallelism as its config file has it ("default" or a number), or null without C2ME's config. */
+   public static String c2meParallelism() {
       Path file = FMLPaths.CONFIGDIR.get().resolve("c2me.toml");
       if (!Files.isRegularFile(file)) {
          return null;

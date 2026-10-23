@@ -395,7 +395,17 @@ public final class TileNoiseGpu {
       }
 
       long compileStart = System.nanoTime();
-      Gpu gpu = new Gpu(GpuService.context(), source, "tile_noise.cu");
+      // Compiled at the first terrain tile (FreeTerraForged 1.0.0010), so during the spawn area: on the world-loading
+      // screen's list too (0.17.2; it had shown "GPU ready" while this still compiled).
+      GpuPrepare.Task task = GpuPrepare.begin("tile noise");
+      Gpu gpu;
+      try {
+         gpu = new Gpu(GpuService.context(), source, "tile_noise.cu");
+         task.done();
+      } catch (Throwable failure) {
+         task.failed(failure.toString());
+         throw failure;
+      }
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
          "WGA GPU tile noise: %d of %d terrain populators on the GPU (%d without a GPU version: %s; the rest cheap), costliest %,d noise samples per column; compiled in %.0f ms",
          chosen.size(), found.size(), unsupported, missingKinds, maxCost, (System.nanoTime() - compileStart) / 1.0e6));
