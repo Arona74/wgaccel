@@ -1,8 +1,6 @@
 package com.wgaccel.gpu;
 
-import java.io.File;
 import java.util.Locale;
-import org.lwjgl.system.Platform;
 
 /**
  * Which GPU API the mod's {@link Gpu}, {@link GpuStreams} and {@link GpuApi} use: NVIDIA's CUDA or AMD's HIP
@@ -36,7 +34,13 @@ public final class GpuBackend {
          return asked.toLowerCase(Locale.ROOT).equals("hip");
       }
 
-      boolean nvidia = nvidiaDriver();
+      String configured = GpuDevice.configuredBackend;
+      if (configured != null && !configured.equalsIgnoreCase("AUTO")) {
+         reason = "config gpuBackend = " + configured;
+         return configured.equalsIgnoreCase("HIP");
+      }
+
+      boolean nvidia = GpuInventory.nvidiaDriver();
       if (nvidia && cudaSeesCard()) {
          reason = "NVIDIA's driver is installed";
          return false;
@@ -50,25 +54,6 @@ public final class GpuBackend {
       }
 
       reason = "neither NVIDIA's driver nor a HIP runtime with a card was found";
-      return false;
-   }
-
-   /**
-    * Whether NVIDIA's driver library is installed, by looking for its file (loading it to find out would make LWJGL
-    * print a warning in the log of every PC without it): nvcuda.dll in System32, or libcuda.so.1 in the usual Linux
-    * folders.
-    */
-   private static boolean nvidiaDriver() {
-      if (Platform.get() == Platform.WINDOWS) {
-         return new File(System.getenv().getOrDefault("SystemRoot", "C:/Windows"), "System32/nvcuda.dll").isFile();
-      }
-
-      for (String folder : new String[] {"/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/lib/wsl/lib", "/usr/local/cuda/lib64"}) {
-         if (new File(folder, "libcuda.so.1").isFile()) {
-            return true;
-         }
-      }
-
       return false;
    }
 

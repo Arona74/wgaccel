@@ -90,6 +90,7 @@ sourceSets {
 dependencies {
     cudacheckImplementation 'org.lwjgl:lwjgl:3.3.3'
     cudacheckImplementation 'org.lwjgl:lwjgl-cuda:3.3.3'
+    cudacheckImplementation 'org.lwjgl:lwjgl-opencl:3.3.3'
     cudacheckRuntimeOnly 'org.lwjgl:lwjgl:3.3.3:natives-windows'
     // FreeTerraForged's NoiseUtil (its noise tables) loads on its own, without Minecraft.
     cudacheckImplementation files('libs/freeterraforged-1.0.0010.jar')
@@ -107,6 +108,47 @@ tasks.register('cudaCheck', JavaExec) {
 
 // The same on an AMD card: `gradlew.bat hipCheck` uses the driver's HIP runtime and the AMD HIP SDK's hipRTC (found as
 // the mod finds it: -Dwgaccel.hiprtc, HIP_PATH, C:/Program Files/AMD/ROCm/*, PATH), then compiles the fixed kernel sources.
+// Whether an OpenCL backend (Intel GPUs) is worth making: `gradlew.bat openClProbeJar` makes build/libs/
+// wgaccel-openclprobe.jar, which runs on any Windows PC with Java (`java -jar wgaccel-openclprobe.jar`); `openclCheck`
+// runs it here. Its data (vanilla noise values from the real game classes, the kernels' CUDA sources) is made first.
+def probeData = layout.buildDirectory.dir('openclprobe')
+tasks.register('openClProbeData', JavaExec) {
+    group = 'verification'
+    description = 'Makes the OpenCL probe\'s data (kernel sources, vanilla noise values).'
+    classpath = sourceSets.cudacheck.runtimeClasspath
+    mainClass = 'com.wgaccel.cudacheck.OpenClProbeData'
+    args probeData.get().file('openclprobe.bin').asFile.path
+    outputs.dir probeData
+}
+
+tasks.register('openClProbeJar', Jar) {
+    group = 'verification'
+    description = 'Makes the standalone OpenCL probe jar (java -jar wgaccel-openclprobe.jar).'
+    dependsOn 'openClProbeData', 'cudacheckClasses'
+    archiveFileName = 'wgaccel-openclprobe.jar'
+    destinationDirectory = layout.buildDirectory.dir('libs')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.cudacheck.output) {
+        include 'com/wgaccel/cudacheck/OpenClProbe.class', 'com/wgaccel/cudacheck/OpenClProbe$*.class', 'com/wgaccel/cudacheck/OpenClProbeData.class'
+    }
+    from probeData
+    from({ configurations.cudacheckRuntimeClasspath.filter { it.name.startsWith('lwjgl') }.collect { zipTree(it) } }) {
+        exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**'
+    }
+    manifest {
+        attributes 'Main-Class': 'com.wgaccel.cudacheck.OpenClProbe'
+    }
+}
+
+tasks.register('openclCheck', JavaExec) {
+    group = 'verification'
+    description = 'Runs the OpenCL probe here.'
+    dependsOn 'openClProbeData'
+    classpath = sourceSets.cudacheck.runtimeClasspath + files(probeData)
+    mainClass = 'com.wgaccel.cudacheck.OpenClProbe'
+    workingDir = layout.buildDirectory.dir('openclprobe').get().asFile
+}
+
 tasks.register('gpuMemoryCheck', JavaExec) {
     group = 'verification'
     description = 'Measures the RAM the GPU runtime takes per stream and per loaded program.'

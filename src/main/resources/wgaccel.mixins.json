@@ -41,6 +41,7 @@
     "defaultRequire": 1
   },
   "client": [
-    "client.LevelLoadingScreenMixin"
+    "client.LevelLoadingScreenMixin",
+    "client.OptionsScreenMixin"
   ]
 }

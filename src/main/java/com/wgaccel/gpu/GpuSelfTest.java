@@ -90,10 +90,54 @@ public final class GpuSelfTest {
 
       compiledFor = chosen;
       options = new String[EXACT_FLAGS.length + 1];
-      options[0] = "--gpu-architecture=compute_" + chosen;
+      options[0] = "--gpu-architecture=" + (machineCode ? "sm_" : "compute_") + chosen;
       System.arraycopy(EXACT_FLAGS, 0, options, 1, EXACT_FLAGS.length);
       exactOptions = options;
       return options;
+   }
+
+   /** cuModuleLoadData's CUDA_ERROR_UNSUPPORTED_PTX_VERSION: the PTX comes from an NVRTC newer than the driver. */
+   static final int UNSUPPORTED_PTX = 222;
+   /**
+    * Whether NVRTC makes the card's machine code itself (sm_XX, a cubin) instead of PTX for the driver to translate. Set
+    * once the driver refuses this NVRTC's PTX (a CUDA Toolkit newer than the driver: an RTX 5060 laptop with toolkit
+    * 13.4 and a CUDA 13.2 driver), which the machine code does not need.
+    */
+   public static volatile boolean machineCode;
+
+   private static synchronized void useMachineCode() {
+      if (!machineCode) {
+         machineCode = true;
+         String[] options = exactOptions().clone();
+         options[0] = "--gpu-architecture=sm_" + compiledFor;
+         exactOptions = options;
+      }
+   }
+
+   /**
+    * Loads code from {@link #compile} (freed here) into the current context; returns the module. When the driver is
+    * older than NVRTC and refuses its PTX, compiles the source again as machine code ({@link #machineCode}) and loads that.
+    */
+   public static long load(ByteBuffer code, String source, String name) {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         PointerBuffer module = stack.mallocPointer(1);
+         int loaded = cuModuleLoadData(module, code);
+         // Not only the first thread to see it: programs compiled in parallel may have their PTX from before the switch.
+         if (loaded == UNSUPPORTED_PTX) {
+            MemoryUtil.memFree(code);
+            code = null;
+            useMachineCode();
+            code = compile(source, name);
+            loaded = cuModuleLoadData(module, code);
+         }
+
+         check(loaded, "cuModuleLoadData");
+         return module.get(0);
+      } finally {
+         if (code != null) {
+            MemoryUtil.memFree(code);
+         }
+      }
    }
 
    /** The architectures this NVRTC compiles for (nvrtcGetSupportedArchs, CUDA 11.2 and later), else the usual CUDA 12 list. */
@@ -133,6 +177,11 @@ public final class GpuSelfTest {
    private GpuSelfTest() {
    }
 
+   /** The self-test's kernel source, for the standalone OpenCL probe (cudacheck's OpenClProbeData). */
+   public static String probeSource() {
+      return SOURCE;
+   }
+
    /** Where NVRTC was looked for and what was chosen, for the logs and warnings. */
    public static volatile String nvrtcState = "not looked for yet";
 
@@ -151,6 +200,7 @@ public final class GpuSelfTest {
       nvrtcConfigured = true;
       String explicit = System.getProperty("wgaccel.nvrtc");
       if (explicit != null) {
+         preloadBuiltins(new File(explicit));
          Configuration.CUDA_NVRTC_LIBRARY_NAME.set(explicit);
          nvrtcState = explicit + " (-Dwgaccel.nvrtc)";
          return;
@@ -193,6 +243,7 @@ public final class GpuSelfTest {
          if (candidates != null && candidates.length > 0) {
             // The newest when several are side by side (nvrtc64_120_0.dll, nvrtc64_130_0.dll).
             java.util.Arrays.sort(candidates, java.util.Comparator.comparing(File::getName).reversed());
+            preloadBuiltins(candidates[0]);
             Configuration.CUDA_NVRTC_LIBRARY_NAME.set(candidates[0].getAbsolutePath());
             nvrtcState = candidates[0].getAbsolutePath();
             return;
@@ -201,6 +252,38 @@ public final class GpuSelfTest {
 
       nvrtcState = "no nvrtc64_*.dll found (CUDA_PATH " + (cuda == null ? "not set" : cuda) + "; looked in " + folders.size()
          + " folders: CUDA_PATH*, " + installs.getPath() + "/v*, PATH); install the CUDA Toolkit 12.x or start Java with -Dwgaccel.nvrtc=<path to nvrtc64_*.dll>";
+   }
+
+   /** The NVRTC builtins loaded ahead of NVRTC, kept loaded. */
+   private static final List<org.lwjgl.system.SharedLibrary> BUILTINS = new ArrayList<>();
+
+   /**
+    * NVRTC's own nvrtc-builtins*.dll beside it, loaded first by its full path: Windows does not look for a library's
+    * dependencies in its folder when that folder is not on PATH; and named to LWJGL, which loads it on its own and
+    * looks only in the toolkit's bin folder. CUDA Toolkit 13 keeps both in bin/x64: NVRTC did not load and the GPU parts
+    * stayed off (a laptop's RTX 5060, CUDA 13.4, 23 Oct 2026).
+    */
+   private static void preloadBuiltins(File nvrtc) {
+      File[] beside = nvrtc.getAbsoluteFile().getParentFile() == null ? null : nvrtc.getAbsoluteFile().getParentFile().listFiles((dir, name) -> {
+         String lower = name.toLowerCase(Locale.ROOT);
+         return lower.startsWith("nvrtc-builtins") && lower.endsWith(".dll");
+      });
+      if (beside == null || beside.length == 0) {
+         return;
+      }
+
+      // LWJGL loads the builtins itself too (NVRTC's static set-up), from this setting or else from the toolkit's bin
+      // folder only, where CUDA 13 has none: without it NVRTC failed to load even with its own path given (the newest
+      // when several are side by side).
+      java.util.Arrays.sort(beside, java.util.Comparator.comparing(File::getName).reversed());
+      Configuration.CUDA_NVRTC_BUILTINS_LIBRARY_NAME.set(beside[0].getAbsolutePath());
+      for (File library : beside) {
+         try {
+            BUILTINS.add(org.lwjgl.system.Library.loadNative(GpuSelfTest.class, "org.lwjgl", library.getAbsolutePath()));
+         } catch (Throwable ignored) {
+            // NVRTC names what it misses when it loads.
+         }
+      }
    }
 
    /** A failure with its causes and, when NVRTC is involved, where NVRTC was looked for. */
@@ -254,11 +337,13 @@ public final class GpuSelfTest {
          check(cuCtxCreate(context, 0, device.get(0)), "cuCtxCreate");
          try {
             long started = System.nanoTime();
-            ByteBuffer ptx = compile(SOURCE, "terrain_like.cu");
+            PointerBuffer module = stack.pointers(load(compile(SOURCE, "terrain_like.cu"), SOURCE, "terrain_like.cu"));
             double compileMs = (System.nanoTime() - started) / 1.0e6;
-            PointerBuffer module = stack.mallocPointer(1);
-            check(cuModuleLoadData(module, ptx), "cuModuleLoadData");
-            MemoryUtil.memFree(ptx);
+            if (machineCode) {
+               lines.add(String.format(Locale.ROOT, "the driver (CUDA %s) is older than NVRTC and refused its PTX: compiled to the card's machine code (sm_%d) instead",
+                  driverVersionText(), compiledFor));
+            }
+
             PointerBuffer function = stack.mallocPointer(1);
             check(cuModuleGetFunction(function, module.get(0), stack.ASCII("terrainLike")), "cuModuleGetFunction");
 
@@ -380,7 +465,7 @@ public final class GpuSelfTest {
             digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             digest.update(String.join(" ", exactOptions()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             digest.update(nvrtcVersionText().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            cached = directory.resolve(java.util.HexFormat.of().formatHex(digest.digest()) + ".ptx");
+            cached = directory.resolve(java.util.HexFormat.of().formatHex(digest.digest()) + (machineCode ? ".nvrtc.cubin" : ".ptx"));
             if (java.nio.file.Files.exists(cached)) {
                byte[] bytes = java.nio.file.Files.readAllBytes(cached);
                ByteBuffer ptx = MemoryUtil.memAlloc(bytes.length);
@@ -406,6 +491,14 @@ public final class GpuSelfTest {
       }
 
       return ptx;
+   }
+
+   private static String driverVersionText() {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer version = stack.mallocInt(1);
+         check(cuDriverGetVersion(version), "cuDriverGetVersion");
+         return version.get(0) / 1000 + "." + version.get(0) % 1000 / 10;
+      }
    }
 
    private static String nvrtcVersionText() {
@@ -449,6 +542,13 @@ public final class GpuSelfTest {
             }
 
             PointerBuffer size = stack.mallocPointer(1);
+            if (exact[0].startsWith("--gpu-architecture=sm_")) {
+               checkNvrtc(org.lwjgl.cuda.NVRTC.nvrtcGetCUBINSize(program.get(0), size), "nvrtcGetCUBINSize");
+               ByteBuffer cubin = MemoryUtil.memAlloc((int)size.get(0));
+               checkNvrtc(org.lwjgl.cuda.NVRTC.nvrtcGetCUBIN(program.get(0), cubin), "nvrtcGetCUBIN");
+               return cubin;
+            }
+
             checkNvrtc(nvrtcGetPTXSize(program.get(0), size), "nvrtcGetPTXSize");
             ByteBuffer ptx = MemoryUtil.memAlloc((int)size.get(0));
             checkNvrtc(nvrtcGetPTX(program.get(0), ptx), "nvrtcGetPTX");

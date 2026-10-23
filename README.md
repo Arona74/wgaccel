@@ -160,7 +160,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | Biomes O' Plenty + TerraBlender | 21.1.0.14 / 4.1.0.8 | works, exact |
 | Regions Unexplored | 0.6.2 | works, exact |
 | Still Life | 0.3 (1.21.1 backport) with Lithosphere 1.8.2 and More Density Functions | works, exact |
-| Streams Reflowing | 2.15.2 | works, exact (its own river feature is slow) |
+| Streams Reflowing | 2.15.2 (tested) | compatible, exact; no acceleration of its own work (its river feature runs on the CPU as it is) |
 | Worldgen Patches | 1.1.0 | works; the GPU surface follows its steepness fix when it is installed |
 | Voxy, Sodium, Iris, FerriteCore, Structure Layout Optimizer | | work |
 | Vanilla worlds (no FreeTerraForged) | | the CPU parts help (2:15 -> 1:58); the GPU parts are off by default in vanilla (alone they were slower); with `gpuAreaStep` on they go on and it was 1:22 |
@@ -200,13 +200,16 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 
 **NVIDIA or AMD:** when NVIDIA's driver is installed and sees a card the mod uses CUDA (so a laptop with an NVIDIA
 card and AMD integrated graphics uses the NVIDIA card); otherwise HIP, if AMD's runtime sees a card. An NVIDIA driver
-left behind from a former card doesn't count. Start Java with
-`-Dwgaccel.gpuBackend=cuda` or `hip` to choose yourself.
+left behind from a former card doesn't count.
 
-**Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, for example)
-the mod takes the one with the most compute units, a separate card before an integrated one. The log's
-`WGA GPU self-test: device` line lists the GPUs it found and says which it took; `gpuDevice` in the config chooses
-another (0, 1, ... as that line numbers them).
+**Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, a laptop's
+Intel graphics beside an NVIDIA card, for example) the mod takes the one with the most compute units, a separate card
+before an integrated one. To see or change it, open the **GPU screen**: the mod's logo button in Options (left of the
+field of view, or under Distant Horizons' button), or Config in the mods list. It lists every graphics adapter of the
+PC with what the mod can do with it (CUDA, HIP, or not supported: Intel GPUs have no backend yet), which one this game
+uses, and lets you choose Automatic or one of them. The GPU is chosen once per game: a choice made before opening a
+world applies to it, a later one after restarting the game (the screen says so). The choice is saved as `gpuBackend`
+and `gpuDevice` in the config; `-Dwgaccel.gpuBackend=cuda` or `hip` on Java's command line still wins.
 
 The mod looks for `nvrtc64_*.dll` in `CUDA_PATH` and every `CUDA_PATH_V*` (`bin` and `bin/x64`), then in
 `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*` (newest first), then on `PATH`. To point it somewhere else,
@@ -272,13 +275,13 @@ say how much they gained on the test PC.
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
 | `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report) |
 | `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastBlockPredicates` (off: it was slower) |
-| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat warning), `gpuDevice` (which GPU; -1 = automatic), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
+| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat warning), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the GPU screen), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 
 The GPU steps take `OFF`, `CHECK` (the GPU and the CPU both do the work and every result is compared: slower, for
 testing) or `ON` (the GPU's result is used; every 64th is still compared). With `CLIENT` or `SERVER` the values in the
 file are kept but not used; set `preset = "CUSTOM"` to change single settings. The section switches,
-`gpuTestedWarning`, `gpuDevice`, `fastBlockPredicates`, `gpuAreaStep` and `gpuNoiseFillCpuDimensions` always follow
+`gpuTestedWarning`, `gpuBackend`, `gpuDevice`, `gpuStreamPool`, `fastBlockPredicates`, `gpuAreaStep` and `gpuNoiseFillCpuDimensions` always follow
 the file.
 
 `/wgaccel` in game shows what world generation did since the world opened (or since `/wgaccel reset`): chunks per

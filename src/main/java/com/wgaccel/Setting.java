@@ -40,6 +40,18 @@ public final class Setting<T> implements Supplier<T>, BooleanSupplier, IntSuppli
       return new Setting<>(raw, client, server);
    }
 
+   /** Writes a new value to the config file (the GPU screen); read again from the next get. */
+   public void set(T value) {
+      this.raw.set(value);
+      this.raw.save();
+      invalidate();
+   }
+
+   /** The value written in the file, whatever the preset says. */
+   public T written() {
+      return this.raw.get();
+   }
+
    /** A setting the presets leave alone (always the file's value). */
    public static <T> Setting<T> custom(ModConfigSpec.ConfigValue<T> raw) {
       return new Setting<>(raw, null, null);

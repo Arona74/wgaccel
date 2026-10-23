@@ -42,6 +42,10 @@ public final class WorldgenAccelerator {
          return;
       }
 
+      if (net.neoforged.fml.loading.FMLEnvironment.dist.isClient()) {
+         com.wgaccel.client.ClientSetup.register(container);
+      }
+
       modBus.addListener((net.neoforged.fml.event.config.ModConfigEvent.Loading event) -> Setting.invalidate());
       modBus.addListener((net.neoforged.fml.event.config.ModConfigEvent.Reloading event) -> Setting.invalidate());
       GpuSelfTest.cacheDirectory = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("wgaccel-gpu-cache");
@@ -122,6 +126,7 @@ public final class WorldgenAccelerator {
       GpuSelfTest.cubinCache = Config.GPU_CUBIN_CACHE.get();
       // Before the GPU is first used below (it is chosen then, once per game).
       com.wgaccel.gpu.GpuDevice.configured = Config.GPU_DEVICE.get();
+      com.wgaccel.gpu.GpuDevice.configuredBackend = Config.GPU_BACKEND.get().name();
       com.wgaccel.gpu.GpuStreams.priorities = Config.GPU_STREAM_PRIORITIES.get();
       com.wgaccel.gpu.GpuStreams.erosionStream = Config.GPU_EROSION_PRIORITY.get();
       com.wgaccel.gpu.GpuStreams.serviceThreads = Config.GPU_SERVICE_THREADS.get();

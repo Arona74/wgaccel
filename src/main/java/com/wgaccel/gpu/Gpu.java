@@ -111,24 +111,17 @@ public final class Gpu implements AutoCloseable {
          }
       }
 
-      try (MemoryStack stack = MemoryStack.stackPush()) {
-         PointerBuffer pointer = stack.mallocPointer(1);
-         ByteBuffer ptx = GpuSelfTest.compile(source, name);
-         try {
-            if (cubin != null) {
-               Long linked = linkAndKeep(ptx, name, cubin);
-               if (linked != null) {
-                  return linked;
-               }
-            }
-
-            GpuSelfTest.check(cuModuleLoadData(pointer, ptx), "cuModuleLoadData");
-         } finally {
-            MemoryUtil.memFree(ptx);
+      // Machine code from NVRTC (GpuSelfTest.machineCode) needs no link; compile() keeps it on disk itself.
+      ByteBuffer code = GpuSelfTest.compile(source, name);
+      if (cubin != null && !GpuSelfTest.machineCode) {
+         Long linked = linkAndKeep(code, name, cubin);
+         if (linked != null) {
+            MemoryUtil.memFree(code);
+            return linked;
          }
-
-         return pointer.get(0);
       }
+
+      return GpuSelfTest.load(code, source, name);
    }
 
    /**

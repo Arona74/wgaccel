@@ -18,6 +18,11 @@ import org.lwjgl.system.MemoryUtil;
 public final class GpuDevice {
    /** Set from config gpuDevice before the GPU is first used; -1: automatic. */
    public static volatile int configured = Integer.getInteger("wgaccel.gpuDevice", -1);
+   /**
+    * Config gpuBackend (AUTO, CUDA or HIP), set before the GPU is first used. Here rather than in {@link GpuBackend},
+    * whose class makes its choice as it loads.
+    */
+   public static volatile String configuredBackend = "AUTO";
    /** How the device was chosen and the devices seen, for the logs. */
    public static volatile String reason = "not chosen yet";
    private static volatile int chosen = -1;

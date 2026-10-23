@@ -49,6 +49,7 @@ public final class Config {
    public static final Setting<Boolean> GPU_AREA_STEP;
    public static final Setting<Boolean> GPU_TESTED_WARNING;
    public static final Setting<Integer> GPU_DEVICE;
+   public static final Setting<GpuBackendChoice> GPU_BACKEND;
    public static final Setting<Boolean> GPU_SURFACE_KINDS_FROM_CODES;
    public static final Setting<GpuFilterMode> GPU_LOOK_AHEAD;
    public static final Setting<Integer> GPU_LOOK_AHEAD_CHUNKS;
@@ -67,6 +68,13 @@ public final class Config {
       OFF,
       SELFTEST,
       CHECK
+   }
+
+   /** Which GPU API: AUTO (CUDA when NVIDIA's driver sees a card, else HIP), or one of them. */
+   public enum GpuBackendChoice {
+      AUTO,
+      CUDA,
+      HIP
    }
 
    public enum GpuFilterMode {
@@ -235,6 +243,11 @@ public final class Config {
             "-1: automatic, the card with the most compute units, a separate card before an integrated one (a desktop Ryzen's own",
             "small Radeon beside the graphics card is skipped). Read when the GPU is first used: a change takes a restart of the game.")
          .defineInRange("gpuDevice", -1, -1, 15));
+      GPU_BACKEND = Setting.custom(builder
+         .comment("Which GPU API: AUTO (CUDA when NVIDIA's driver sees a card, else AMD's HIP), CUDA or HIP. gpuDevice then counts",
+            "that API's devices. Both are set by the GPU screen (Options, the WGA button, or the mods list's Config). Read when the",
+            "GPU is first used: a change takes a restart of the game. -Dwgaccel.gpuBackend=cuda or hip still wins.")
+         .defineEnum("gpuBackend", GpuBackendChoice.AUTO));
       GPU_MODE = Setting.of(builder
          .comment("The GPU (NVIDIA: CUDA and NVRTC; AMD on Windows: HIP and hipRTC; both through LWJGL). OFF: never touched. SELFTEST: when a world starts,",
             "compile and run a small kernel and check its maths is bit-identical to Java's, then log the result; world",
