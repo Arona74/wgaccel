@@ -203,6 +203,13 @@ public final class GpuSurface {
       WorldGenerationContext context = new WorldGenerationContext(generator, overworld);
       long zoomSeed = BiomeManager.obfuscateSeed(overworld.getSeed());
       SurfaceCodegen codegen = new SurfaceCodegen(random, context, biomes, system);
+      if (codegen.fastStrata()) {
+         // FreeTerraForged's 740a69e3 build wraps its rules at every buildSurface (FastStrataSequenceRule.optimize: its
+         // StrataRule taken out of the tree and asked after it, deep stone short-cut): the GPU makes the same tree.
+         Class<?> fast = Class.forName("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
+         rules = (SurfaceRules.RuleSource)fast.getMethod("optimize", SurfaceRules.RuleSource.class).invoke(null, rules);
+      }
+
       codegen.generate(rules);
       SurfaceInputs inputs = new SurfaceInputs(system, biomes, zoomSeed);
       String strataSource;

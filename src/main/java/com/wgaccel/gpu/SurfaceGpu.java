@@ -222,9 +222,9 @@ public final class SurfaceGpu {
                                                   const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
                                                   const float* strataDepth, const int* strataState, const int* strataCount, int strataMax, const int* grid,
                                                   const int* g, long long zoomSeed, const float* temperature, const int* modifier, const double* sd,
-                                                  const int* sp, const double* nd, const int* np, short* out) {
+                                                  const int* sp, const double* nd, const int* np, const int* special, short* out) {
              surfaceBlocks_body(minY, height, minX, minZ, heights, minBase, above, below, water, columnDepth, columnSecondary, strataDepth, strataState,
-                                strataCount, strataMax, grid, g, zoomSeed, temperature, modifier, sd, sp, nd, np, out);
+                                strataCount, strataMax, grid, g, zoomSeed, temperature, modifier, sd, sp, nd, np, special, out);
          }
          extern "C" __global__ void surfacePrepassBatch(const long long* jobs, const double* ind, const int* inp) {
              const long long* p = jobs + blockIdx.y * 24;
@@ -247,7 +247,7 @@ public final class SurfaceGpu {
              const long long* p = jobs + blockIdx.y * 24;
              surfaceBlocks_body((int)p[2], (int)p[3], (int)p[0], (int)p[1], (const int*)p[13], (const int*)p[14], (const int*)p[17], (const int*)p[18],
                                 (const int*)p[19], (const int*)p[20], (const double*)p[21], (const float*)p[8], (const int*)p[9], (const int*)p[6], strataMax,
-                                (const int*)p[16], (const int*)p[15], p[4], temperature, modifier, sd, sp, nd, np, (short*)p[23]);
+                                (const int*)p[16], (const int*)p[15], p[4], temperature, modifier, sd, sp, nd, np, (const int*)p[22], (short*)p[23]);
          }
          """;
    }
@@ -502,7 +502,7 @@ public final class SurfaceGpu {
       for (int c = 0; c < chunks; c++) {
          boolean ok = true;
          for (int t = 0; t < 256 && ok; t++) {
-            ok = special.get(256 * c + t) == 0 && unsure.get(256 * c + t) == 0;
+            ok = (special.get(256 * c + t) & 1) == 0 && unsure.get(256 * c + t) == 0;
          }
 
          done[c] = ok;
@@ -685,7 +685,7 @@ public final class SurfaceGpu {
             GpuSelfTest.check(cuEventRecord(lane.events[2], lane.stream), "cuEventRecord");
          }
 
-         PointerBuffer block = stack.mallocPointer(25);
+         PointerBuffer block = stack.mallocPointer(26);
          block.put(0, MemoryUtil.memAddress(stack.ints(job.minY)));
          block.put(1, MemoryUtil.memAddress(stack.ints(job.height)));
          block.put(2, MemoryUtil.memAddress(stack.ints(job.minX)));
@@ -710,7 +710,8 @@ public final class SurfaceGpu {
          block.put(21, stack.pointers(this.sp).address());
          block.put(22, stack.pointers(this.nd).address());
          block.put(23, stack.pointers(this.np).address());
-         block.put(24, stack.pointers(lane.outDevice).address());
+         block.put(24, stack.pointers(lane.specialDevice).address());
+         block.put(25, stack.pointers(lane.outDevice).address());
          GpuSelfTest.check(cuLaunchKernel(this.blocks, (n + 255) / 256, 1, 1, 256, 1, 1, 0, lane.stream, block, null), "cuLaunchKernel surfaceBlocks");
          if (timed) {
             GpuSelfTest.check(cuEventRecord(lane.events[3], lane.stream), "cuEventRecord");
@@ -738,7 +739,8 @@ public final class SurfaceGpu {
       }
       IntBuffer flags = MemoryUtil.memIntBuffer(lane.flagsHost, 512);
       for (int i = 0; i < 512; i++) {
-         if (flags.get(i) != 0) {
+         // special's bit 1 (the column is the CPU's), not its first-stone flags; unsure as it is.
+         if ((i < 256 ? flags.get(i) & 1 : flags.get(i)) != 0) {
             return false;
          }
       }

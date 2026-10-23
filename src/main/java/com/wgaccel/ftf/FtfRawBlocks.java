@@ -61,6 +61,31 @@ public final class FtfRawBlocks {
    private FtfRawBlocks() {
    }
 
+   /**
+    * At the overworld's start: the populators' GPU program made now with the other GPU programs (on the world-loading
+    * screen from the start, ready before the spawn area), when this FreeTerraForged has no tiles.
+    */
+   public static void prepare(net.minecraft.server.level.ServerLevel overworld) {
+      if (off || !TileNoise.on() || Config.GPU_MODE.get() == Config.GpuMode.OFF || !FtfSlowPaths.tileless()) {
+         return;
+      }
+
+      try {
+         Object random = overworld.getChunkSource().randomState();
+         if (!(random instanceof etcodehome.freeterraforged.world.worldgen.FTFRandomState ftf) || !ftf.isTerraForged()) {
+            return;
+         }
+
+         Object context = ftf.generatorContext();
+         if (context != null) {
+            TileNoiseGpu.prepare(field(context, "heightmap").get(context), true);
+         }
+      } catch (Throwable failure) {
+         // Made at the first raw chunk instead, as before.
+         WorldgenAccelerator.LOG.info("WGA GPU raw chunk blocks: the populators' program not made ahead: {}", failure.toString());
+      }
+   }
+
    /** RawChunkCache.getRawChunk(chunkX, chunkZ) with the populators from the block's table; original is FreeTerraForged's own call. */
    @SuppressWarnings("unchecked")
    public static Cell[] get(Object rawCache, int chunkX, int chunkZ, Supplier<Cell[]> original) {
@@ -203,8 +228,9 @@ public final class FtfRawBlocks {
       ConcurrentLinkedQueue<Long> queue = (ConcurrentLinkedQueue<Long>)field(rawCache, "evictionQueue").get(rawCache);
       AtomicInteger count = (AtomicInteger)field(rawCache, "size").get(rawCache);
       queue.offer(key);
+      int own = ownSize(rawCache);
       int wanted = Config.FTF_RAW_CHUNK_CACHE.getAsInt();
-      int max = wanted > 0 ? Math.max(1024, wanted) : 1024;
+      int max = wanted > 0 ? Math.max(own, wanted) : own;
       if (count.incrementAndGet() > max) {
          Long oldest = queue.poll();
          if (oldest != null) {
@@ -212,6 +238,26 @@ public final class FtfRawBlocks {
             count.decrementAndGet();
          }
       }
+   }
+
+   private static volatile int ownSize;
+
+   /** FreeTerraForged's own RawChunkCache.MAX_ENTRIES (1,024, 2,048 from its 740a69e3 build), as RawChunkCacheMixin raises it. */
+   private static int ownSize(Object rawCache) {
+      int known = ownSize;
+      if (known == 0) {
+         try {
+            Field field = rawCache.getClass().getDeclaredField("MAX_ENTRIES");
+            field.setAccessible(true);
+            known = field.getInt(null);
+         } catch (ReflectiveOperationException | RuntimeException failure) {
+            known = 1024;
+         }
+
+         ownSize = known;
+      }
+
+      return known;
    }
 
    /** FreeTerraForged's PosUtil.pack(left, right). */

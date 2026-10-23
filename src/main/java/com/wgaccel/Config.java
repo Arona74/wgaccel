@@ -27,6 +27,7 @@ public final class Config {
    public static final Setting<Boolean> FTF_SHARED_CHUNK_CELLS;
    public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
    public static final Setting<Boolean> FTF_FAST_RIVERS;
+   public static final Setting<Boolean> FTF_REGION_PREFETCH;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
    public static final Setting<Boolean> MEMORY_REPORT;
@@ -205,6 +206,11 @@ public final class Config {
             "profile). A safe upper bound of the reach is worked out first; about 1 skip in 2,048 is carved anyway and compared, and a",
             "difference turns this off. The same world (FreeTerraForged 1.0.0010 and 1.0.0013).")
          .define("ftfFastRivers", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FTF_REGION_PREFETCH = Setting.of(builder
+         .comment("FreeTerraForged 1.0.0013's region filter grids (4 x 4 chunks, from its 23 Oct 2026 build): the region's 36 raw",
+            "chunks made in parallel on 4 threads of our own before its one thread walks them, while every other thread wanting",
+            "a chunk of the region waits for it. The same cells.")
+         .define("ftfRegionPrefetch", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_BLOCK_PREDICATES = Setting.custom(builder
          .comment("Block predicates (placement filters, rule-based block choices) read each block once per evaluation: a block read",
             "again in the same evaluation comes from that evaluation's own reads (nothing writes blocks while a predicate runs).",

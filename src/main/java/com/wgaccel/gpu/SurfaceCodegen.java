@@ -40,16 +40,59 @@ public final class SurfaceCodegen {
    private final Object system;
    private int next;
    private String root;
+   /**
+    * FreeTerraForged's FastStrataSequenceRule (its 740a69e3 build, 23 Oct 2026): its surface wraps the rule tree, deep
+    * stone short-cut to deepslate or straight to the strata, and its StrataRule gives no block (the stone stays) where its
+    * layer is plain stone. Both followed here when FreeTerraForged has the class.
+    */
+   private final boolean fastStrata;
+   /** The prepass's flags of the column's first stone's biome (2 badlands, 4 desert): its expression of fb, or none. */
+   private String firstFlags = null;
 
    public SurfaceCodegen(RandomState random, WorldGenerationContext context, Registry<Biome> biomes, Object surfaceSystem) {
       this.random = random;
       this.context = context;
       this.biomes = biomes;
       this.system = surfaceSystem;
+      boolean fast;
+      try {
+         Class.forName("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
+         fast = true;
+      } catch (ClassNotFoundException | LinkageError absent) {
+         fast = false;
+      }
+
+      this.fastStrata = fast;
+   }
+
+   /** Whether this FreeTerraForged wraps its surface rules in FastStrataSequenceRule (the tree to generate is then its optimize()). */
+   public boolean fastStrata() {
+      return this.fastStrata;
    }
 
    /** Generates the whole tree under the rule source; returns the root rule's function name. */
    public String generate(Object ruleSource) throws ReflectiveOperationException {
+      if (this.fastStrata) {
+         // FastStrataSequenceRule.tryApply's per-column flags, from the biome at the column's first rule call (its first
+         // stone, top down): badlands (BiomeTags.IS_BADLANDS) and desert (Biomes.DESERT or a key path holding "desert").
+         List<Object> badlands = new java.util.ArrayList<>();
+         List<Object> deserts = new java.util.ArrayList<>();
+         for (Map.Entry<ResourceKey<Biome>, Biome> entry : this.biomes.entrySet()) {
+            net.minecraft.core.Holder<Biome> holder = this.biomes.getHolderOrThrow(entry.getKey());
+            if (holder.is(net.minecraft.tags.BiomeTags.IS_BADLANDS)) {
+               badlands.add(entry.getKey());
+            }
+
+            if (holder.is(net.minecraft.world.level.biome.Biomes.DESERT) || entry.getKey().location().getPath().contains("desert")) {
+               deserts.add(entry.getKey());
+            }
+         }
+
+         int words = Math.max(1, (this.biomes.size() + 31) / 32);
+         this.firstFlags = String.format(Locale.ROOT, "(sf_in(fb, %s, %d) ? 2 : 0) | (sf_in(fb, %s, %d) ? 4 : 0)", this.maskTable(badlands), words,
+            this.maskTable(deserts), words);
+      }
+
       this.root = this.rule(ruleSource);
       return this.root;
    }
@@ -91,6 +134,7 @@ public final class SurfaceCodegen {
              if (t >= count) return;
              const int* r = calls + t * 13;
              SCtx c;
+             c.fastFlags = 0;
              c.x = r[0];
              c.y = r[1];
              c.z = r[2];
@@ -165,6 +209,7 @@ public final class SurfaceCodegen {
              sx.nd = sd;
              sx.np = sp;
              SCtx c;
+             c.fastFlags = 0;
              c.x = x;
              c.z = z;
              c.depth = depth;
@@ -232,7 +277,7 @@ public final class SurfaceCodegen {
     */
    public String productionSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean) {
       return productionSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean,
-         deepFrozenOcean);
+         deepFrozenOcean, this.firstFlags);
    }
 
    /**
@@ -298,8 +343,28 @@ public final class SurfaceCodegen {
       """;
 
    public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
-         int frozenOcean, int deepFrozenOcean) {
+         int frozenOcean, int deepFrozenOcean, String firstFlags) {
       String depthCode = surfaceDepthCode.replace("(nd + ", "(ind + ").replace(", np + ", ", inp + ");
+      // FastStrataSequenceRule's flags (special's bits 2 and 4) from the biome at the column's first stone, top down.
+      String firstSingle = firstFlags == null ? "" : """
+             if (firstStone != (-2147483647 - 1)) {
+                 int fb = bm_biome(grid, g, zoomSeed, x, firstStone, z);
+                 special[t] |= FLAGS;
+             }
+         """.replace("FLAGS", firstFlags);
+      String firstWarp = firstFlags == null ? "" : """
+                 int firstStone = (-2147483647 - 1);
+                 for (int y = min(top, minY + height - 1); y >= minY; y--) {
+                     if (kinds[(y - minY) * 256 + t] == 2) {
+                         firstStone = y;
+                         break;
+                     }
+                 }
+                 if (firstStone != (-2147483647 - 1)) {
+                     int fb = bm_biome(grid, g, zoomSeed, x, firstStone, z);
+                     special[t] |= FLAGS;
+                 }
+         """.replace("FLAGS", firstFlags);
       return SurfaceInputs.steep(VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
          extern "C" __global__ void surfacePrepass(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* grid,
                                                    const int* g, long long zoomSeed, const double* ind, const int* inp, int* above, int* below,
@@ -318,6 +383,7 @@ public final class SurfaceCodegen {
              int i2 = 0;
              int j2 = (-2147483647 - 1);
              int k2 = 2147483647;
+             int firstStone = (-2147483647 - 1);
              for (int i3 = top; i3 >= minY; i3--) {
                  int k = i3 >= minY && i3 < minY + height ? kinds[(i3 - minY) * 256 + t] : 0;
                  if (k == 0) {
@@ -338,6 +404,7 @@ public final class SurfaceCodegen {
                      }
                      i2++;
                      if (k == 2) {
+                         if (firstStone == (-2147483647 - 1)) firstStone = i3;
                          int at = (i3 - minY) * 256 + t;
                          above[at] = i2;
                          below[at] = i3 - k2 + 1;
@@ -345,12 +412,13 @@ public final class SurfaceCodegen {
                      }
                  }
              }
+         WGA_FIRST_SINGLE
          }
          extern "C" __global__ void surfaceBlocks(int minY, int height, int minX, int minZ, const int* heights, const int* minBase, const int* above,
                                                   const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
                                                   const float* strataDepth, const int* strataState, const int* strataCount, int strataMax, const int* grid,
                                                   const int* g, long long zoomSeed, const float* temperature, const int* modifier, const double* sd,
-                                                  const int* sp, const double* nd, const int* np, short* out) {
+                                                  const int* sp, const double* nd, const int* np, const int* special, short* out) {
              int i = blockIdx.x * blockDim.x + threadIdx.x;
              if (i >= 256 * height) return;
              int ly = i >> 8;
@@ -379,6 +447,7 @@ public final class SurfaceCodegen {
              sx.nd = sd;
              sx.np = sp;
              SCtx c;
+             c.fastFlags = 0;
              c.x = x;
              c.y = y;
              c.z = z;
@@ -397,6 +466,7 @@ public final class SurfaceCodegen {
                  c.slope = max(max(sn, ss), max(se, sw)) - min(min(sn, ss), min(se, sw));
              }
              c.minSurface = minBase[t] + c.depth - 8;
+             c.fastFlags = special[t] >> 1;
              c.strataDepth = strataDepth + t * strataMax;
              c.strataState = strataState + t * strataMax;
              c.strataCount = strataCount[t];
@@ -422,10 +492,11 @@ public final class SurfaceCodegen {
                  columnSecondary[t] = secondary;
                  int columnBiome = bm_biome(grid, g, zoomSeed, x, top, z);
                  special[t] = columnBiome == %d || columnBiome == %d || columnBiome == %d || columnBiome < 0 ? 1 : 0;
+         WGA_FIRST_WARP
              }
              prepassWarpScan(kinds, minY, height, top, t, lane, above, below, water);
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean));
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean)).replace("WGA_FIRST_SINGLE", firstSingle).replace("WGA_FIRST_WARP", firstWarp);
    }
 
    /** The number of block states the rules can give (indexes fit a short while under 32,767). */
@@ -447,6 +518,7 @@ public final class SurfaceCodegen {
           int steep;
           int slope;
           int minSurface;
+          int fastFlags;
           double secondary;
           const float* strataDepth;
           const int* strataState;
@@ -526,7 +598,22 @@ public final class SurfaceCodegen {
          case "SurfaceRules$TestRuleSource" -> body = line("if (!%s(c)) return -1;", this.condition(field(node, "ifTrue"))) + line("return %s(c);", this.rule(field(node, "thenRun")));
          case "SurfaceRules$BlockRuleSource" -> body = line("return %d;", this.state((BlockState)field(node, "resultState")));
          case "SurfaceRules$Bandlands" -> body = this.bandlands();
-         case "StrataRule" -> body = line("return sf_strata(c);");
+         case "StrataRule" -> body = !this.fastStrata ? line("return sf_strata(c);")
+            : line("int v = sf_strata(c);") + line("return v == %d ? -1 : v;", this.state(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState()));
+         // FreeTerraForged's FastStrataSequenceRule.tryApply: outside badlands, deep stone below y 0 is deepslate and deep
+         // stone above y 8 goes straight to the strata; else its base rules, then the strata. Flags from the prepass.
+         case "FastStrataSequenceRule$Source" -> {
+            Object strataSource = field(node, "strata");
+            String strata = strataSource == null ? "-1" : this.rule(strataSource) + "(c)";
+            body = line("if ((c.fastFlags & 1) == 0) {")
+               + line("    if (c.y <= 0 && c.y > -59 && c.stoneAbove > 2 && (c.stoneBelow <= 0 || c.stoneBelow > 1)) return %d;",
+                  this.state(net.minecraft.world.level.block.Blocks.DEEPSLATE.defaultBlockState()))
+               + line("    int minAbove = (c.fastFlags & 2) != 0 ? 12 : 5;")
+               + line("    if (c.y > 8 && c.stoneAbove > minAbove && (c.stoneBelow <= 0 || c.stoneBelow > 3)) return %s;", strata)
+               + line("}")
+               + line("{ int v = %s(c); if (v >= 0) return v; }", this.rule(field(node, "base")))
+               + line("return %s;", strata);
+         }
          case "AcquiredSurfaceRule" -> body = line("return %s(c);", this.rule(field(node, "root")));
          default -> throw new DensityCodegen.Unsupported("surface rule " + kind);
       }
@@ -645,6 +732,12 @@ public final class SurfaceCodegen {
 
    private String biomeMask(List<?> keys) {
       int words = Math.max(1, (this.biomes.size() + 31) / 32);
+      return line("return sf_in(c.biome, %s, %d);", this.maskTable(keys), words);
+   }
+
+   /** A biome id bit table of these keys; returns its name. */
+   private String maskTable(List<?> keys) {
+      int words = Math.max(1, (this.biomes.size() + 31) / 32);
       int[] mask = new int[words];
       for (Object key : keys) {
          @SuppressWarnings("unchecked")
@@ -662,7 +755,7 @@ public final class SurfaceCodegen {
       }
 
       this.code.append(table).append("};\n");
-      return line("return sf_in(c.biome, %s, %d);", name, words);
+      return name;
    }
 
    private static String line(String format, Object... arguments) {

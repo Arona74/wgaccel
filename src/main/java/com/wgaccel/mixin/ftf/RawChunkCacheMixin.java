@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.ModifyConstant;
 
 /**
  * A bigger cache for FreeTerraForged 1.0.0013's raw chunk cells (config {@code ftfRawChunkCache}): its RawChunkCache keeps
- * MAX_ENTRIES = 1024 chunks (inlined into getRawChunk's eviction test) and drops the oldest past that, so a pregeneration
+ * MAX_ENTRIES chunks (1,024, 2,048 from its 740a69e3 build; inlined into getRawChunk's eviction test) and drops the oldest past that, so a pregeneration
  * front wider than that makes chunks' raw cells again (the 23 Oct 2026 profile: ~6,000 of 22,745 misses). The cells are
  * unchanged.
  */
@@ -21,7 +21,8 @@ public abstract class RawChunkCacheMixin {
    @Unique
    private static final AtomicBoolean wgaccel$logged = new AtomicBoolean();
 
-   @ModifyConstant(method = "getRawChunk", constant = @Constant(intValue = 1024))
+   // 1,024 until FreeTerraForged's 740a69e3 build (23 Oct 2026), 2,048 since.
+   @ModifyConstant(method = "getRawChunk", constant = {@Constant(intValue = 1024), @Constant(intValue = 2048)})
    private int wgaccel$capacity(int own) {
       int wanted = Config.FTF_RAW_CHUNK_CACHE.getAsInt();
       int capacity = wanted > 0 ? Math.max(own, wanted) : own;

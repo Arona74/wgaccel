@@ -25,6 +25,8 @@
     "RawChunkCacheMixin",
     "RawChunkBlocksMixin",
     "RiverSkipMixin",
+    "FastStrataOnceMixin",
+    "RegionPrefetchMixin",
     "SurfaceEnvelopeMixin"
   ],
   "injectors": {

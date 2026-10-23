@@ -141,6 +141,7 @@ public final class WorldgenAccelerator {
       com.wgaccel.gen.GpuSurface.start(level);
       com.wgaccel.gen.SurfaceAhead.start();
       com.wgaccel.gen.GpuBiomes.start(level);
+      com.wgaccel.ftf.FtfRawBlocks.prepare(level);
       try {
          com.wgaccel.gpu.GpuPrepare.await(180_000L);
       } catch (InterruptedException interrupted) {

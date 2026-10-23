@@ -32,7 +32,8 @@ public final class SurfaceInputsCheck {
       }
 
       String production = com.wgaccel.gpu.SurfaceCodegen.productionSource(SurfaceInputs.helpers(0.3660254037844386, 0.21132486540518713, 1 << 16,
-         2 << 16, 0), depth, "__device__ __noinline__ int r0(const SCtx& c) { return sf_strata(c); }", "r0", -2097152, 1, 2, 3);
+         2 << 16, 0), depth, "__device__ const unsigned int mA[1] = {1u};\n__device__ __noinline__ int r0(const SCtx& c) { return sf_strata(c); }", "r0",
+         -2097152, 1, 2, 3, "(sf_in(fb, mA, 1) ? 2 : 0)");
       start = System.nanoTime();
       try (Gpu gpu = new Gpu(com.wgaccel.gpu.SurfaceGpu.productionBatchSource(production), "surface.cu")) {
          System.out.printf("surface production (with batch entries): compiled and loaded in %.0f ms%n", (System.nanoTime() - start) / 1.0e6);

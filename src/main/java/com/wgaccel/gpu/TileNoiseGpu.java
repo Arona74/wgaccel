@@ -156,23 +156,7 @@ public final class TileNoiseGpu {
       }
 
       try {
-         Object made = PROGRAMS.get(heightmap);
-         if (made == null) {
-            synchronized (PROGRAMS) {
-               made = PROGRAMS.get(heightmap);
-               if (made == null) {
-                  try {
-                     made = build(heightmap);
-                  } catch (Throwable failure) {
-                     WorldgenAccelerator.LOG.warn("WGA GPU tile noise: no program for this world's terrain: {}", failure.toString());
-                     made = FAILED;
-                  }
-
-                  PROGRAMS.put(heightmap, made);
-               }
-            }
-         }
-
+         Object made = program(heightmap, null);
          if (!(made instanceof Program p) || p.gpu == null) {
             trace("begin: " + (made == FAILED ? "no program (failed)" : "no populators on the GPU"));
             return null;
@@ -188,6 +172,60 @@ public final class TileNoiseGpu {
          WorldgenAccelerator.LOG.warn("WGA GPU tile noise off: {}", failure.toString());
          return null;
       }
+   }
+
+   /**
+    * The heightmap's program, made the first time (walking its populators, generating and compiling): a task on the
+    * world-loading screen's list for all of it (given by {@link #prepare}, or begun here), done once it is there.
+    */
+   private static Object program(Object heightmap, GpuPrepare.Task given) {
+      Object made = PROGRAMS.get(heightmap);
+      if (made == null) {
+         synchronized (PROGRAMS) {
+            made = PROGRAMS.get(heightmap);
+            if (made == null) {
+               GpuPrepare.Task task = given != null ? given : GpuPrepare.begin("tile noise");
+               try {
+                  made = build(heightmap);
+                  task.done();
+               } catch (Throwable failure) {
+                  WorldgenAccelerator.LOG.warn("WGA GPU tile noise: no program for this world's terrain: {}", failure.toString());
+                  task.failed(failure.toString());
+                  made = FAILED;
+               }
+
+               PROGRAMS.put(heightmap, made);
+               return made;
+            }
+         }
+      }
+
+      if (given != null) {
+         given.done();
+      }
+
+      return made;
+   }
+
+   /**
+    * At the world's start (FreeTerraForged 1.0.0013, {@link com.wgaccel.ftf.FtfRawBlocks}): the program made now in the
+    * background, with the other GPU programs, so the world-loading screen lists it from the start and the server waits
+    * for it before the spawn area. Until 0.18.0 it was made at the first raw chunk, during the spawn area, and from the
+    * disk cache in 2 ms: the screen only ever showed it done.
+    */
+   public static void prepare(Object heightmap, boolean everyPopulator) {
+      if (disabled || !Lwjgl.PRESENT) {
+         return;
+      }
+
+      if (everyPopulator) {
+         allPopulators = true;
+      }
+
+      GpuPrepare.Task task = GpuPrepare.begin("tile noise");
+      Thread thread = new Thread(() -> program(heightmap, task), "WGA GPU tile noise compile");
+      thread.setDaemon(true);
+      thread.start();
    }
 
    /** The tile's table, or null. */
@@ -401,17 +439,7 @@ public final class TileNoiseGpu {
       }
 
       long compileStart = System.nanoTime();
-      // Compiled at the first terrain tile (FreeTerraForged 1.0.0010), so during the spawn area: on the world-loading
-      // screen's list too (0.17.2; it had shown "GPU ready" while this still compiled).
-      GpuPrepare.Task task = GpuPrepare.begin("tile noise");
-      Gpu gpu;
-      try {
-         gpu = new Gpu(GpuService.context(), source, "tile_noise.cu");
-         task.done();
-      } catch (Throwable failure) {
-         task.failed(failure.toString());
-         throw failure;
-      }
+      Gpu gpu = new Gpu(GpuService.context(), source, "tile_noise.cu");
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
          "WGA GPU tile noise: %d of %d terrain populators on the GPU (%d without a GPU version: %s; the rest cheap), costliest %,d noise samples per column; compiled in %.0f ms",
          chosen.size(), found.size(), unsupported, missingKinds, maxCost, (System.nanoTime() - compileStart) / 1.0e6));
