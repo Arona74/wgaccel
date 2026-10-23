@@ -64,7 +64,7 @@ public final class FtfRegionPrefetch {
          // RegionFilterGrid.init's chunks: the region and a ring of one (its 12-cell border reaches into them).
          for (int cz = regionChunkZ - 1; cz <= regionChunkZ + 4; cz++) {
             for (int cx = regionChunkX - 1; cx <= regionChunkX + 4; cx++) {
-               if (raw.getExistingRawCell(cx << 4, cz << 4) == null) {
+               if (!FtfRawBlocks.cached(raw, cx, cz)) {
                   int x = cx;
                   int z = cz;
                   chunks.add(new int[] {x, z});

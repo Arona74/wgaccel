@@ -160,6 +160,20 @@ public final class Reporter {
       log("WGA surface per chunk (ms): " + surfaceParts(window));
       log("WGA main thread per full chunk (ms): " + mainThread(window));
       log("WGA cores by thread group: " + groups(threads, seconds));
+      log("WGA memory: " + memory());
+   }
+
+   /** The game's memory outside the Java heap (the process's committed memory less the heap's) and the mod's GPU buffers. */
+   private static String memory() {
+      Runtime runtime = Runtime.getRuntime();
+      String process = "";
+      if (java.lang.management.ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
+         long committed = os.getCommittedVirtualMemorySize();
+         process = String.format(Locale.ROOT, "process committed %.1f GB (heap reserved %.1f GB), ", committed / 1.073741824e9,
+            runtime.totalMemory() / 1.073741824e9);
+      }
+
+      return process + com.wgaccel.gpu.GpuMemory.summary();
    }
 
    /** The features step's time not in placed features or structure pieces: Settlements 2, mods' hooks, heightmaps. */
@@ -279,6 +293,8 @@ public final class Reporter {
       if (runActiveSeconds > 0.0) {
          lines.add("WGA   cores by thread group: " + groups(runThreads, runActiveSeconds));
       }
+
+      lines.add("WGA   memory: " + memory());
 
       return lines;
    }

@@ -42,18 +42,30 @@ public final class GpuApi {
    }
 
    public static int cuMemAlloc(PointerBuffer device, long bytes) {
-      return GpuBackend.HIP ? Hip.hipMalloc(device, bytes) : CU.cuMemAlloc(device, bytes);
+      int result = GpuBackend.HIP ? Hip.hipMalloc(device, bytes) : CU.cuMemAlloc(device, bytes);
+      if (result == CUDA_SUCCESS) {
+         GpuMemory.device(device.get(device.position()), bytes);
+      }
+
+      return result;
    }
 
    public static int cuMemFree(long device) {
+      GpuMemory.deviceFreed(device);
       return GpuBackend.HIP ? Hip.hipFree(device) : CU.cuMemFree(device);
    }
 
    public static int cuMemAllocHost(PointerBuffer host, long bytes) {
-      return GpuBackend.HIP ? Hip.hipHostMalloc(host, bytes, 0) : CU.cuMemAllocHost(host, bytes);
+      int result = GpuBackend.HIP ? Hip.hipHostMalloc(host, bytes, 0) : CU.cuMemAllocHost(host, bytes);
+      if (result == CUDA_SUCCESS) {
+         GpuMemory.host(host.get(host.position()), bytes);
+      }
+
+      return result;
    }
 
    public static int ncuMemFreeHost(long host) {
+      GpuMemory.hostFreed(host);
       return GpuBackend.HIP ? Hip.hipHostFree(host) : CU.ncuMemFreeHost(host);
    }
 

@@ -91,6 +91,9 @@ public final class GpuBiomes {
    private static final LongAdder CPU_SAMPLES = new LongAdder();
    private static final LongAdder CPU_SEARCHES = new LongAdder();
    private static final LongAdder DIFFERENT = new LongAdder();
+   /** Checked samples whose depth differed only because FreeTerraForged's own envelope answer moved since the inputs. */
+   private static final LongAdder ENVELOPE_MOVED = new LongAdder();
+   private static final AtomicInteger ENVELOPE_LOGGED = new AtomicInteger();
    private static final LongAdder INPUT_NANOS = new LongAdder();
    private static final LongAdder GPU_NANOS = new LongAdder();
 
@@ -465,10 +468,25 @@ public final class GpuBiomes {
 
       long[] c = current.climate;
       int at = cell * 6;
-      if (c[at] != game.temperature() || c[at + 1] != game.humidity() || c[at + 2] != game.continentalness() || c[at + 3] != game.erosion()
-         || c[at + 4] != game.depth() || c[at + 5] != game.weirdness()) {
-         difference(current, String.format(Locale.ROOT, "climate at quart (%d, %d, %d): game %s, gpu [%d, %d, %d, %d, %d, %d]", quartX, quartY, quartZ, game, c[at],
-            c[at + 1], c[at + 2], c[at + 3], c[at + 4], c[at + 5]));
+      boolean othersSame = c[at] == game.temperature() && c[at + 1] == game.humidity() && c[at + 2] == game.continentalness() && c[at + 3] == game.erosion()
+         && c[at + 5] == game.weirdness();
+      if (!othersSame || c[at + 4] != game.depth()) {
+         int column = cell & 15;
+         int read = current.inputs.minimumSurface[column];
+         int now = envelopeNow(current, column);
+         if (othersSame && now != read) {
+            // Only the depth, and FreeTerraForged's own surface envelope gave this column another minimum since the GPU's
+            // inputs were read (its cache keeps one answer per slot and works a dropped quart out again from cells filtered
+            // or not yet: 5% of the look-ahead's results see it). The CPU's sample is the one kept; not the GPU's error.
+            ENVELOPE_MOVED.increment();
+            if (ENVELOPE_LOGGED.incrementAndGet() <= 4) {
+               WorldgenAccelerator.LOG.info("WGA GPU biomes check: chunk {}: depth at quart ({}, {}, {}) game {}, gpu {}: FreeTerraForged's surface envelope gave the column {} now, {} when the GPU's inputs were read (its own answer changed; not counted as a difference)",
+                  current.chunk == null ? "?" : current.chunk.getPos(), quartX, quartY, quartZ, game.depth(), c[at + 4], now, read);
+            }
+         } else {
+            difference(current, String.format(Locale.ROOT, "climate at quart (%d, %d, %d): game %s, gpu [%d, %d, %d, %d, %d, %d] (envelope minimum %d read, %d now)", quartX, quartY,
+               quartZ, game, c[at], c[at + 1], c[at + 2], c[at + 3], c[at + 4], c[at + 5], read, now));
+         }
       }
 
       current.made[cell] = game;
@@ -653,6 +671,17 @@ public final class GpuBiomes {
       } else if (!same || !gpuBiome.equals(biome)) {
          difference(current, String.format(Locale.ROOT, "search of %s: game %s %s, gpu %s", target, biome.unwrapKey().map(Object::toString).orElse("?"), projected,
             gpuBiome));
+      }
+   }
+
+   /** FreeTerraForged's envelope minimum for a quart column of the current chunk as it answers now (Integer.MIN_VALUE: unknown). */
+   private static int envelopeNow(Current current, int column) {
+      try {
+         int[] now = ENVELOPE_NOW.get();
+         return current.chunk != null && BiomeInputs.minimumSurfaces(current.chunk.getPos().getMinBlockX(), current.chunk.getPos().getMinBlockZ(), now)
+            ? now[column] : Integer.MIN_VALUE;
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return Integer.MIN_VALUE;
       }
    }
 
@@ -998,8 +1027,9 @@ public final class GpuBiomes {
       }
 
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
-         "WGA GPU biomes: %,d chunks (%,d checked: %s); from the GPU %,d samples and %,d searches (%,d in other providers' tables, %,d other than the column's predicted provider); on the CPU %,d samples, %,d searches, %,d ties; per chunk: CPU inputs %.2f ms, GPU %.2f ms",
-         done, CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER", SAMPLES.sum(), SEARCHES.sum(), EXTRA_SEARCHES.sum(), MISPREDICTED.sum(), CPU_SAMPLES.sum(), CPU_SEARCHES.sum(),
+         "WGA GPU biomes: %,d chunks (%,d checked: %s%s); from the GPU %,d samples and %,d searches (%,d in other providers' tables, %,d other than the column's predicted provider); on the CPU %,d samples, %,d searches, %,d ties; per chunk: CPU inputs %.2f ms, GPU %.2f ms",
+         done, CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER",
+         ENVELOPE_MOVED.sum() == 0 ? "" : String.format(Locale.ROOT, ", %,d samples where FreeTerraForged's own envelope changed meanwhile", ENVELOPE_MOVED.sum()), SAMPLES.sum(), SEARCHES.sum(), EXTRA_SEARCHES.sum(), MISPREDICTED.sum(), CPU_SAMPLES.sum(), CPU_SEARCHES.sum(),
          TIES.sum(), INPUT_NANOS.sum() / 1.0e6 / Math.max(1, done), GPU_NANOS.sum() / 1.0e6 / Math.max(1, done))
          + (Config.GPU_BIOME_DECORATION.get() == Config.GpuFilterMode.OFF ? "" : String.format(Locale.ROOT,
             "; decoration: %,d from the GPU, %,d left to the CPU, compared %,d %s", DECOR_GPU.sum(), DECOR_CPU.sum(), DECOR_SAME.sum() + DECOR_DIFFERENT.sum(),

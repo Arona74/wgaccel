@@ -39,8 +39,50 @@ public final class GpuStreams {
       TIER.set(1);
    }
 
-   /** A new non-blocking stream in the current context, its priority by the calling thread. */
+   /**
+    * Config gpuStreamPool: under HIP, each priority's lanes share this many streams (0: a stream each). A HIP stream keeps
+    * RAM of its own (GpuMemoryCheck, RX 9070 XT): ~16 MB, plus scratch sized for the largest kernel run on it (~40 MB per
+    * KB a thread spills, 80 on the first stream); a stream per thread and part came to ~3 GB. A shared stream
+    * still gives each lane its own work in order; a lane's wait (stream synchronize) then also covers its sharers' work
+    * queued before it. Streams are never destroyed, so sharing needs no counting. Set before the GPU starts.
+    */
+   public static volatile int pool = 2;
+   private static final long[][] POOLED = new long[3][];
+   private static final java.util.concurrent.atomic.AtomicInteger[] NEXT = {
+      new java.util.concurrent.atomic.AtomicInteger(), new java.util.concurrent.atomic.AtomicInteger(), new java.util.concurrent.atomic.AtomicInteger()};
+
+   /** A non-blocking stream in the current context, its priority by the calling thread (under HIP, one of a pool). */
    public static long create() {
+      int size = pool;
+      if (!GpuBackend.HIP || size <= 0) {
+         return made();
+      }
+
+      int tier = TIER.get();
+      int slot = Math.floorMod(NEXT[tier].getAndIncrement(), size);
+      synchronized (POOLED) {
+         if (POOLED[tier] == null || POOLED[tier].length != size) {
+            POOLED[tier] = new long[size];
+         }
+
+         if (POOLED[tier][slot] == 0L) {
+            POOLED[tier][slot] = made();
+         }
+
+         return POOLED[tier][slot];
+      }
+   }
+
+   private static long made() {
+      long before = GpuMemory.committed();
+      try {
+         return make();
+      } finally {
+         GpuMemory.streamMade(before);
+      }
+   }
+
+   private static long make() {
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer pointer = stack.mallocPointer(1);
          if (GpuBackend.HIP) {

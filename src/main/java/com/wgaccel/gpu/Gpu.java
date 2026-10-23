@@ -77,9 +77,15 @@ public final class Gpu implements AutoCloseable {
 
    /** Compiles CUDA C with NVRTC and loads it into the current context; returns the module. */
    public static long loadModule(String source, String name) {
-      if (GpuBackend.HIP) {
-         return loadHipModule(source, name);
+      long before = GpuMemory.committed();
+      try {
+         return GpuBackend.HIP ? loadHipModule(source, name) : loadCudaModule(source, name);
+      } finally {
+         GpuMemory.moduleLoaded(before);
       }
+   }
+
+   private static long loadCudaModule(String source, String name) {
 
       // S2: the driver's finished machine code from the disk cache, so it is not translated again at every world load.
       java.nio.file.Path cubin = GpuSelfTest.cubinPath(source);
@@ -351,6 +357,7 @@ public final class Gpu implements AutoCloseable {
          }
 
          this.buffers.add(pointer.get(0));
+         GpuMemory.device(pointer.get(0), bytes);
          return pointer.get(0);
       }
    }
@@ -364,6 +371,7 @@ public final class Gpu implements AutoCloseable {
    }
 
    private static void freeDevice(long device) {
+      GpuMemory.deviceFreed(device);
       if (GpuBackend.HIP) {
          Hip.hipFree(device);
       } else {

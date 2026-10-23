@@ -41,6 +41,7 @@ public final class Config {
    public static final Setting<Boolean> GPU_CLIFF_RELAXATION;
    public static final Setting<Integer> GPU_SERVICE_THREADS;
    public static final Setting<Boolean> GPU_STREAM_PRIORITIES;
+   public static final Setting<Integer> GPU_STREAM_POOL;
    public static final Setting<Boolean> GPU_NOISE_FILL_VANILLA;
    public static final Setting<Boolean> GPU_NOISE_FILL_OTHER_DIMENSIONS;
    public static final Setting<java.util.List<? extends String>> GPU_NOISE_FILL_CPU_DIMENSIONS;
@@ -414,6 +415,13 @@ public final class Config {
          .comment("GPU work a generation thread waits for runs at the card's highest priority, the look-ahead's (nobody waits yet)",
             "at its lowest (the same blocks either way; only the order the card runs them in changes).")
          .define("gpuStreamPriorities", true), true, true);
+      GPU_STREAM_POOL = Setting.custom(builder
+         .comment("AMD (HIP) only: how many GPU streams each of the 3 priorities shares (0: one per thread and GPU part, as until",
+            "0.18.0). Each HIP stream keeps RAM of its own: ~16 MB, plus scratch for the largest kernel run on it (~40-80 MB per",
+            "KB a thread spills; the biome search spills 1.1 KB). RX 9070 XT, HIP 6.4: a stream per thread and part was ~3 GB",
+            "more RAM than without the mod. The card has only a few hardware queues, so sharing costs little. Read when the GPU",
+            "starts (the first world of a game). The same blocks either way.")
+         .defineInRange("gpuStreamPool", 2, 0, 64));
       GPU_SURFACE_KINDS_FROM_CODES = Setting.of(builder
          .comment("The surface's inputs (which blocks are air, fluid, the default block) from the noise fill's codes instead of",
             "reading the chunk's blocks. Off: 0.9.53's codes check found a block the codes call stone but air in the chunk",

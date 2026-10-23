@@ -46,6 +46,12 @@ public final class SurfaceCodegen {
     * layer is plain stone. Both followed here when FreeTerraForged has the class.
     */
    private final boolean fastStrata;
+   /**
+    * FreeTerraForged 1.0.0014's FastStrataSequenceRule (72c60c35): deepslate only past 10 blocks of stone above and 4
+    * below, the strata asked first there; strata straight past 20 above and 4 below, desert or not. Until then 2 / 1
+    * and 5 (12 in deserts) / 3, deepslate as is. Same class and fields, so told by FreeTerraForged's version.
+    */
+   private final boolean strata14 = ftfAtLeast("1.0.0014");
    /** The prepass's flags of the column's first stone's biome (2 badlands, 4 desert): its expression of fb, or none. */
    private String firstFlags = null;
 
@@ -63,6 +69,18 @@ public final class SurfaceCodegen {
       }
 
       this.fastStrata = fast;
+   }
+
+   /** Whether the installed FreeTerraForged is this version or later (false without one, or outside the game). */
+   private static boolean ftfAtLeast(String version) {
+      try {
+         net.neoforged.fml.ModList mods = net.neoforged.fml.ModList.get();
+         return mods != null && mods.getModContainerById("freeterraforged")
+            .map(container -> container.getModInfo().getVersion().compareTo(new org.apache.maven.artifact.versioning.DefaultArtifactVersion(version)) >= 0)
+            .orElse(false);
+      } catch (RuntimeException | LinkageError outsideTheGame) {
+         return false;
+      }
    }
 
    /** Whether this FreeTerraForged wraps its surface rules in FastStrataSequenceRule (the tree to generate is then its optimize()). */
@@ -605,7 +623,17 @@ public final class SurfaceCodegen {
          case "FastStrataSequenceRule$Source" -> {
             Object strataSource = field(node, "strata");
             String strata = strataSource == null ? "-1" : this.rule(strataSource) + "(c)";
-            body = line("if ((c.fastFlags & 1) == 0) {")
+            int deepslate = this.state(net.minecraft.world.level.block.Blocks.DEEPSLATE.defaultBlockState());
+            body = this.strata14 ? line("if ((c.fastFlags & 1) == 0) {")
+               + line("    if (c.y <= 0 && c.y > -59 && c.stoneAbove > 10 && (c.stoneBelow <= 0 || c.stoneBelow > 4)) {")
+               + line("        int v = %s;", strata)
+               + line("        return v >= 0 ? v : %d;", deepslate)
+               + line("    }")
+               + line("    if (c.y > 8 && c.stoneAbove > 20 && (c.stoneBelow <= 0 || c.stoneBelow > 4)) return %s;", strata)
+               + line("}")
+               + line("{ int v = %s(c); if (v >= 0) return v; }", this.rule(field(node, "base")))
+               + line("return %s;", strata)
+               : line("if ((c.fastFlags & 1) == 0) {")
                + line("    if (c.y <= 0 && c.y > -59 && c.stoneAbove > 2 && (c.stoneBelow <= 0 || c.stoneBelow > 1)) return %d;",
                   this.state(net.minecraft.world.level.block.Blocks.DEEPSLATE.defaultBlockState()))
                + line("    int minAbove = (c.fastFlags & 2) != 0 ? 12 : 5;")

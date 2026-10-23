@@ -71,6 +71,7 @@ public final class MemoryWatch {
          out.append(", ").append(com.wgaccel.gen.SurfaceAhead.memorySummary());
          out.append(", ").append(com.wgaccel.gen.GpuSurface.memorySummary());
          out.append(", ").append(com.wgaccel.gpu.TileNoiseGpu.memorySummary());
+         out.append(", ").append(com.wgaccel.gpu.GpuMemory.summary());
       } catch (Throwable failure) {
          out.append(failure);
       }

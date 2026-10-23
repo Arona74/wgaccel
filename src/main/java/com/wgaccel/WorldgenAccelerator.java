@@ -125,6 +125,7 @@ public final class WorldgenAccelerator {
       com.wgaccel.gpu.GpuStreams.priorities = Config.GPU_STREAM_PRIORITIES.get();
       com.wgaccel.gpu.GpuStreams.erosionStream = Config.GPU_EROSION_PRIORITY.get();
       com.wgaccel.gpu.GpuStreams.serviceThreads = Config.GPU_SERVICE_THREADS.get();
+      com.wgaccel.gpu.GpuStreams.pool = Config.GPU_STREAM_POOL.get();
       com.wgaccel.gpu.GpuEnv.deviceConnections(Config.GPU_DEVICE_CONNECTIONS.get());
       LOG.info("WGA GPU hardware queues (CUDA_DEVICE_MAX_CONNECTIONS): {}", com.wgaccel.gpu.GpuEnv.state);
       if (Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {

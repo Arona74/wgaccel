@@ -260,6 +260,11 @@ public final class FtfRawBlocks {
       return known;
    }
 
+   /** Whether FreeTerraForged's RawChunkCache holds this chunk now (its cache map read directly: 1.0.0014 has no getExistingRawCell). */
+   static boolean cached(Object rawCache, int chunkX, int chunkZ) throws ReflectiveOperationException {
+      return ((java.util.Map<?, ?>)field(rawCache, "cache").get(rawCache)).containsKey(pack(chunkX, chunkZ));
+   }
+
    /** FreeTerraForged's PosUtil.pack(left, right). */
    private static long pack(int left, int right) {
       return ((long)right & 0xFFFFFFFFL) | ((long)left & 0xFFFFFFFFL) << 32;
