@@ -1741,6 +1741,54 @@ public final class GpuNoiseFill {
       return true;
    }
 
+   /** Checked chunks whose CPU fill is running, with the filling thread: marks on them from other threads are kept. */
+   private static final java.util.concurrent.ConcurrentHashMap<ChunkAccess, Thread> FILLING = new java.util.concurrent.ConcurrentHashMap<>();
+   /** Those marks: the section index above 16 bits, ProtoChunk's packed offset below. */
+   private static final java.util.concurrent.ConcurrentHashMap<ChunkAccess, java.util.concurrent.ConcurrentLinkedQueue<Long>> FOREIGN =
+      new java.util.concurrent.ConcurrentHashMap<>();
+   public static final LongAdder FOREIGN_MARKS = new LongAdder();
+
+   /** Around a checked chunk's CPU fill. */
+   public static void fillBegins(ChunkAccess chunk) {
+      FILLING.put(chunk, Thread.currentThread());
+   }
+
+   public static void fillEnds(ChunkAccess chunk) {
+      FILLING.remove(chunk);
+   }
+
+   /** ProtoChunk.markPosForPostprocessing (ProtoChunkMarkTraceMixin): another thread's mark on a chunk being filled. */
+   public static void traceMark(ChunkAccess chunk, net.minecraft.core.BlockPos pos) {
+      if (FILLING.isEmpty()) {
+         return;
+      }
+
+      Thread filler = FILLING.get(chunk);
+      if (filler == null || filler == Thread.currentThread()) {
+         return;
+      }
+
+      long mark = ((long)chunk.getSectionIndex(pos.getY()) << 16) | (net.minecraft.world.level.chunk.ProtoChunk.packOffsetCoordinates(pos) & 0xFFFFL);
+      if (FOREIGN.size() > 1024) {
+         // Chunks whose check never came (a failed job): dropped.
+         FOREIGN.clear();
+      }
+
+      FOREIGN.computeIfAbsent(chunk, c -> new java.util.concurrent.ConcurrentLinkedQueue<>()).add(mark);
+   }
+
+   private static boolean sameMarks(ShortList a, ShortList b) {
+      if (a.size() != b.size()) {
+         return false;
+      }
+
+      short[] x = a.toShortArray();
+      short[] y = b.toShortArray();
+      Arrays.sort(x);
+      Arrays.sort(y);
+      return Arrays.equals(x, y);
+   }
+
    /** After the CPU fill of a checked chunk: the GPU chunk written into the copies and compared with what the CPU made. */
    public static void compare(Pending pending, long cpuNanos) {
       try {
@@ -1780,10 +1828,30 @@ public final class GpuNoiseFill {
          }
 
          ShortList[] lists = chunk.getPostProcessing();
+         // Marks other threads made on the chunk while its CPU fill ran (neighbours' features: Feature.markAboveForPost
+         // Processing has no far-chunk check; game 108 and 123 marks, the GPU 0, every block the same, in a Still Life
+         // world, 24 Oct 2026): the GPU's copy gets them too, and the lists are compared as sets of positions with
+         // counts, as they came in between the fill's own.
+         java.util.concurrent.ConcurrentLinkedQueue<Long> foreign = FOREIGN.remove(chunk);
+         if (foreign != null) {
+            for (long mark : foreign) {
+               int index = (int)(mark >> 16);
+               if (index >= 0 && index < pending.marks.length) {
+                  if (pending.marks[index] == null) {
+                     pending.marks[index] = new it.unimi.dsi.fastutil.shorts.ShortArrayList();
+                  }
+
+                  pending.marks[index].add((short)mark);
+                  FOREIGN_MARKS.increment();
+               }
+            }
+         }
+
          for (int i = 0; i < lists.length; i++) {
             boolean empty = lists[i] == null || lists[i].isEmpty();
             boolean emptyGpu = pending.marks[i] == null || pending.marks[i].isEmpty();
-            if (empty != emptyGpu || !empty && !lists[i].equals(pending.marks[i])) {
+            boolean same = foreign == null ? !empty && lists[i].equals(pending.marks[i]) : !empty && !emptyGpu && sameMarks(lists[i], pending.marks[i]);
+            if (empty != emptyGpu || !empty && !same) {
                differences.add(String.format(Locale.ROOT, "fluid marks in section %d (game %d, gpu %d)", i, empty ? 0 : lists[i].size(),
                   emptyGpu ? 0 : pending.marks[i].size()));
             }
@@ -1893,8 +1961,8 @@ public final class GpuNoiseFill {
          split += String.format(Locale.ROOT, " in batches of %.1f chunks on average", (double)p.batcher().chunks.sum() / p.batcher().batches.sum());
       }
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
-         "WGA GPU noise fill: %,d chunks (%,d written from the GPU, %,d checked: %s, %,d blocks); on the CPU: %,d with structures, %,d blending, %,d with mods' terrain, %,d other, %,d while the GPU was busy; per chunk: CPU inputs %.2f ms, GPU %.2f ms%s, writing %.2f ms%s",
-         done, WRITTEN.sum(), checked, DIFFERENT.sum() == 0 ? "IDENTICAL" : String.format(Locale.ROOT, "%,d DIFFER", DIFFERENT.sum()), CHECKED_BLOCKS.sum(),
+         "WGA GPU noise fill: %,d chunks (%,d written from the GPU, %,d checked: %s, %,d blocks, %,d marks from other threads added); on the CPU: %,d with structures, %,d blending, %,d with mods' terrain, %,d other, %,d while the GPU was busy; per chunk: CPU inputs %.2f ms, GPU %.2f ms%s, writing %.2f ms%s",
+         done, WRITTEN.sum(), checked, DIFFERENT.sum() == 0 ? "IDENTICAL" : String.format(Locale.ROOT, "%,d DIFFER", DIFFERENT.sum()), CHECKED_BLOCKS.sum(), FOREIGN_MARKS.sum(),
          SKIP_STRUCTURES.sum(), SKIP_BLENDING.sum(), SKIP_MOD_TERRAIN.sum(), SKIP_OTHER.sum(), SKIP_BUSY.sum(), PREP_NANOS.sum() / 1.0e6 / gpuChunks, GPU_NANOS.sum() / 1.0e6 / gpuChunks, split,
          WRITE_NANOS.sum() / 1.0e6 / gpuChunks, checked == 0 ? "" : String.format(Locale.ROOT, ", the CPU fill of checked chunks %.2f ms", CPU_NANOS.sum() / 1.0e6 / checked))
          + String.format(Locale.ROOT, "; %,d one-block and %,d mixed sections written at once; %,d chunks with structures on the GPU", UNIFORM_SECTIONS.sum(),

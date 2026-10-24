@@ -14,5 +14,6 @@ public abstract class ProtoChunkMarkTraceMixin {
    @Inject(method = "markPosForPostprocessing", at = @At("HEAD"), require = 0)
    private void wgaccel$trace(BlockPos pos, CallbackInfo info) {
       GpuSurface.traceMark((ProtoChunk)(Object)this, pos);
+      com.wgaccel.gen.GpuNoiseFill.traceMark((ProtoChunk)(Object)this, pos);
    }
 }

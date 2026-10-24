@@ -111,6 +111,10 @@ public final class TileNoiseGpu {
 
    private static final Map<Object, Object> PROGRAMS = Collections.synchronizedMap(new IdentityHashMap<>());
    private static final Object FAILED = new Object();
+   /** Heightmaps whose program is being made (by prepare or a begin): their tiles are made on the CPU meanwhile. */
+   private static final java.util.Set<Object> BUILDING = Collections.newSetFromMap(Collections.synchronizedMap(new IdentityHashMap<>()));
+   /** Tiles made on the CPU because the program was not ready yet. */
+   public static final LongAdder NOT_READY = new LongAdder();
    private static final Map<Object, Table> TABLES = Collections.synchronizedMap(new IdentityHashMap<>());
    private static volatile boolean disabled;
    public static final LongAdder TILES = new LongAdder();
@@ -156,7 +160,22 @@ public final class TileNoiseGpu {
       }
 
       try {
-         Object made = program(heightmap, null);
+         // Never a compile on a chunk's thread: until the program is there, FreeTerraForged makes the tile on the CPU. A
+         // big preset's program took 750 s on an RTX 3060 Ti through OpenCL, and every worker waited on its lock: 0.1
+         // chunks a second for 13 minutes (a user's log, 24 Oct 2026).
+         Object made = PROGRAMS.get(heightmap);
+         if (made == null) {
+            if (BUILDING.add(heightmap)) {
+               Thread thread = new Thread(() -> program(heightmap, null), "WGA GPU tile noise compile");
+               thread.setDaemon(true);
+               thread.start();
+            }
+
+            NOT_READY.increment();
+            trace("begin: the program is not ready yet (the CPU makes the tile)");
+            return null;
+         }
+
          if (!(made instanceof Program p) || p.gpu == null) {
             trace("begin: " + (made == FAILED ? "no program (failed)" : "no populators on the GPU"));
             return null;
@@ -195,6 +214,7 @@ public final class TileNoiseGpu {
                }
 
                PROGRAMS.put(heightmap, made);
+               BUILDING.remove(heightmap);
                return made;
             }
          }
@@ -223,6 +243,7 @@ public final class TileNoiseGpu {
       }
 
       GpuPrepare.Task task = GpuPrepare.begin("tile noise");
+      BUILDING.add(heightmap);
       Thread thread = new Thread(() -> program(heightmap, task), "WGA GPU tile noise compile");
       thread.setDaemon(true);
       thread.start();

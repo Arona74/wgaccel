@@ -28,7 +28,9 @@ import net.neoforged.fml.ModList;
  * highest ground of the chunk plus a margin, sea level (FTF's only water above the caves), and the top of any structure
  * piece that raises the land under it. The noise chunk is made with the cut height (its corner columns, aquifer grid
  * and surface scan all follow), the fill stops there, and the sections above stay air. Every chunk is checked: if any
- * block reaches the top noise cell of the cut, a warning names the chunk (the margin was too small).
+ * block reaches the top noise cell of the cut, a warning names the chunk (the margin was too small) and the cut stops
+ * for the world. A world's first chunks are filled whole on probation first ({@link World}): presets and datapacks can
+ * give a terrain FreeTerraForged's ground does not hold.
  */
 public final class FillToGround {
    /** Blocks kept above the highest ground: two noise cells. */
@@ -109,15 +111,90 @@ public final class FillToGround {
          return full;
       }
 
+      World world = world(random);
+      if (world.off) {
+         return full;
+      }
+
+      if (!world.trusted) {
+         // On probation: the whole height filled, the cut it would have had compared with the chunk's highest block.
+         if (PROBATION.size() < 4096) {
+            PROBATION.put(chunk.getPos().toLong(), cells);
+         }
+
+         return full;
+      }
+
       CUT.increment();
       FULL.set(full);
       return new NoiseSettings(full.minY(), Math.max(1, cells) * cellHeight, full.noiseSizeHorizontal(), full.noiseSizeVertical());
    }
 
-   /** After the fill: blocks reaching the top cell of a cut chunk mean the margin was too small. */
+   /**
+    * The world's fill-to-ground state. Its first {@link #PROBATION_CHUNKS} chunks are filled whole and their highest block
+    * compared with the cut they would have had: a block in its top cell or above turns fill-to-ground off for the world
+    * (its terrain is not FreeTerraForged's ground alone: a preset's own density functions rose 4 cells over the cut at a
+    * user's spawn and 56 chunks were cut off, 24 Oct 2026); all clean, the cut is used. A cut chunk reaching its top
+    * cell later turns it off too.
+    */
+   private static final class World {
+      final Object random;
+      final AtomicInteger clean = new AtomicInteger();
+      volatile boolean trusted;
+      volatile boolean off;
+
+      World(Object random) {
+         this.random = random;
+      }
+   }
+
+   private static final int PROBATION_CHUNKS = 256;
+   /** Chunks on probation: the cells the cut would have kept. */
+   private static final java.util.concurrent.ConcurrentHashMap<Long, Integer> PROBATION = new java.util.concurrent.ConcurrentHashMap<>();
+   private static volatile World world;
+
+   private static World world(RandomState random) {
+      World known = world;
+      if (known != null && known.random == random) {
+         return known;
+      }
+
+      synchronized (FillToGround.class) {
+         known = world;
+         if (known == null || known.random != random) {
+            known = new World(random);
+            PROBATION.clear();
+            world = known;
+         }
+
+         return known;
+      }
+   }
+
+   /** After the fill: blocks reaching the top cell of a cut (or of the cut a chunk on probation would have had). */
    public static void check(ChunkPos pos, int cellsFilled, int fullCells, int cellsNeeded) {
+      World current = world;
+      Integer predicted = PROBATION.remove(pos.toLong());
+      if (predicted != null && current != null && !current.off) {
+         if (cellsNeeded >= predicted) {
+            current.off = true;
+            com.wgaccel.WgaChat.warnOff("WGA fill-to-ground off for this world: chunk {}'s terrain reaches cell {} of {}, its cut would have kept {} (this"
+               + " world's terrain rises above FreeTerraForged's ground: a preset's or datapack's own density); the whole height is filled", pos,
+               cellsNeeded, fullCells, predicted);
+         } else if (!current.trusted && current.clean.incrementAndGet() >= PROBATION_CHUNKS) {
+            current.trusted = true;
+            WorldgenAccelerator.LOG.info("WGA fill-to-ground: on for this world ({} chunks filled whole stayed under their cut)", PROBATION_CHUNKS);
+         }
+      }
+
       if (cellsFilled < fullCells && cellsNeeded >= cellsFilled) {
          TOUCHED.increment();
+         if (current != null && !current.off) {
+            current.off = true;
+            com.wgaccel.WgaChat.warnOff("WGA fill-to-ground off for this world: chunk {} reached the top cell of its cut; the whole height is filled from now on",
+               pos);
+         }
+
          if (WARNINGS.incrementAndGet() <= 20) {
             com.wgaccel.WgaChat.warnOff("WGA fill-to-ground: chunk {} has blocks in the top cell of its cut ({} of {} cells): its terrain may be cut off; please report",
                pos, cellsFilled, fullCells);

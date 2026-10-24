@@ -159,6 +159,8 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | Biomes O' Plenty + TerraBlender | 21.1.0.14 / 4.1.0.8 | works, exact |
 | Regions Unexplored | 0.6.2 | works, exact |
 | Still Life | 0.3 (1.21.1 backport) with Lithosphere 1.8.2 and More Density Functions | works, exact |
+| Railways Untold + Create | 1.2.2 / 6.0.10 (tested with FreeTerraForged: r1000 0:47) | compatible, exact; it places its stations and tracks outside chunk generation, and Create's ores are ordinary features |
+| Create: Infinite Railways | 0.2.0 (with Railways Untold; r1000 0:51) | compatible, exact; its route planning runs on a thread of its own (one core busy, also while nothing generates) |
 | RoadWeaver | 2.3.2 (tested with FreeTerraForged: r1000 0:47) | compatible, exact; chunks with a road's cut-and-fill (about 4%) fill on the CPU, and fill-to-ground keeps the road's embankments. Its own copy of LWJGL's OpenCL no longer clashes with the mod's (moved to `com.wgaccel.shaded.lwjgl` since 0.23.0) |
 | Streams Reflowing | 2.15.2 (tested) | compatible, exact; no acceleration of its own work (its river feature runs on the CPU as it is) |
 | Worldgen Patches | 1.1.0 | works; the GPU surface follows its steepness fix when it is installed |

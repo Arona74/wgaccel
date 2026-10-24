@@ -55,10 +55,17 @@ public abstract class NoiseBasedChunkGeneratorMixin {
       } else {
          long cpuStart = System.nanoTime();
          DensityTap.begin(noise, chunk);
+         if (gpu != null) {
+            GpuNoiseFill.fillBegins(chunk);
+         }
+
          try {
             filled = original.call(blender, structures, random, chunk, minCellY, cells);
          } finally {
             DensityTap.end();
+            if (gpu != null) {
+               GpuNoiseFill.fillEnds(chunk);
+            }
          }
 
          if (gpu != null) {
