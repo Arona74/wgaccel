@@ -161,6 +161,8 @@ public final class GpuNoiseFill {
    private static final LongAdder SKIP_STRUCTURES = new LongAdder();
    private static final LongAdder SKIP_BLENDING = new LongAdder();
    private static final LongAdder SKIP_OTHER = new LongAdder();
+   /** Chunks with other mods' terrain in their Beardifier (ModTerrain: an altar, a road). */
+   private static final LongAdder SKIP_MOD_TERRAIN = new LongAdder();
    private static final LongAdder SKIP_BUSY = new LongAdder();
    private static final LongAdder PREP_NANOS = new LongAdder();
    private static final LongAdder GPU_NANOS = new LongAdder();
@@ -388,8 +390,8 @@ public final class GpuNoiseFill {
          return null;
       }
 
-      if (NoMansLand.shapes(access.wgaccel$beardifier())) {
-         SKIP_OTHER.increment();
+      if (ModTerrain.shapes(access.wgaccel$beardifier())) {
+         SKIP_MOD_TERRAIN.increment();
          dropAhead(chunk);
          return null;
       }
@@ -614,7 +616,7 @@ public final class GpuNoiseFill {
 
          NoiseChunkAccessor access = (NoiseChunkAccessor)noise;
          if (access.wgaccel$blender() != Blender.empty() || !DensityTap.hasStructures(access.wgaccel$beardifier())
-            || NoMansLand.shapes(access.wgaccel$beardifier()) || !(noise.aquifer() instanceof Aquifer.NoiseBasedAquifer)) {
+            || ModTerrain.shapes(access.wgaccel$beardifier()) || !(noise.aquifer() instanceof Aquifer.NoiseBasedAquifer)) {
             return;
          }
 
@@ -1891,9 +1893,9 @@ public final class GpuNoiseFill {
          split += String.format(Locale.ROOT, " in batches of %.1f chunks on average", (double)p.batcher().chunks.sum() / p.batcher().batches.sum());
       }
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
-         "WGA GPU noise fill: %,d chunks (%,d written from the GPU, %,d checked: %s, %,d blocks); on the CPU: %,d with structures, %,d blending, %,d other, %,d while the GPU was busy; per chunk: CPU inputs %.2f ms, GPU %.2f ms%s, writing %.2f ms%s",
+         "WGA GPU noise fill: %,d chunks (%,d written from the GPU, %,d checked: %s, %,d blocks); on the CPU: %,d with structures, %,d blending, %,d with mods' terrain, %,d other, %,d while the GPU was busy; per chunk: CPU inputs %.2f ms, GPU %.2f ms%s, writing %.2f ms%s",
          done, WRITTEN.sum(), checked, DIFFERENT.sum() == 0 ? "IDENTICAL" : String.format(Locale.ROOT, "%,d DIFFER", DIFFERENT.sum()), CHECKED_BLOCKS.sum(),
-         SKIP_STRUCTURES.sum(), SKIP_BLENDING.sum(), SKIP_OTHER.sum(), SKIP_BUSY.sum(), PREP_NANOS.sum() / 1.0e6 / gpuChunks, GPU_NANOS.sum() / 1.0e6 / gpuChunks, split,
+         SKIP_STRUCTURES.sum(), SKIP_BLENDING.sum(), SKIP_MOD_TERRAIN.sum(), SKIP_OTHER.sum(), SKIP_BUSY.sum(), PREP_NANOS.sum() / 1.0e6 / gpuChunks, GPU_NANOS.sum() / 1.0e6 / gpuChunks, split,
          WRITE_NANOS.sum() / 1.0e6 / gpuChunks, checked == 0 ? "" : String.format(Locale.ROOT, ", the CPU fill of checked chunks %.2f ms", CPU_NANOS.sum() / 1.0e6 / checked))
          + String.format(Locale.ROOT, "; %,d one-block and %,d mixed sections written at once; %,d chunks with structures on the GPU", UNIFORM_SECTIONS.sum(),
             MIXED_SECTIONS.sum(), STRUCTURED.sum()));

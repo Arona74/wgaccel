@@ -271,6 +271,28 @@ public final class GpuSurface {
 
       String source = codegen.productionSource(inputs, DimensionType.WAY_BELOW_MIN_Y, id(biomes, Biomes.ERODED_BADLANDS), id(biomes, Biomes.FROZEN_OCEAN),
          id(biomes, Biomes.DEEP_FROZEN_OCEAN));
+      // Other mods' columns made before the rules, as vanilla's eroded badlands pillars and icebergs (special: the chunk's
+      // surface on the CPU): Nature's Spirit 2.3.1's SurfaceBuilderMixin builds stone pillars from its noises in these
+      // biomes at the eroded badlands check, so the stone above every block below changes (FreeTerraForged's strata
+      // came out another stone: 5 of 240 checked chunks, 24 Oct 2026).
+      StringBuilder extra = new StringBuilder();
+      for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
+         int id = id(biomes, net.minecraft.resources.ResourceKey.create(Registries.BIOME, net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("natures_spirit", name)));
+         if (id >= 0) {
+            extra.append(" || columnBiome == ").append(id);
+         }
+      }
+
+      if (!extra.isEmpty()) {
+         String before = source;
+         source = source.replace("|| columnBiome < 0 ? 1 : 0", "|| columnBiome < 0" + extra + " ? 1 : 0");
+         if (source.equals(before)) {
+            throw new IllegalStateException("the special columns' test was not found in the surface source");
+         }
+
+         WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's pillar biomes ({}) get their surface on the CPU", 
+            extra.toString().split("==").length - 1);
+      }
       try {
          Files.writeString(FMLPaths.GAMEDIR.get().resolve("logs").resolve("wgaccel-surface.cu"), source, StandardCharsets.UTF_8);
       } catch (Exception ignored) {

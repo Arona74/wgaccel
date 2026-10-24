@@ -1,3 +1,13 @@
+// ASM for the jar's relocation of the copied LWJGL modules (see jar below).
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'org.ow2.asm:asm-commons:9.8'
+    }
+}
+
 plugins {
     id 'java-library'
     id 'net.neoforged.moddev' version '2.0.140'
@@ -45,9 +55,64 @@ dependencies {
     }
 }
 
+// The copied LWJGL CUDA and OpenCL classes are moved to com.wgaccel.shaded.lwjgl, and the mod's own classes made to
+// use them there: another mod with its own copy of org.lwjgl.opencl (RoadWeaver 2.3.2) made two modules export the same
+// package and the game did not start. LWJGL's core (org.lwjgl.system), which they call, stays the game's.
+def relocations = ['org/lwjgl/opencl/': 'com/wgaccel/shaded/lwjgl/opencl/', 'org/lwjgl/cuda/': 'com/wgaccel/shaded/lwjgl/cuda/']
+
 jar {
     from({ configurations.shade.collect { zipTree(it) } }) {
         exclude 'META-INF/**'
+    }
+    doLast {
+        def file = archiveFile.get().asFile
+        def moved = new File(file.parentFile, file.name + '.relocating')
+        def remapper = new org.objectweb.asm.commons.Remapper() {
+            @Override
+            String map(String name) {
+                for (def entry : relocations.entrySet()) {
+                    if (name.startsWith(entry.key)) {
+                        return entry.value + name.substring(entry.key.length())
+                    }
+                }
+                return name
+            }
+        }
+        def input = new java.util.zip.ZipFile(file)
+        def output = new java.util.zip.ZipOutputStream(new FileOutputStream(moved))
+        try {
+            for (def entry : input.entries().toList()) {
+                // The emptied folders (org/, org/lwjgl/) are left out.
+                if (entry.directory && relocations.keySet().any { it.startsWith(entry.name) }) {
+                    continue
+                }
+
+                def bytes = input.getInputStream(entry).bytes
+                def name = entry.name
+                if (name.endsWith('.class')) {
+                    def writer = new org.objectweb.asm.ClassWriter(0)
+                    new org.objectweb.asm.ClassReader(bytes).accept(new org.objectweb.asm.commons.ClassRemapper(writer, remapper), 0)
+                    bytes = writer.toByteArray()
+                    name = remapper.map(name.substring(0, name.length() - 6)) + '.class'
+                } else {
+                    for (def relocation : relocations.entrySet()) {
+                        if (name.startsWith(relocation.key)) {
+                            name = relocation.value + name.substring(relocation.key.length())
+                        }
+                    }
+                }
+                def copy = new java.util.zip.ZipEntry(name)
+                copy.time = entry.time
+                output.putNextEntry(copy)
+                output.write(bytes)
+                output.closeEntry()
+            }
+        } finally {
+            output.close()
+            input.close()
+        }
+        file.delete()
+        moved.renameTo(file)
     }
 }
 
