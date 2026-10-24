@@ -20,6 +20,7 @@ public final class Config {
    public static final Setting<Integer> GPU_DEVICE_CONNECTIONS;
    public static final Setting<Boolean> GPU_CARVER_BIOMES;
    public static final Setting<Boolean> FAST_ORES;
+   public static final Setting<Boolean> FAST_LAYER_PLACEMENT;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
    public static final Setting<Boolean> GPU_IMPROVEMENTS;
@@ -185,6 +186,16 @@ public final class Config {
             "range asked per block: the same answers from a cached chunk and the range read once (ores were 7.5% of the CPU).",
             "Every 256th answer is compared with the game's call; a difference turns it off. The same world. Since 0.9.67.")
          .define("fastOres", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_LAYER_PLACEMENT = Setting.of(builder
+         .comment("Gain: No Man's Land 1.6.2's features were 40 ms a chunk, nearly all of it this placement.",
+            "Minecraft's count_on_every_layer placement scans a column from its top down to the n-th ground for every layer",
+            "n, again for every layer (in FreeTerraForged's 768-block world the columns with fewer layers to the bottom each",
+            "time). Here each column is scanned once per placement and its grounds remembered: the same positions, as nothing",
+            "is placed while they are found. Every 256th answer is compared with the game's scan. Since 0.22.0.",
+            "Also No Man's Land's ore veins: their noise fields filled once per layer (its fill loop refilled each run of",
+            "layers once per layer in it: 30 of their 37 ms a chunk). The same noise values. And their target test answered",
+            "from the block they just read instead of reading it again through the level (every 256th compared).")
+         .define("fastLayerPlacement", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

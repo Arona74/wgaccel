@@ -94,6 +94,13 @@ public final class FillToGround {
 
       int top = Math.max(ground, settings.seaLevel()) + MARGIN;
       top = Math.max(top, structureTop(beardifier));
+      // No Man's Land's altar: solid up to its top whatever the ground (its centre piece has no terrain adjustment).
+      int altar = NoMansLand.top(beardifier);
+      if (altar == Integer.MAX_VALUE) {
+         return full;
+      }
+
+      top = Math.max(top, altar == Integer.MIN_VALUE ? altar : altar + STRUCTURE_MARGIN);
       int cellHeight = full.getCellHeight();
       int fullCells = Math.floorDiv(full.height(), cellHeight);
       int cells = Math.floorDiv(top - full.minY() + cellHeight - 1, cellHeight) + 1;

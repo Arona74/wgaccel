@@ -388,6 +388,12 @@ public final class GpuNoiseFill {
          return null;
       }
 
+      if (NoMansLand.shapes(access.wgaccel$beardifier())) {
+         SKIP_OTHER.increment();
+         dropAhead(chunk);
+         return null;
+      }
+
       boolean structured = DensityTap.hasStructures(access.wgaccel$beardifier());
       if (structured && !Config.GPU_STRUCTURES.get()) {
          SKIP_STRUCTURES.increment();
@@ -608,7 +614,7 @@ public final class GpuNoiseFill {
 
          NoiseChunkAccessor access = (NoiseChunkAccessor)noise;
          if (access.wgaccel$blender() != Blender.empty() || !DensityTap.hasStructures(access.wgaccel$beardifier())
-            || !(noise.aquifer() instanceof Aquifer.NoiseBasedAquifer)) {
+            || NoMansLand.shapes(access.wgaccel$beardifier()) || !(noise.aquifer() instanceof Aquifer.NoiseBasedAquifer)) {
             return;
          }
 

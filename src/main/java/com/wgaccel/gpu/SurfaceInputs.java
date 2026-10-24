@@ -68,18 +68,20 @@ public final class SurfaceInputs {
     * with Worldgen Patches' version (the height difference of the column's neighbours either way, Math.abs); without
     * Worldgen Patches it is vanilla's (only the south neighbour 4 or more above the north one, or the west one 4 or more
     * above the east one). The 2026-10-22 09:05 run (Worldgen Patches disabled): snow blocks on mountains came out stone.
+    * No Man's Land's SteepMaterialConditionMixin gives the same as Worldgen Patches (vanilla's or its own either way).
     */
    public static String steep(String source) {
-      if (worldgenPatches()) {
+      if (eitherWay()) {
          return source;
       }
 
       return source.replace("abs(hs - hn) >= 4", "hs >= hn + 4").replace("abs(hw - he) >= 4", "hw >= he + 4");
    }
 
-   private static boolean worldgenPatches() {
+   private static boolean eitherWay() {
       try {
-         return net.neoforged.fml.ModList.get().isLoaded("worldgen_patches");
+         net.neoforged.fml.ModList mods = net.neoforged.fml.ModList.get();
+         return mods.isLoaded("worldgen_patches") || mods.isLoaded("nomansland");
       } catch (Throwable failure) {
          // Outside the game (the offline checks): the sources as written.
          return true;

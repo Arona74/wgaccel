@@ -661,6 +661,30 @@ public final class SurfaceCodegen {
                + line("int i = mc_floor((d + 1.0) / 2.0 * (double)%d);", gradient.size())
                + line("return gradient%d[i < 0 ? 0 : i > %d ? %d : i];", this.next, gradient.size() - 1, gradient.size() - 1);
          }
+         // No Man's Land's StrataRuleSource: the clay band offset noise at the column (as Bandlands) times 4, rounded,
+         // plus y picks an entry (floorMod), through its lowBiasHash when jumbled.
+         case "StrataRuleSource" -> {
+            noMansLand(node);
+            List<?> entries = (List<?>)field(node, "strataEntries");
+            if (entries.isEmpty()) {
+               throw new DensityCodegen.Unsupported("surface rule StrataRuleSource without entries");
+            }
+
+            int id = this.next;
+            StringBuilder table = new StringBuilder("__device__ const int strata").append(id).append('[').append(entries.size()).append("] = {");
+            for (int i = 0; i < entries.size(); i++) {
+               table.append(i == 0 ? "" : ", ").append(this.state((BlockState)entries.get(i)));
+            }
+
+            this.code.append(table).append("};\n");
+            String noise = this.noises.normalNoise(field(this.system, "clayBandsOffsetNoise"));
+            String hash = (Boolean)field(node, "jumbleEntries")
+               ? line("h ^= h >> 16;") + line("h = (int)((unsigned int)h * 2146121005u);") + line("h ^= h >> 15;")
+                  + line("h = (int)((unsigned int)h * 2221713035u);") + line("h ^= h >> 16;")
+               : "";
+            body = line("int i = (int)sf_round(%s, (double)c.x, 0.0, (double)c.z) * 4.0);", noise) + line("int h = (int)((unsigned int)c.y + (unsigned int)i);")
+               + hash + line("return strata%d[((h %% %d) + %d) %% %d];", id, entries.size(), entries.size(), entries.size());
+         }
          default -> throw new DensityCodegen.Unsupported("surface rule " + kind);
       }
 
@@ -753,12 +777,59 @@ public final class SurfaceCodegen {
          case "SurfaceRules$Steep" -> line("return c.steep != 0;");
          case "SurfaceRules$Temperature" -> line("return c.cold != 0;");
          case "SurfaceRules$AbovePreliminarySurface" -> line("return c.y >= c.minSurface;");
+         // No Man's Land's conditions: two conditions both / either (Java's && and ||), the biome in any of its tags, and
+         // its y test in floats (BelowOrEqualToYConditionSource.YCondition.compute: the offset added twice, as there).
+         case "AndConditionSource", "OrConditionSource" -> {
+            noMansLand(node);
+            yield line("return %s(c) %s %s(c);", this.condition(field(node, "target1")), kind.equals("AndConditionSource") ? "&&" : "||",
+               this.condition(field(node, "target2")));
+         }
+         case "BiomeTagConditionSource" -> {
+            noMansLand(node);
+            List<Object> keys = new java.util.ArrayList<>();
+            for (Map.Entry<ResourceKey<Biome>, Biome> entry : this.biomes.entrySet()) {
+               net.minecraft.core.Holder<Biome> holder = this.biomes.getHolderOrThrow(entry.getKey());
+               for (Object tag : (List<?>)field(node, "biomeTags")) {
+                  @SuppressWarnings("unchecked")
+                  net.minecraft.tags.TagKey<Biome> biomeTag = (net.minecraft.tags.TagKey<Biome>)tag;
+                  if (holder.is(biomeTag)) {
+                     keys.add(entry.getKey());
+                     break;
+                  }
+               }
+            }
+
+            yield this.biomeMask(keys);
+         }
+         case "BelowOrEqualToYConditionSource" -> {
+            noMansLand(node);
+            String offset = floatLit((Float)field(node, "offset"));
+            yield line("float y = (float)c.y + %s;", offset) + ((Boolean)field(node, "useSurfacePosition") ? line("y += (float)c.stoneAbove;") : "")
+               + line("y += ((float)c.depth - 2.5f) / 2.5f * %s;", floatLit((Float)field(node, "noiseMultiplier")))
+               + line("return y + %s <= (float)%d;", offset, ((VerticalAnchor)field(node, "anchor")).resolveY(this.context));
+         }
          default -> throw new DensityCodegen.Unsupported("surface condition " + kind);
       };
       String name = "q" + this.next++;
       this.code.append("__device__ __noinline__ bool ").append(name).append("(const SCtx& c) {\n").append(body).append("}\n");
       this.conditions.put(node, name);
       return name;
+   }
+
+   /** No Man's Land's nodes have common names: another mod's class of the same name has no GPU version. */
+   private static void noMansLand(Object node) {
+      if (!node.getClass().getName().startsWith("com.farcr.nomansland.")) {
+         throw new DensityCodegen.Unsupported("surface node " + node.getClass().getName());
+      }
+   }
+
+   /** A float as a C float literal that reads back as the same float (Float.toString is the shortest that does). */
+   private static String floatLit(float value) {
+      if (!Float.isFinite(value)) {
+         throw new DensityCodegen.Unsupported("surface condition with float " + value);
+      }
+
+      return Float.toString(value) + "f";
    }
 
    private String biomeCondition(Object node) throws ReflectiveOperationException {

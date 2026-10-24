@@ -27,7 +27,8 @@
     "RiverSkipMixin",
     "FastStrataOnceMixin",
     "RegionPrefetchMixin",
-    "SurfaceEnvelopeMixin"
+    "SurfaceEnvelopeMixin",
+    "CandidateFitMixin"
   ],
   "injectors": {
     "defaultRequire": 0

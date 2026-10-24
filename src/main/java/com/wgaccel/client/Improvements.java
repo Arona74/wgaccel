@@ -65,6 +65,9 @@ final class Improvements {
       new Improvement(Config.FTF_FAST_PLACEMENT_SCOPES, "Fast placement scopes",
          "A quicker way to end FreeTerraForged's per-feature placement scopes (about 4% with Still Life).", null),
       new Improvement(Config.FAST_ORES, "Fast ores", "Ores placed without looking their chunk up again for every column.", null),
+      new Improvement(Config.FAST_LAYER_PLACEMENT, "Fast every-layer placement",
+         "Features placed on every ground layer (No Man's Land's roots, icicles, shelf mushrooms) scan each column once instead of once per layer;"
+            + " No Man's Land's ore veins fill their noise once per layer.", null),
       new Improvement(Config.FAST_SURFACE_READS, "Fast surface reads", "Minecraft's surface step reads blocks straight from the chunk's sections.", null),
       new Improvement(Config.GPU_CARVER_BIOMES, "Carver biomes from the chunk",
          "Caves and canyons read nearby biomes from the chunks that already hold them instead of working them out again.", null),
