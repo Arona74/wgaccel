@@ -65,12 +65,14 @@ public final class Gpu implements AutoCloseable {
    public static long createContext() {
       if (GpuBackend.OPENCL) {
          OpenCl.init();
+         GpuDevice.running = true;
          return HIP_CONTEXT;
       }
 
       if (GpuBackend.HIP) {
          Hip.check(Hip.hipInit(0), "hipInit");
          Hip.check(Hip.hipSetDevice(GpuDevice.index()), "hipSetDevice");
+         GpuDevice.running = true;
          return HIP_CONTEXT;
       }
 
@@ -80,6 +82,7 @@ public final class Gpu implements AutoCloseable {
          GpuSelfTest.check(cuDeviceGet(device, GpuDevice.index()), "cuDeviceGet");
          PointerBuffer pointer = stack.mallocPointer(1);
          GpuSelfTest.check(cuCtxCreate(pointer, 0, device.get(0)), "cuCtxCreate");
+         GpuDevice.running = true;
          return pointer.get(0);
       }
    }

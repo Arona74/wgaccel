@@ -28,6 +28,8 @@ public final class GpuDevice {
    private static volatile int chosen = -1;
    /** The chosen device's name once chosen (the world-loading screen's hardware list), else null. */
    public static volatile String chosenName;
+   /** Whether a GPU context has started on the chosen device (the GPU parts can run; the join message names it). */
+   public static volatile boolean running;
 
    private GpuDevice() {
    }
@@ -55,10 +57,12 @@ public final class GpuDevice {
             int units = attribute(d, false);
             boolean integrated = attribute(d, true) != 0;
             names.add(name(d));
-            // OpenCL lists GPUs the mod cannot run on too (NVIDIA's has no generic address space): never chosen automatically.
+            // OpenCL lists GPUs the mod cannot run on too (no double precision or shared virtual memory): never chosen automatically.
             String missing = GpuBackend.OPENCL ? OpenCl.devices().get(d).missing() : "";
             seen.add(d + " " + names.get(d) + " (" + units + " units" + (integrated ? ", integrated" : "") + (missing.isEmpty() ? "" : ", no " + missing) + ")");
-            long score = missing.isEmpty() ? (integrated ? 0L : 1L << 32) + units : -1L;
+            // Intel integrated graphics never automatically (OpenCl.Device#automatic): slower than the CPU on the one measured.
+            boolean skipped = GpuBackend.OPENCL && !OpenCl.devices().get(d).automatic();
+            long score = missing.isEmpty() && !skipped ? (integrated ? 0L : 1L << 32) + units : -1L;
             if (score > bestScore) {
                bestScore = score;
                best = d;

@@ -72,8 +72,22 @@ final class ErosionGridBatch {
          (next.params == first.params && next.n == first.n ? batch : other).add(next);
       }
 
-      // Another filter or size (another world): back in the queue, for the threads posted with them.
-      PENDING.addAll(other);
+      // Another filter or size (another world): back in the queue, with a drain of their own. The drains posted with them
+      // may have run already and found the queue empty: those grids then waited out the 30 s and the GPU erosion turned
+      // off (OpenCL on an RTX 5060 laptop and on Intel graphics, 24 Oct 2026).
+      if (!other.isEmpty()) {
+         PENDING.addAll(other);
+         try {
+            GpuService.post(ErosionGridBatch::drain);
+         } catch (Exception failure) {
+            // No GPU thread to take them: they fail now, and go FreeTerraForged's way.
+            for (ErosionFilterGpu.Job job : other) {
+               if (PENDING.remove(job)) {
+                  job.done.completeExceptionally(failure);
+               }
+            }
+         }
+      }
       try {
          long start = System.nanoTime();
          run(gpu, batch);

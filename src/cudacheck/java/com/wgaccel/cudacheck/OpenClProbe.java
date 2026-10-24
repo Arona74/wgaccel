@@ -79,6 +79,11 @@ public final class OpenClProbe {
    }
 
    public static void main(String[] args) throws Exception {
+      if (args.length > 0 && args[0].equals("--svm")) {
+         svmChild(args.length > 1 && args[1].equals("cuinit"));
+         return;
+      }
+
       File file = new File("wgaccel-openclprobe-result.txt");
       try (PrintStream result = new PrintStream(file, StandardCharsets.UTF_8)) {
          out = new PrintStream(new java.io.OutputStream() {
@@ -115,6 +120,7 @@ public final class OpenClProbe {
             }
          }
 
+         svmAsInTheGame();
          // HIP (or CUDA) through the mod's own route, only where its classes are (gradlew.bat openclCheck, not the jar).
          try {
             Class.forName("com.wgaccel.gpu.Gpu");
@@ -290,6 +296,10 @@ public final class OpenClProbe {
             // OpenCL 3.0 devices may say OpenCL C 1.2 (its default) and still take 3.0 with generic pointers when asked.
             String std = cVersion.contains("3.0") || version.contains("OpenCL 3") && generic != 0L ? " -cl-std=CL3.0" : cVersion.contains("2.") ? " -cl-std=CL2.0" : "";
             String exact = (singleConfig & CL12.CL_FP_CORRECTLY_ROUNDED_DIVIDE_SQRT) != 0 ? "-cl-fp32-correctly-rounded-divide-sqrt" : "";
+            if (svm != 0L) {
+               svmCheck(context, device, queue, extensions);
+            }
+
             long floats = build(context, device, toOpenCl(selfTestSource + EXTRA, false, false), exact, "float kernels");
             if (floats != 0L) {
                floatCheck(queue, context, floats);
@@ -562,6 +572,362 @@ public final class OpenClProbe {
       MemoryUtil.memFree(a);
       MemoryUtil.memFree(b);
       MemoryUtil.memFree(result);
+   }
+
+   private static final String SVM_SOURCE = """
+      __kernel void svmAdd(__global int* a, int n) { int i = get_global_id(0); if (i < n) a[i] += 1; }
+      __kernel void svmTable(__global const ulong* table, int n) {
+          __global int* a = (__global int*)table[0];
+          int i = get_global_id(0);
+          if (i < n) a[i] += 10;
+      }
+      """;
+
+   /**
+    * Shared virtual memory step by step, as the mod's OpenCL backend uses it (each call's result printed): allocate, a
+    * second queue made the OpenCL 2.0 way, copies in and out on both queues, map and unmap, a kernel given the pointer
+    * as its argument and one reading it from a table (the batches do), told of the allocations through SVM_PTRS. An RTX
+    * 5060 laptop's OpenCL said it has coarse-grained SVM, yet the mod's copies failed with -36 and its launches with -6
+    * (24 Oct 2026).
+    */
+   private static void svmCheck(long context, long device, long queue, String extensions) {
+      String related = java.util.Arrays.stream(extensions.split(" ")).filter(e -> e.contains("address") || e.contains("svm") || e.contains("unified")
+         || e.contains("_nv_")).collect(java.util.stream.Collectors.joining(" "));
+      out.println("   SVM step by step (extensions about memory: " + (related.isEmpty() ? "none" : related) + "):");
+      int n = 1024;
+      long bytes = 4L * n;
+      long svm = CL20.nclSVMAlloc(context, CL10.CL_MEM_READ_WRITE, bytes, 0);
+      out.println("     clSVMAlloc: " + (svm == 0L ? "FAILED (null)" : "ok"));
+      if (svm == 0L) {
+         return;
+      }
+
+      java.nio.IntBuffer host = MemoryUtil.memAllocInt(n);
+      long tableSvm = CL20.nclSVMAlloc(context, CL10.CL_MEM_READ_WRITE, 8L, 0);
+      long queue2 = 0L;
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer error = stack.mallocInt(1);
+         queue2 = CL20.clCreateCommandQueueWithProperties(context, device, (java.nio.LongBuffer)null, error);
+         out.println("     clCreateCommandQueueWithProperties: " + error.get(0));
+         for (int i = 0; i < n; i++) {
+            host.put(i, i);
+         }
+
+         long hostAddress = MemoryUtil.memAddress(host);
+         out.println("     clEnqueueSVMMemcpy in, OpenCL 1.x queue: " + CL20.nclEnqueueSVMMemcpy(queue, 1, svm, hostAddress, bytes, 0, 0L, 0L));
+         if (queue2 != 0L) {
+            out.println("     clEnqueueSVMMemcpy in, OpenCL 2.0 queue: " + CL20.nclEnqueueSVMMemcpy(queue2, 1, svm, hostAddress, bytes, 0, 0L, 0L));
+         }
+
+         int mapped = CL20.nclEnqueueSVMMap(queue, 1, CL10.CL_MAP_READ | CL10.CL_MAP_WRITE, svm, bytes, 0, 0L, 0L);
+         out.println("     clEnqueueSVMMap: " + mapped);
+         if (mapped == CL10.CL_SUCCESS) {
+            // Mapped: the host may write the SVM block directly (fills it again, in case the copies failed).
+            for (int i = 0; i < n; i++) {
+               MemoryUtil.memPutInt(svm + 4L * i, i);
+            }
+
+            out.println("     clEnqueueSVMUnmap: " + CL20.nclEnqueueSVMUnmap(queue, svm, 0, 0L, 0L) + ", finish " + CL10.clFinish(queue));
+         }
+
+         long program = build(context, device, SVM_SOURCE, "", "SVM kernels");
+         if (program == 0L) {
+            return;
+         }
+
+         long add = kernel(program, "svmAdd");
+         long fromTable = kernel(program, "svmTable");
+         out.println("     clSetKernelArgSVMPointer: " + CL20.nclSetKernelArgSVMPointer(add, 0, svm) + ", int argument " + CL10.clSetKernelArg1i(add, 1, n));
+         PointerBuffer live = stack.pointers(svm);
+         out.println("     clSetKernelExecInfo SVM_PTRS: " + CL20.nclSetKernelExecInfo(add, CL20.CL_KERNEL_EXEC_INFO_SVM_PTRS, 8L, MemoryUtil.memAddress(live)));
+         PointerBuffer global = stack.pointers(n);
+         out.println("     launch with the pointer argument: " + CL10.clEnqueueNDRangeKernel(queue, add, 1, null, global, null, null, null) + ", finish "
+            + CL10.clFinish(queue));
+         if (tableSvm != 0L) {
+            int filled = CL20.nclEnqueueSVMMap(queue, 1, CL10.CL_MAP_WRITE, tableSvm, 8L, 0, 0L, 0L);
+            if (filled == CL10.CL_SUCCESS) {
+               MemoryUtil.memPutLong(tableSvm, svm);
+               CL20.nclEnqueueSVMUnmap(queue, tableSvm, 0, 0L, 0L);
+            }
+
+            out.println("     table filled (map " + filled + "); arguments " + CL20.nclSetKernelArgSVMPointer(fromTable, 0, tableSvm) + ", "
+               + CL10.clSetKernelArg1i(fromTable, 1, n) + "; SVM_PTRS " + CL20.nclSetKernelExecInfo(fromTable, CL20.CL_KERNEL_EXEC_INFO_SVM_PTRS, 16L,
+               MemoryUtil.memAddress(stack.pointers(svm, tableSvm))));
+            out.println("     launch reading the address from a table: " + CL10.clEnqueueNDRangeKernel(queue, fromTable, 1, null, global, null, null, null)
+               + ", finish " + CL10.clFinish(queue));
+         }
+
+         for (int i = 0; i < n; i++) {
+            host.put(i, -1);
+         }
+
+         int back = CL20.nclEnqueueSVMMemcpy(queue, 1, hostAddress, svm, bytes, 0, 0L, 0L);
+         if (back != CL10.CL_SUCCESS && CL20.nclEnqueueSVMMap(queue, 1, CL10.CL_MAP_READ, svm, bytes, 0, 0L, 0L) == CL10.CL_SUCCESS) {
+            MemoryUtil.memCopy(svm, hostAddress, bytes);
+            CL20.nclEnqueueSVMUnmap(queue, svm, 0, 0L, 0L);
+            CL10.clFinish(queue);
+            back = 1000 + back;
+         }
+
+         int wrong = 0;
+         for (int i = 0; i < n; i++) {
+            wrong += host.get(i) != i + 11 ? 1 : 0;
+         }
+
+         out.println("     copy out: " + (back >= 1000 ? "failed (" + (back - 1000) + "), read through a map instead" : String.valueOf(back)) + "; values "
+            + (wrong == 0 ? "RIGHT (both kernels ran)" : wrong + " of " + n + " wrong (first: " + host.get(0) + ", expected 11)"));
+         CL10.clReleaseKernel(add);
+         CL10.clReleaseKernel(fromTable);
+         CL10.clReleaseProgram(program);
+      } catch (Throwable failure) {
+         out.println("     SVM check failed: " + failure);
+      } finally {
+         if (queue2 != 0L) {
+            CL10.clReleaseCommandQueue(queue2);
+         }
+
+         CL10.clFinish(queue);
+         CL20.nclSVMFree(context, svm);
+         if (tableSvm != 0L) {
+            CL20.nclSVMFree(context, tableSvm);
+         }
+
+         MemoryUtil.memFree(host);
+      }
+   }
+
+   /**
+    * NVIDIA's OpenCL as the game starts it: the probe's SVM steps passed on an RTX 5060 laptop, yet in the game every copy
+    * failed with -36 and every launch with -6 (24 Oct 2026). The game sets CUDA_DEVICE_MAX_CONNECTIONS=32 before the
+    * driver starts and calls cuInit before OpenCL (its GPU list); each case runs in a process of its own (both act at the
+    * driver's start), with a 16 MB copy and a copy from another thread added.
+    */
+   private static void svmAsInTheGame() {
+      String launcher = ProcessHandle.current().info().command().orElse("java");
+      String jar;
+      try {
+         jar = new File(OpenClProbe.class.getProtectionDomain().getCodeSource().getLocation().toURI()).getPath();
+      } catch (Exception failure) {
+         return;
+      }
+
+      out.println();
+      out.println("== NVIDIA's OpenCL as the game starts it (each in a process of its own)");
+      String[][] cases = {{"plain", "", ""}, {"CUDA_DEVICE_MAX_CONNECTIONS=32", "32", ""}, {"cuInit first", "", "cuinit"},
+         {"CUDA_DEVICE_MAX_CONNECTIONS=32 and cuInit first", "32", "cuinit"}};
+      for (String[] each : cases) {
+         out.println("-- " + each[0]);
+         try {
+            ProcessBuilder builder = new ProcessBuilder(launcher, "-cp", jar, OpenClProbe.class.getName(), "--svm", each[2]).redirectErrorStream(true);
+            builder.environment().remove("CUDA_DEVICE_MAX_CONNECTIONS");
+            if (!each[1].isEmpty()) {
+               builder.environment().put("CUDA_DEVICE_MAX_CONNECTIONS", each[1]);
+            }
+
+            Process process = builder.start();
+            String text = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            boolean done = process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+            text.lines().filter(line -> !line.startsWith("WARNING") && !line.startsWith("[LWJGL]") && !line.isBlank()).forEach(out::println);
+            out.println(done ? "   (exit " + process.exitValue() + ")" : "   (did not finish in 2 minutes)");
+         } catch (Exception failure) {
+            out.println("   not run: " + failure);
+         }
+      }
+   }
+
+   /** The child process of {@link #svmAsInTheGame}: the SVM steps on every NVIDIA OpenCL GPU, then a big copy and one from another thread. */
+   private static void svmChild(boolean cuInit) {
+      out = System.out;
+      if (cuInit) {
+         try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer count = stack.mallocInt(1);
+            out.println("   cuInit " + org.lwjgl.cuda.CU.cuInit(0) + ", cuDeviceGetCount " + org.lwjgl.cuda.CU.cuDeviceGetCount(count) + " (" + count.get(0) + ")");
+         } catch (Throwable failure) {
+            out.println("   cuInit failed: " + failure);
+         }
+      }
+
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer count = stack.mallocInt(1);
+         if (CL10.clGetPlatformIDs(null, count) != CL10.CL_SUCCESS) {
+            out.println("   no OpenCL");
+            return;
+         }
+
+         PointerBuffer platforms = stack.mallocPointer(count.get(0));
+         CL10.clGetPlatformIDs(platforms, (IntBuffer)null);
+         for (int p = 0; p < platforms.capacity(); p++) {
+            if (!platformString(platforms.get(p), CL10.CL_PLATFORM_NAME).contains("NVIDIA")) {
+               continue;
+            }
+
+            IntBuffer found = stack.mallocInt(1);
+            if (CL10.clGetDeviceIDs(platforms.get(p), CL10.CL_DEVICE_TYPE_GPU, null, found) != CL10.CL_SUCCESS || found.get(0) == 0) {
+               continue;
+            }
+
+            PointerBuffer ids = stack.mallocPointer(found.get(0));
+            CL10.clGetDeviceIDs(platforms.get(p), CL10.CL_DEVICE_TYPE_GPU, ids, (IntBuffer)null);
+            long device = ids.get(0);
+            IntBuffer error = stack.mallocInt(1);
+            long context = CL10.clCreateContext(stack.pointers(CL10.CL_CONTEXT_PLATFORM, platforms.get(p), 0L), device, null, 0L, error);
+            out.println("   clCreateContext " + error.get(0));
+            // The mod's queues are made the OpenCL 2.0 way.
+            long queue = CL20.clCreateCommandQueueWithProperties(context, device, (java.nio.LongBuffer)null, error);
+            out.println("   clCreateCommandQueueWithProperties " + error.get(0));
+            svmCheck(context, device, queue, deviceString(device, CL10.CL_DEVICE_EXTENSIONS));
+            bigAndThreaded(context, queue);
+            underLoad(context, device);
+            CL10.clReleaseCommandQueue(queue);
+            CL10.clReleaseContext(context);
+         }
+      }
+   }
+
+   private static final String ADDRESS_SOURCE = """
+      __kernel void spin(__global int* x, int n) {
+          int v = x[0] + (int)get_global_id(0);
+          for (int i = 0; i < n; i++) v = v * 1664525 + 1013904223;
+          x[1 + get_global_id(0)] = v;
+      }
+      __kernel void address(__global char* buffer, __global ulong* out) { out[0] = (ulong)buffer; }
+      __kernel void byAddress(ulong a, int n) {
+          __global int* p = (__global int*)a;
+          int i = get_global_id(0);
+          if (i < n) p[i] += 1;
+      }
+      __kernel void byTable(ulong table, int n) {
+          __global int* p = (__global int*)((__global const ulong*)table)[0];
+          int i = get_global_id(0);
+          if (i < n) p[i] += 10;
+      }
+      """;
+
+   /**
+    * Under load, as in the game, where SVM failed (an allocation -4 and the process gone, RTX 5060 laptop, 24 Oct 2026):
+    * (1) SVM allocated and copied on one thread while a long kernel runs on another; (2) plain device buffers used by
+    * their GPU address (read by a kernel, passed as a number, read from a table; written and read while another kernel
+    * runs), the way the mod could use NVIDIA's OpenCL without SVM.
+    */
+   private static void underLoad(long context, long device) {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer error = stack.mallocInt(1);
+         long busy = CL20.clCreateCommandQueueWithProperties(context, device, (java.nio.LongBuffer)null, error);
+         long other = CL20.clCreateCommandQueueWithProperties(context, device, (java.nio.LongBuffer)null, error);
+         long program = build(context, device, ADDRESS_SOURCE, "", "address kernels");
+         if (program == 0L) {
+            return;
+         }
+
+         long spin = kernel(program, "spin");
+         int threads = 1 << 16;
+         long spinBuffer = CL10.clCreateBuffer(context, CL10.CL_MEM_READ_WRITE, 4L * (threads + 1), error);
+         CL10.clSetKernelArg1p(spin, 0, spinBuffer);
+         // A few hundred ms on an RTX 5060 (its time is printed), under Windows' 2 s GPU timeout, so the calls below happen while it runs.
+         int steps = 1 << 25;
+         CL10.clSetKernelArg1i(spin, 1, steps);
+         long started = System.nanoTime();
+         CL10.clEnqueueNDRangeKernel(busy, spin, 1, null, stack.pointers(threads), null, null, null);
+         CL10.clFinish(busy);
+         out.printf(Locale.ROOT, "   a long kernel alone: %.0f ms%n", (System.nanoTime() - started) / 1.0e6);
+
+         // (1) SVM while a kernel runs.
+         CL10.clEnqueueNDRangeKernel(busy, spin, 1, null, stack.pointers(threads), null, null, null);
+         CL10.clFlush(busy);
+         long svm = CL20.nclSVMAlloc(context, CL10.CL_MEM_READ_WRITE, 1L << 20, 0);
+         java.nio.ByteBuffer host = MemoryUtil.memAlloc(1 << 20);
+         int copy = svm == 0L ? 1 : CL20.nclEnqueueSVMMemcpy(other, 1, svm, MemoryUtil.memAddress(host), 1L << 20, 0, 0L, 0L);
+         out.println("   SVM while a kernel runs: alloc " + (svm == 0L ? "FAILED" : "ok") + ", copy in " + (svm == 0L ? "-" : String.valueOf(copy)) + ", the kernel's finish "
+            + CL10.clFinish(busy));
+         if (svm != 0L) {
+            CL20.nclSVMFree(context, svm);
+         }
+
+         // (2) Plain buffers by address.
+         int n = 1024;
+         long data = CL10.clCreateBuffer(context, CL10.CL_MEM_READ_WRITE, 4L * n, error);
+         long table = CL10.clCreateBuffer(context, CL10.CL_MEM_READ_WRITE, 8L, error);
+         long result = CL10.clCreateBuffer(context, CL10.CL_MEM_READ_WRITE, 8L, error);
+         long address = kernel(program, "address");
+         CL10.clSetKernelArg1p(address, 0, data);
+         CL10.clSetKernelArg1p(address, 1, result);
+         int ran = CL10.clEnqueueNDRangeKernel(other, address, 1, null, stack.pointers(1), null, null, null);
+         java.nio.ByteBuffer value = stack.malloc(8);
+         int read = CL10.clEnqueueReadBuffer(other, result, true, 0L, value, null, null);
+         long gpuAddress = value.getLong(0);
+         out.printf(Locale.ROOT, "   a buffer's GPU address: kernel %d, read %d, 0x%x%n", ran, read, gpuAddress);
+         java.nio.IntBuffer ints = MemoryUtil.memAllocInt(n);
+         for (int i = 0; i < n; i++) {
+            ints.put(i, i);
+         }
+
+         // The long kernel runs again meanwhile: the writes, launches and reads below happen beside it.
+         CL10.clEnqueueNDRangeKernel(busy, spin, 1, null, stack.pointers(threads), null, null, null);
+         CL10.clFlush(busy);
+         int write = CL10.clEnqueueWriteBuffer(other, data, true, 0L, ints, null, null);
+         value.putLong(0, gpuAddress);
+         int writeTable = CL10.clEnqueueWriteBuffer(other, table, true, 0L, value, null, null);
+         long byAddress = kernel(program, "byAddress");
+         CL10.clSetKernelArg1l(byAddress, 0, gpuAddress);
+         CL10.clSetKernelArg1i(byAddress, 1, n);
+         int first = CL10.clEnqueueNDRangeKernel(other, byAddress, 1, null, stack.pointers(n), null, null, null);
+         // The table's own address, then its kernel.
+         CL10.clSetKernelArg1p(address, 0, table);
+         CL10.clEnqueueNDRangeKernel(other, address, 1, null, stack.pointers(1), null, null, null);
+         CL10.clEnqueueReadBuffer(other, result, true, 0L, value, null, null);
+         long byTable = kernel(program, "byTable");
+         CL10.clSetKernelArg1l(byTable, 0, value.getLong(0));
+         CL10.clSetKernelArg1i(byTable, 1, n);
+         int second = CL10.clEnqueueNDRangeKernel(other, byTable, 1, null, stack.pointers(n), null, null, null);
+         int back = CL10.clEnqueueReadBuffer(other, data, true, 0L, ints, null, null);
+         int wrong = 0;
+         for (int i = 0; i < n; i++) {
+            wrong += ints.get(i) != i + 11 ? 1 : 0;
+         }
+
+         out.println("   buffers by address, beside a running kernel: write " + write + ", table " + writeTable + ", launch by address " + first
+            + ", launch by table " + second + ", read " + back + ", the long kernel's finish " + CL10.clFinish(busy) + "; values "
+            + (wrong == 0 ? "RIGHT" : wrong + " of " + n + " wrong (first " + ints.get(0) + ", expected 11)"));
+         MemoryUtil.memFree(ints);
+         MemoryUtil.memFree(host);
+         CL10.clReleaseMemObject(data);
+         CL10.clReleaseMemObject(table);
+         CL10.clReleaseMemObject(result);
+         CL10.clReleaseMemObject(spinBuffer);
+         CL10.clReleaseCommandQueue(busy);
+         CL10.clReleaseCommandQueue(other);
+      } catch (Throwable failure) {
+         out.println("   under load: failed: " + failure);
+      }
+   }
+
+   /** A 16 MB copy in and out (the self-test's size), then a copy on this queue from another thread. */
+   private static void bigAndThreaded(long context, long queue) {
+      long bytes = 16L << 20;
+      long svm = CL20.nclSVMAlloc(context, CL10.CL_MEM_READ_WRITE, bytes, 0);
+      java.nio.ByteBuffer host = MemoryUtil.memAlloc((int)bytes);
+      try {
+         for (int i = 0; i < bytes; i += 4) {
+            host.putInt(i, i);
+         }
+
+         out.println("   16 MB: alloc " + (svm == 0L ? "FAILED" : "ok") + ", copy in " + CL20.nclEnqueueSVMMemcpy(queue, 1, svm, MemoryUtil.memAddress(host), bytes, 0, 0L, 0L));
+         host.putInt(0, -1);
+         int back = CL20.nclEnqueueSVMMemcpy(queue, 1, MemoryUtil.memAddress(host), svm, bytes, 0, 0L, 0L);
+         out.println("   16 MB: copy out " + back + ", values " + (host.getInt(4096) == 4096 && host.getInt(0) == 0 ? "RIGHT" : "WRONG"));
+         int[] result = new int[1];
+         Thread other = new Thread(() -> result[0] = CL20.nclEnqueueSVMMemcpy(queue, 1, svm, MemoryUtil.memAddress(host), 4096L, 0, 0L, 0L));
+         other.start();
+         other.join();
+         out.println("   copy from another thread on this queue: " + result[0]);
+      } catch (Throwable failure) {
+         out.println("   big copy failed: " + failure);
+      } finally {
+         MemoryUtil.memFree(host);
+         if (svm != 0L) {
+            CL20.nclSVMFree(context, svm);
+         }
+      }
    }
 
    private static long build(long context, long device, String source, String options, String what) {

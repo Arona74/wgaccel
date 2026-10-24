@@ -157,35 +157,16 @@ public final class WorldgenAccelerator {
       LOG.info("WGA GPU ready before the spawn area in {} ms: {}", (System.nanoTime() - start) / 1_000_000, com.wgaccel.gpu.GpuPrepare.status());
    }
 
-   /**
-    * The GPU warning for each player joining a world (the user, 2026-10-22): the GPU parts are tested on an RTX 3080
-    * only and may not work, or may crash, on older or newer cards. Config gpuTestedWarning.
-    */
+   /** A line for each player joining a world: the GPU and the API (compiler) the GPU parts use. Config gpuTestedWarning. */
    private static void onPlayerLoggedIn(net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent event) {
       if (!Config.GPU_TESTED_WARNING.get() || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
          return;
       }
 
-      String tested;
-      if (com.wgaccel.gpu.GpuBackend.OPENCL) {
-         com.wgaccel.gpu.OpenCl.Device device = com.wgaccel.gpu.OpenCl.chosen();
-         String card = device == null ? "" : " (this one: " + device.name() + ")";
-         tested = "The GPU parts through OpenCL are new and tested only on a Radeon RX 9070 XT and Intel Arc graphics. On other GPUs" + card;
-      } else if (com.wgaccel.gpu.GpuBackend.HIP) {
-         // The AMD route (HIP): checked on a Radeon 680M (gfx1035) and a Radeon RX 9070 XT (gfx1201) only.
-         String arch = com.wgaccel.gpu.HipSelfTest.architecture;
-         String card = arch == null ? "" : " (this one: " + com.wgaccel.gpu.HipSelfTest.deviceName + ", " + arch + ")";
-         tested = "The GPU parts on AMD cards (HIP) are tested only on a Radeon RX 9070 XT and a Radeon 680M. On other cards" + card;
-      } else {
-         int capability = GpuSelfTest.deviceCapability;
-         String card = capability == 0 ? "" : String.format(java.util.Locale.ROOT, " (this one: %s, compute %d.%d)", GpuSelfTest.deviceName, capability / 10,
-            capability % 10);
-         tested = "The GPU parts are tested only on an NVIDIA RTX 3080. On other cards" + card;
-      }
-
-      event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] " + tested
-         + " they may not work or may crash the game; every GPU result is checked against the CPU's and a part "
-         + "that differs turns itself off. Turn this message off with gpuTestedWarning = false (config/wgaccel-common.toml, [gpu]).").withStyle(net.minecraft.ChatFormatting.YELLOW));
+      String name = com.wgaccel.gpu.GpuDevice.chosenName;
+      String text = name == null || !com.wgaccel.gpu.GpuDevice.running ? "no GPU in use (the CPU improvements only; see Options, the WGA button)"
+         : "GPU: " + name + ", through " + com.wgaccel.gpu.GpuBackend.name();
+      event.getEntity().sendSystemMessage(net.minecraft.network.chat.Component.literal("[Worldgen Accelerator] " + text).withStyle(net.minecraft.ChatFormatting.GRAY));
    }
 
    private static void onServerStarted(ServerStartedEvent event) {

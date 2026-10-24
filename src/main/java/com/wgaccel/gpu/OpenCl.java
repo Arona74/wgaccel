@@ -28,9 +28,9 @@ import org.lwjgl.system.MemoryUtil;
  * program built from {@link OpenClSource}'s translation, kept on disk as the driver's binary. Results are CUDA's numbers
  * where the callers compare them (0 success, 600 not ready), else OpenCL's error codes (negative).
  * <p>
- * A device needs double precision, coarse-grained shared virtual memory and the generic address space (OpenCL 2.0, or
- * 3.0 with it): Intel's Arc and Xe graphics and AMD's cards have them; NVIDIA's OpenCL has no generic address space (its
- * cards use CUDA).
+ * A device needs double precision and coarse-grained shared virtual memory (OpenCL 2.0, or 3.0 with it): Intel's Arc and
+ * Xe graphics, AMD's cards and NVIDIA's have them. NVIDIA's OpenCL has no generic address space (OpenCL C 1.2): there the
+ * translation writes every pointer's address space out ({@link OpenClSource#addressSpaces}) and builds as OpenCL C 1.2.
  */
 public final class OpenCl {
    static final int NOT_READY = 600;
@@ -39,8 +39,23 @@ public final class OpenCl {
    /** An OpenCL GPU and what the mod needs of it. */
    public record Device(long platform, long id, String name, String vendor, String version, String driver, int units, boolean integrated, long memory,
          boolean doubles, boolean svm, boolean generic, boolean priorities) {
+      /** Double precision, and shared virtual memory but on NVIDIA's (plain buffers there: {@link #buffers}). */
       public boolean usable() {
-         return this.doubles && this.svm && this.generic;
+         return this.doubles && (this.svm || this.nvidia());
+      }
+
+      /**
+       * Whether the automatic choice may take it: usable, and not Intel integrated graphics. An Intel Arc iGPU (Ultra 9 275HX
+       * laptop, 23 Oct 2026) took r1000 in 1:49 where the same laptop's CPU alone took 0:42 (its tile noise 210 ms per batch
+       * against 10 ms on the RTX 5060 beside it); an AMD Radeon 680M almost doubled its laptop's CPU (0.16.0). Chosen by hand
+       * Intel's still run.
+       */
+      public boolean automatic() {
+         return this.usable() && !(this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL"));
+      }
+
+      boolean nvidia() {
+         return this.vendor.toUpperCase(Locale.ROOT).contains("NVIDIA");
       }
 
       /** What the mod misses on it, for the logs ("" when usable). */
@@ -50,12 +65,8 @@ public final class OpenCl {
             missing.add("double precision");
          }
 
-         if (!this.svm) {
+         if (!this.svm && !this.nvidia()) {
             missing.add("shared virtual memory");
-         }
-
-         if (!this.generic) {
-            missing.add("the generic address space");
          }
 
          return String.join(", ", missing);
@@ -102,6 +113,20 @@ public final class OpenCl {
    }
    private static final Map<Long, long[]> EVENTS = new ConcurrentHashMap<>();
    private static final AtomicLong NEXT_EVENT = new AtomicLong();
+   /**
+    * The first OpenCL call of this game that failed, and what it was, added to every later error's text: under NVIDIA's
+    * OpenCL (built on CUDA) one kernel's fault fails every later call of every thread, with unrelated codes (an RTX 5060
+    * laptop, 24 Oct 2026: every copy -36, every launch -6, from one first failure the log did not show).
+    */
+   private static volatile String firstFailure;
+   /**
+    * Without the generic address space (the explicit translation, NVIDIA's): each kernel's first launches are waited for,
+    * so a kernel that faults is the one named (the translation's spaces are checked by the compiler, not its pointers).
+    * -Dwgaccel.openclCheckLaunches=true does it on any device.
+    */
+   private static boolean checkLaunches;
+   private static final int CHECKED_LAUNCHES = 4;
+   private static final Map<Long, java.util.concurrent.atomic.AtomicInteger> CHECKED = new ConcurrentHashMap<>();
    /** Where the last failed build's translated source was written (for the log), or null. */
    public static volatile String failedSource;
 
@@ -183,13 +208,9 @@ public final class OpenCl {
       }
    }
 
-   /**
-    * Whether a usable separate OpenCL GPU is there (the automatic choice of backend). Never an integrated one: an Intel
-    * Arc iGPU (Ultra 9 275HX laptop, 23 Oct 2026) took r1000 in 1:49 where the same laptop's CPU alone took 0:42, its
-    * tile noise 210 ms per batch against 10 ms on the RTX 5060 beside it. Chosen by hand it still runs.
-    */
+   /** Whether a GPU the automatic choice may take is there ({@link Device#automatic}). */
    static boolean automaticDevicePresent() {
-      return devices().stream().anyMatch(device -> device.usable() && !device.integrated());
+      return devices().stream().anyMatch(Device::automatic);
    }
 
    /**
@@ -233,6 +254,12 @@ public final class OpenCl {
          throw new IllegalStateException(device.name() + " (" + device.version() + ") cannot run the mod's OpenCL kernels: no " + device.missing());
       }
 
+      if (!device.automatic() && GpuDevice.configured < 0) {
+         // Automatic never takes Intel integrated graphics (Device#automatic): chosen in the settings screen they run.
+         throw new IllegalStateException("no GPU OpenCL can use automatically; " + device.name() + " (Intel integrated graphics) is used only when chosen in"
+            + " the settings screen (slower than the CPU on the one tested)");
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer error = stack.mallocInt(1);
          context = clCreateContext(stack.pointers(CL_CONTEXT_PLATFORM, device.platform(), 0L), device.id(), null, 0L, error);
@@ -240,16 +267,22 @@ public final class OpenCl {
       }
 
       chosen = device;
-      String std = device.version().startsWith("OpenCL 3") ? "-cl-std=CL3.0" : "-cl-std=CL2.0";
+      // Without the generic address space (NVIDIA): OpenCL C 1.2, the compiler's default, with the spaces written out.
+      String std = !device.generic() ? "" : device.version().startsWith("OpenCL 3") ? "-cl-std=CL3.0 " : "-cl-std=CL2.0 ";
       // Float division and square root correctly rounded, as Java's; no fast-maths option (OpenCL's default is strict).
-      options = std + " -cl-fp32-correctly-rounded-divide-sqrt";
+      options = std + "-cl-fp32-correctly-rounded-divide-sqrt";
       // For diagnosis only (-Dwgaccel.openclOptions=-cl-opt-disable): Intel's compiler got 64-bit integers wrong in the fill.
       String extra = System.getProperty("wgaccel.openclOptions");
       if (extra != null && !extra.isBlank()) {
          options += " " + extra.trim();
       }
+      checkLaunches = !device.generic() || Boolean.getBoolean("wgaccel.openclCheckLaunches");
+      buffers = device.nvidia() || Boolean.getBoolean("wgaccel.openclBuffers");
       started = true;
       defaultQueue = createQueue(-1);
+      if (buffers) {
+         initBuffers();
+      }
    }
 
    /** The build options, for the logs. */
@@ -286,7 +319,7 @@ public final class OpenCl {
    }
 
    static int synchronize(long stream) {
-      return clFinish(queue(stream));
+      return failed(clFinish(queue(stream)), "a wait for a queue's work");
    }
 
    /** Waits for every queue (before memory is freed: CUDA's cuMemFree waits for the work that may use it, clSVMFree does not). */
@@ -298,11 +331,81 @@ public final class OpenCl {
 
    // ---- Memory ----
 
+   /**
+    * NVIDIA's OpenCL: plain buffers used by their GPU address instead of SVM. NVIDIA's SVM passed every standalone test
+    * (the probe, under load; the noise fill bench with 14 threads, with ZGC), yet in the game an SVM allocation failed
+    * and the game died (RTX 5060 laptop, 24 Oct 2026). A buffer's GPU address is read once by a kernel; the kernels take
+    * their buffers as these numbers ({@link OpenClSource#kernelParameters}) and the batches read them from tables, as
+    * with SVM; copies find the buffer an address is in. -Dwgaccel.openclBuffers=true does it on any device.
+    */
+   private static boolean buffers;
+   /** The plain buffers by GPU address: {cl_mem, bytes}. */
+   private static final java.util.concurrent.ConcurrentSkipListMap<Long, long[]> BUFFERS = new java.util.concurrent.ConcurrentSkipListMap<>();
+   private static long addressKernel;
+   private static long addressOut;
+   private static final Object ADDRESS = new Object();
+
+   /** The buffers mode's address kernel and its output, once at init. */
+   private static void initBuffers() {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer error = stack.mallocInt(1);
+         long program = clCreateProgramWithSource(context, "__kernel void wga_address(__global char* b, __global ulong* out) { out[0] = (ulong)b; }", error);
+         check(error.get(0), "clCreateProgramWithSource wga_address");
+         check(clBuildProgram(program, chosen.id(), "", null, 0L), "clBuildProgram wga_address");
+         addressKernel = clCreateKernel(program, "wga_address", error);
+         check(error.get(0), "clCreateKernel wga_address");
+         addressOut = clCreateBuffer(context, CL_MEM_READ_WRITE, 8L, error);
+         check(error.get(0), "clCreateBuffer");
+      }
+   }
+
+   /** A plain buffer and its GPU address (the address kernel run on the context's own queue). */
+   private static int allocateBuffer(PointerBuffer pointer, long bytes) {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         IntBuffer error = stack.mallocInt(1);
+         long size = Math.max(4L, bytes);
+         long memory = clCreateBuffer(context, CL_MEM_READ_WRITE, size, error);
+         if (error.get(0) != CL_SUCCESS) {
+            return failed(error.get(0), "clCreateBuffer of " + bytes + " bytes (" + BUFFERS.size() + " buffers live)");
+         }
+
+         ByteBuffer value = stack.malloc(8);
+         int result;
+         synchronized (ADDRESS) {
+            result = clSetKernelArg1p(addressKernel, 0, memory);
+            result = result != CL_SUCCESS ? result : clSetKernelArg1p(addressKernel, 1, addressOut);
+            result = result != CL_SUCCESS ? result : clEnqueueNDRangeKernel(defaultQueue, addressKernel, 1, null, stack.pointers(1L), null, null, null);
+            result = result != CL_SUCCESS ? result : clEnqueueReadBuffer(defaultQueue, addressOut, true, 0L, value, null, null);
+         }
+
+         if (result != CL_SUCCESS) {
+            clReleaseMemObject(memory);
+            return failed(result, "reading the GPU address of a new buffer");
+         }
+
+         long address = value.getLong(0);
+         BUFFERS.put(address, new long[] {memory, size});
+         pointer.put(pointer.position(), address);
+         return CL_SUCCESS;
+      }
+   }
+
+   /** The plain buffer an address is in and the offset there ({cl_mem, offset}), or null for host memory. */
+   private static long[] buffer(long address) {
+      java.util.Map.Entry<Long, long[]> entry = BUFFERS.floorEntry(address);
+      return entry != null && address < entry.getKey() + entry.getValue()[1] ? new long[] {entry.getValue()[0], address - entry.getKey()} : null;
+   }
+
    static int allocate(PointerBuffer pointer, long bytes) {
       init();
+      if (buffers) {
+         return allocateBuffer(pointer, bytes);
+      }
+
       long address = CL20.nclSVMAlloc(context, CL_MEM_READ_WRITE, Math.max(4L, bytes), 0);
       if (address == 0L) {
-         return CL_MEM_OBJECT_ALLOCATION_FAILURE;
+         return failed(CL_MEM_OBJECT_ALLOCATION_FAILURE, "clSVMAlloc of " + bytes + " bytes on thread " + Thread.currentThread().getName() + " (" + ALLOCATIONS.size()
+            + " allocations live)");
       }
 
       ALLOCATIONS.add(address);
@@ -324,6 +427,11 @@ public final class OpenCl {
          FREEING.writeLock().lock();
          try {
             finishAll();
+            if (buffers) {
+               long[] buffer = BUFFERS.remove(address);
+               return buffer == null ? CL_INVALID_VALUE : clReleaseMemObject(buffer[0]);
+            }
+
             ALLOCATIONS.remove(address);
             ALLOCATIONS_CHANGED.incrementAndGet();
             CL20.nclSVMFree(context, address);
@@ -362,7 +470,26 @@ public final class OpenCl {
       }
 
       long queue = queue(stream);
-      int result = CL20.nclEnqueueSVMMemcpy(queue, blocking ? 1 : 0, to, from, bytes, 0, 0L, 0L);
+      int result;
+      if (buffers) {
+         long[] into = buffer(to);
+         long[] out = buffer(from);
+         if (into == null && out == null) {
+            MemoryUtil.memCopy(from, to, bytes);
+            return CL_SUCCESS;
+         }
+
+         result = into == null ? nclEnqueueReadBuffer(queue, out[0], blocking ? 1 : 0, out[1], bytes, to, 0, 0L, 0L)
+            : out == null ? nclEnqueueWriteBuffer(queue, into[0], blocking ? 1 : 0, into[1], bytes, from, 0, 0L, 0L)
+            : nclEnqueueCopyBuffer(queue, out[0], into[0], out[1], into[1], bytes, 0, 0L, 0L);
+         if (result == CL_SUCCESS && blocking && into != null && out != null) {
+            result = clFinish(queue);
+         }
+      } else {
+         result = CL20.nclEnqueueSVMMemcpy(queue, blocking ? 1 : 0, to, from, bytes, 0, 0L, 0L);
+      }
+
+      failed(result, "a copy of " + bytes + " bytes");
       if (result == CL_SUCCESS && !blocking) {
          clFlush(queue);
       }
@@ -375,7 +502,7 @@ public final class OpenCl {
    /** Translates, builds (or loads the driver's binary kept on disk) and returns the program. */
    public static long loadModule(String source, String name) {
       init();
-      OpenClSource.Translated translated = OpenClSource.translate(source);
+      OpenClSource.Translated translated = OpenClSource.translate(source, !chosen.generic(), buffers);
       java.nio.file.Path cached = binaryPath(translated.text());
       long program = cached != null && java.nio.file.Files.exists(cached) ? fromBinary(cached) : 0L;
       if (program == 0L) {
@@ -586,7 +713,7 @@ public final class OpenCl {
 
       long kernel = own.kernel;
       long changed = ALLOCATIONS_CHANGED.get();
-      if (own.allocations != changed) {
+      if (!buffers && own.allocations != changed) {
          Long[] live = ALLOCATIONS.toArray(new Long[0]);
          PointerBuffer list = MemoryUtil.memAllocPointer(Math.max(1, live.length));
          try {
@@ -597,7 +724,7 @@ public final class OpenCl {
             int told = CL20.nclSetKernelExecInfo(kernel, CL20.CL_KERNEL_EXEC_INFO_SVM_PTRS, (long)live.length * org.lwjgl.system.Pointer.POINTER_SIZE,
                MemoryUtil.memAddress(list));
             if (told != CL_SUCCESS) {
-               return told;
+               return failed(told, "the allocations list (" + live.length + ") of " + info.name);
             }
          } finally {
             MemoryUtil.memFree(list);
@@ -614,13 +741,15 @@ public final class OpenCl {
             int result;
             if (sizes[i] == 0) {
                long address = MemoryUtil.memGetAddress(value);
-               result = address == 0L ? nclSetKernelArg(kernel, i, org.lwjgl.system.Pointer.POINTER_SIZE, 0L) : CL20.nclSetKernelArgSVMPointer(kernel, i, address);
+               // Buffers: the address as a number (the kernel takes ulong name__a).
+               result = buffers ? nclSetKernelArg(kernel, i, 8L, value) : address == 0L ? nclSetKernelArg(kernel, i, org.lwjgl.system.Pointer.POINTER_SIZE, 0L)
+                  : CL20.nclSetKernelArgSVMPointer(kernel, i, address);
             } else {
                result = nclSetKernelArg(kernel, i, sizes[i], value);
             }
 
             if (result != CL_SUCCESS) {
-               return result;
+               return failed(result, "argument " + i + " of " + info.name);
             }
          }
 
@@ -628,7 +757,14 @@ public final class OpenCl {
          PointerBuffer local = stack.pointers(blockX, blockY, blockZ);
          int result = clEnqueueNDRangeKernel(queue, kernel, 3, null, global, local, null, null);
          if (result != CL_SUCCESS) {
-            return result;
+            return failed(result, "the launch of " + info.name + " (" + gridX * blockX + " x " + gridY * blockY + " threads, blocks of " + blockX + ")");
+         }
+      }
+
+      if (checkLaunches && CHECKED.computeIfAbsent(handle, key -> new java.util.concurrent.atomic.AtomicInteger()).getAndIncrement() < CHECKED_LAUNCHES) {
+         int done = clFinish(queue);
+         if (done != CL_SUCCESS) {
+            return failed(done, "kernel " + info.name + ", waited for after its launch");
          }
       }
 
@@ -700,6 +836,15 @@ public final class OpenCl {
 
    // ---- Errors ----
 
+   /** The result, kept as the first failure of the game when it is one and none came before. */
+   private static int failed(int result, String what) {
+      if (result != CL_SUCCESS && result != NOT_READY && firstFailure == null) {
+         firstFailure = what + " (" + plainName(result) + ")";
+      }
+
+      return result;
+   }
+
    static void check(int result, String what) {
       if (result != CL_SUCCESS) {
          throw new IllegalStateException(what + " failed: OpenCL error " + result + " (" + errorName(result) + ")");
@@ -707,6 +852,11 @@ public final class OpenCl {
    }
 
    public static String errorName(int result) {
+      String first = firstFailure;
+      return plainName(result) + (result != CL_SUCCESS && result != NOT_READY && first != null ? "; the first OpenCL failure in this game: " + first : "");
+   }
+
+   private static String plainName(int result) {
       return switch (result) {
          case CL_SUCCESS -> "success";
          case CL_DEVICE_NOT_FOUND -> "CL_DEVICE_NOT_FOUND";

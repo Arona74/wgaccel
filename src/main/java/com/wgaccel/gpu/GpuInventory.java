@@ -17,7 +17,7 @@ import org.lwjgl.system.Platform;
 /**
  * Every graphics adapter of the PC (the OS's list, through OSHI) and which of them the mod can use: the devices NVIDIA's
  * CUDA, AMD's HIP and OpenCL see, each matched to its adapter by name (CUDA's and HIP's first, so a card both see is
- * offered with its own API; OpenCL's for the rest, Intel's GPUs). For the GPU screen, on PCs with more than one GPU (a
+ * offered with its own API; OpenCL's for the rest, Intel's GPUs). For the settings screen, on PCs with more than one GPU (a
  * laptop's Intel Arc beside an NVIDIA card, a Ryzen's own Radeon beside a graphics card). Listing starts the drivers but
  * chooses nothing: {@link GpuBackend} and {@link GpuDevice} still decide once, from the config, when the GPU is first used.
  */
@@ -26,8 +26,15 @@ public final class GpuInventory {
    public record Device(String backend, int index, String name, int units, boolean integrated, long memory) {
    }
 
-   /** One adapter of the PC; device is null when no backend can use it. */
-   public record Adapter(String name, String vendor, long memory, Device device) {
+   /**
+    * One adapter of the PC: every backend's device for it (CUDA's or HIP's first, then OpenCL's; empty when none can use
+    * it) and the OS's driver version ("" when unknown).
+    */
+   public record Adapter(String name, String vendor, long memory, String driver, List<Device> devices) {
+      /** The device the mod offers it with first (its own API before OpenCL), or null when none can use it. */
+      public Device device() {
+         return this.devices.isEmpty() ? null : this.devices.get(0);
+      }
    }
 
    /** The adapters, the device AUTO would take (null: none usable), and what went wrong while listing (empty when nothing). */
@@ -99,8 +106,7 @@ public final class GpuInventory {
       Set<Device> matched = new HashSet<>();
       try {
          for (oshi.hardware.GraphicsCard card : new oshi.SystemInfo().getHardware().getGraphicsCards()) {
-            Device device = match(card.getName(), backends, matched);
-            adapters.add(new Adapter(card.getName(), card.getVendor(), card.getVRam(), device));
+            adapters.add(new Adapter(card.getName(), card.getVendor(), card.getVRam(), driver(card.getVersionInfo()), match(card.getName(), backends, matched)));
          }
       } catch (Throwable failure) {
          problems.add("the OS's adapter list: " + failure);
@@ -109,7 +115,10 @@ public final class GpuInventory {
       for (List<Device> list : List.of(cuda, hip)) {
          for (Device device : list) {
             if (!matched.contains(device)) {
-               adapters.add(new Adapter(device.name(), device.backend().equals("CUDA") ? "NVIDIA" : "AMD", device.memory(), device));
+               matched.add(device);
+               List<Device> devices = new ArrayList<>(List.of(device));
+               devices.addAll(match(device.name(), List.of(openCl), matched));
+               adapters.add(new Adapter(device.name(), device.backend().equals("CUDA") ? "NVIDIA" : "AMD", device.memory(), "", List.copyOf(devices)));
             }
          }
       }
@@ -117,19 +126,20 @@ public final class GpuInventory {
       // OpenCL also lists the cards CUDA and HIP see: only a device no adapter has a name like is added.
       for (Device device : openCl) {
          if (!matched.contains(device) && adapters.stream().noneMatch(adapter -> alike(adapter.name(), device.name()))) {
-            adapters.add(new Adapter(device.name(), OpenCl.devices().get(device.index()).vendor(), device.memory(), device));
+            OpenCl.Device found = OpenCl.devices().get(device.index());
+            adapters.add(new Adapter(device.name(), found.vendor(), device.memory(), found.driver(), List.of(device)));
          }
       }
 
-      return new Inventory(List.copyOf(adapters), automatic(cuda, hip, openCl), List.copyOf(problems));
+      return new Inventory(List.copyOf(adapters), automatic(openCl), List.copyOf(problems));
    }
 
    /**
-    * As GpuBackend and GpuDevice choose with AUTO and -1: CUDA when it sees a card, else HIP, else OpenCL's separate GPUs
-    * (an integrated one never automatically, {@link OpenCl#automaticDevicePresent}); then the most units, a separate card first.
+    * As GpuBackend and GpuDevice choose with AUTO and -1: OpenCL's GPUs but Intel integrated graphics
+    * ({@link OpenCl.Device#automatic}), a separate card first, then the most units. CUDA and HIP only when chosen.
     */
-   private static Device automatic(List<Device> cuda, List<Device> hip, List<Device> openCl) {
-      List<Device> list = !cuda.isEmpty() ? cuda : !hip.isEmpty() ? hip : openCl.stream().filter(device -> !device.integrated()).toList();
+   private static Device automatic(List<Device> openCl) {
+      List<Device> list = openCl.stream().filter(device -> OpenCl.devices().get(device.index()).automatic()).toList();
       Device best = null;
       long bestScore = -1L;
       for (Device device : list) {
@@ -143,18 +153,33 @@ public final class GpuInventory {
       return best;
    }
 
-   /** The first device not taken yet whose name is the adapter's (letters and digits compared, one inside the other). */
-   private static Device match(String adapter, List<List<Device>> backends, Set<Device> matched) {
+   /**
+    * Each backend's first device not taken yet whose name is the adapter's (letters and digits compared, one inside the
+    * other), in the backends' order.
+    */
+   private static List<Device> match(String adapter, List<List<Device>> backends, Set<Device> matched) {
+      List<Device> devices = new ArrayList<>();
       for (List<Device> list : backends) {
          for (Device device : list) {
             if (!matched.contains(device) && alike(adapter, device.name())) {
                matched.add(device);
-               return device;
+               devices.add(device);
+               break;
             }
          }
       }
 
-      return null;
+      return List.copyOf(devices);
+   }
+
+   /** The driver's version from OSHI's "DriverVersion=32.0.15.6094" ("" when it gives none). */
+   private static String driver(String info) {
+      if (info == null) {
+         return "";
+      }
+
+      int at = info.indexOf("DriverVersion=");
+      return at < 0 ? info.trim() : info.substring(at + "DriverVersion=".length()).split("[,;]")[0].trim();
    }
 
    private static boolean alike(String one, String other) {

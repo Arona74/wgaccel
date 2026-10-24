@@ -27,6 +27,10 @@ config="wgaccel.check.mixins.json"
 [[mixins]]
 config="wgaccel.c2me.mixins.json"
 
+# Other mods' classes, each mixin @Pseudo: skipped when its mod is not installed (VanillaBackport's surface rules).
+[[mixins]]
+config="wgaccel.compat.mixins.json"
+
 [[dependencies.wgaccel]]
     modId="neoforge"
     type="required"

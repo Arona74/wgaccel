@@ -63,6 +63,7 @@ public final class Config {
    public static final Setting<Boolean> GPU_CUBIN_CACHE;
    public static final Setting<Integer> GPU_FILL_CHECK_EVERY;
    public static final Setting<java.util.List<? extends String>> GPU_FILL_DEBUG_CHUNKS;
+   public static final Setting<java.util.List<? extends String>> OVERRIDES;
 
    public enum GpuMode {
       OFF,
@@ -70,7 +71,7 @@ public final class Config {
       CHECK
    }
 
-   /** Which GPU API: AUTO (CUDA when NVIDIA's driver sees a card, else HIP, else OpenCL), or one of them. */
+   /** Which GPU API: AUTO (OpenCL), or one of them. */
    public enum GpuBackendChoice {
       AUTO,
       CUDA,
@@ -110,8 +111,8 @@ public final class Config {
          .comment("Worldgen Accelerator: faster world generation, the same world block for block. AI-generated (written by Claude, an",
             "AI, under a person's direction): back up your worlds and report problems.",
             "",
-            "Sections: [general]; [cpu] the CPU improvements (any PC); [gpu] the GPU improvements (NVIDIA cards with CUDA, or AMD",
-            "cards on Windows with HIP);",
+            "Sections: [general]; [cpu] the CPU improvements (any PC); [gpu] the GPU improvements (through OpenCL on NVIDIA, AMD and",
+            "Intel GPUs; CUDA or HIP when chosen);",
             "[gpu.tuning] how the GPU work is queued (the defaults are the measured best). cpuImprovements and gpuImprovements",
             "turn a whole section on or off.",
             "",
@@ -119,12 +120,11 @@ public final class Config {
             "16 GB heap, C2ME (19 threads), Chunky radius 1000 (16,129 chunks) with FreeTerraForged 1.0.0010 unless it says",
             "otherwise; each gain is over the run before it, the whole chain 2:23 -> 0:46 (3.1x). Your PC and mods will differ.",
             "",
-            "Needed for the GPU parts, NVIDIA: a GTX 10xx or newer, its driver, and NVRTC from the NVIDIA CUDA Toolkit 12.x (the",
-            "toolkit sets CUDA_PATH, where the mod finds nvrtc64_*.dll; or start Java with -Dwgaccel.nvrtc=<path to the dll>).",
-            "AMD (Windows): the Adrenalin driver (its HIP runtime) and hipRTC from the AMD HIP SDK 6.4 or newer (found",
-            "through HIP_PATH or C:/Program Files/AMD/ROCm; or -Dwgaccel.hiprtc=<path to hiprtc*.dll>). The mod uses CUDA when",
-            "NVIDIA's driver sees a card, else HIP; -Dwgaccel.gpuBackend=cuda or hip chooses.",
-            "Without them the mod still runs, with only the CPU section. A dedicated server also needs LWJGL: see the README.",
+            "Needed for the GPU parts: a GPU and its driver, whose OpenCL compiler the mod uses (nothing else to install). Chosen by",
+            "hand (gpuBackend, or the settings screen): CUDA needs NVRTC from the NVIDIA CUDA Toolkit 12.x or 13.x (found through",
+            "CUDA_PATH; or -Dwgaccel.nvrtc=<path to nvrtc64_*.dll>), HIP (AMD, Windows) hipRTC from the AMD HIP SDK 6.4 or newer",
+            "(found through HIP_PATH or C:/Program Files/AMD/ROCm; or -Dwgaccel.hiprtc=<path to hiprtc*.dll>).",
+            "Without a GPU the mod still runs, with only the CPU section. A dedicated server also needs LWJGL: see the README.",
             "",
             "With C2ME's OpenCL module installed this mod turns itself off (the two do the same work).",
             "",
@@ -134,7 +134,8 @@ public final class Config {
             "  SERVER the values found best on a dedicated server (the card free).",
             "  CUSTOM every setting as written in this file.",
             "With CLIENT or SERVER the values written below are kept but not used (switch to CUSTOM to use them); the section",
-            "switches, gpuTestedWarning, fastBlockPredicates, gpuAreaStep and gpuNoiseFillCpuDimensions always follow this file.")
+            "switches, gpuTestedWarning, fastBlockPredicates, gpuAreaStep and gpuNoiseFillCpuDimensions always follow this file.",
+            "The improvements switched in the settings screen (general.overrides) win over the preset and over the values below.")
          .defineEnum("preset", Preset.AUTO);
       builder.comment("General settings.").push("general");
       CHUNKY_MAX_WORKING_COUNT = Setting.of(builder
@@ -149,6 +150,12 @@ public final class Config {
          .comment("For a bug report about memory: when the heap first passes 80% and 95% of its maximum, log what holds it (a class",
             "histogram after a full collection, a pause of about a second, and the mod's cache sizes). Off by default.")
          .define("memoryReport", false));
+      OVERRIDES = Setting.custom(builder
+         .comment("The improvements switched in the settings screen (Options, the WGA button, or the mods list's Config), as",
+            "\"key=value\" (\"fastOres=false\", \"gpuSurface=OFF\"): each wins over the preset and over the value written for that",
+            "setting below, whatever the preset. A choice that is what the preset gives anyway is taken out. Empty: none (the",
+            "screen's Defaults button empties its tab's).")
+         .defineListAllowEmpty("overrides", java.util.List.of(), () -> "fastOres=false", value -> value instanceof String));
       builder.pop();
       builder.comment("CPU improvements: exact speed-ups of FreeTerraForged's and Minecraft's own CPU work (no GPU needed; any PC).").push("cpu");
       CPU_IMPROVEMENTS = Setting.custom(builder
@@ -229,15 +236,14 @@ public final class Config {
             "The presets leave this one alone (being measured): always the value written here.")
          .define("fastBlockPredicates", false)).under(CPU_IMPROVEMENTS, false);
       builder.pop();
-      builder.comment("GPU improvements: world generation work done on an NVIDIA card (CUDA) or an AMD card (HIP, Windows). Every GPU",
+      builder.comment("GPU improvements: world generation work done on the GPU (OpenCL; CUDA or HIP when chosen). Every GPU",
          "result is checked against the CPU's now and then; a part that differs turns itself off.").push("gpu");
       GPU_IMPROVEMENTS = Setting.custom(builder
          .comment("All GPU improvements on or off at once (false: the GPU is never touched; the CPU section still applies).")
          .define("gpuImprovements", true));
       GPU_TESTED_WARNING = Setting.custom(builder
-         .comment("A chat message to each player joining a world: the GPU parts are tested only on an NVIDIA RTX 3080 (and, through HIP,",
-            "an AMD Radeon RX 9070 XT and Radeon 680M) and may not work, or may crash the game, on other cards (NVIDIA GTX 10xx and newer are supported).",
-            "false: no message.")
+         .comment("A chat line to each player joining a world: the GPU and the API (OpenCL, CUDA or HIP) the GPU parts use. false: no",
+            "message.")
          .define("gpuTestedWarning", true));
       GPU_DEVICE = Setting.custom(builder
          .comment("Which GPU to use when the PC has more than one, as the log's \"WGA GPU self-test: device\" line lists them (0, 1, ...).",
@@ -245,12 +251,12 @@ public final class Config {
             "small Radeon beside the graphics card is skipped). Read when the GPU is first used: a change takes a restart of the game.")
          .defineInRange("gpuDevice", -1, -1, 15));
       GPU_BACKEND = Setting.custom(builder
-         .comment("Which GPU API: AUTO (CUDA when NVIDIA's driver sees a card, else AMD's HIP, else OpenCL for Intel GPUs), CUDA, HIP or",
-            "OPENCL. gpuDevice then counts that API's devices. Both are set by the GPU screen (Options, the WGA button, or the mods list's",
+         .comment("Which GPU API: AUTO (OpenCL, a separate card first, then the most compute units; Intel integrated graphics only when chosen),",
+            "OPENCL, CUDA (NVIDIA, needs the CUDA Toolkit) or HIP (AMD, needs the HIP SDK). gpuDevice then counts that API's devices. Both are set by the settings screen's Config tab (Options, the WGA button, or the mods list's",
             "Config). Read when the GPU is first used: a change takes a restart of the game. -Dwgaccel.gpuBackend=cuda, hip or opencl still wins.")
          .defineEnum("gpuBackend", GpuBackendChoice.AUTO));
       GPU_MODE = Setting.of(builder
-         .comment("The GPU (NVIDIA: CUDA and NVRTC; AMD on Windows: HIP and hipRTC; both through LWJGL). OFF: never touched. SELFTEST: when a world starts,",
+         .comment("The GPU (OpenCL, CUDA or HIP, through LWJGL). OFF: never touched. SELFTEST: when a world starts,",
             "compile and run a small kernel and check its maths is bit-identical to Java's, then log the result; world",
             "generation itself does not use the GPU yet. CHECK: the self-test, plus FreeTerraForged's noise worked out on the GPU",
             "and compared bit for bit with its own results at world load (logged as WGA GPU noise check).")

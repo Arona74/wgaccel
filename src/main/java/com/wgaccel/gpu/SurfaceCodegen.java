@@ -643,6 +643,24 @@ public final class SurfaceCodegen {
                + line("return %s;", strata);
          }
          case "AcquiredSurfaceRule" -> body = line("return %s(c);", this.rule(field(node, "root")));
+         // VanillaBackport's sulfur caves (NoiseGradientRule.tryApply): a 3D noise at the block, (v + 1) / 2 times the
+         // gradient's size floored and clamped picks a state; an empty one (Optional.empty, null) gives no block.
+         case "NoiseGradientRuleSource" -> {
+            @SuppressWarnings("unchecked")
+            NormalNoise noise = this.random.getOrCreateNoise((ResourceKey<NormalNoise.NoiseParameters>)field(node, "noise"));
+            List<?> gradient = (List<?>)field(node, "gradient");
+            StringBuilder table = new StringBuilder("__device__ const int gradient").append(this.next).append('[').append(Math.max(1, gradient.size())).append("] = {");
+            for (int i = 0; i < gradient.size(); i++) {
+               Object state = ((java.util.Optional<?>)gradient.get(i)).orElse(null);
+               table.append(i == 0 ? "" : ", ").append(state == null ? -1 : this.state((BlockState)state));
+            }
+
+            this.code.append(gradient.isEmpty() ? table.append("-1") : table).append("};\n");
+            body = gradient.isEmpty() ? line("return -1;")
+               : line("double d = %s, (double)c.x, (double)c.y, (double)c.z);", this.noises.normalNoise(noise))
+               + line("int i = mc_floor((d + 1.0) / 2.0 * (double)%d);", gradient.size())
+               + line("return gradient%d[i < 0 ? 0 : i > %d ? %d : i];", this.next, gradient.size() - 1, gradient.size() - 1);
+         }
          default -> throw new DensityCodegen.Unsupported("surface rule " + kind);
       }
 
@@ -691,6 +709,14 @@ public final class SurfaceCodegen {
             @SuppressWarnings("unchecked")
             NormalNoise noise = this.random.getOrCreateNoise((ResourceKey<NormalNoise.NoiseParameters>)field(node, "noise"));
             yield line("double d = %s, (double)c.x, 0.0, (double)c.z);", this.noises.normalNoise(noise))
+               + line("return d >= %s && d <= %s;", DensityCodegen.lit((Double)field(node, "minThreshold")), DensityCodegen.lit((Double)field(node, "maxThreshold")));
+         }
+         // VanillaBackport's sulfur caves: the noise threshold of a 3D noise at the block (its context's sampler, cached per
+         // block, is RandomState.getOrCreateNoise(key).getValue(x, y, z)).
+         case "SpatialNoiseThresholdConditionSource" -> {
+            @SuppressWarnings("unchecked")
+            NormalNoise noise = this.random.getOrCreateNoise((ResourceKey<NormalNoise.NoiseParameters>)field(node, "noise"));
+            yield line("double d = %s, (double)c.x, (double)c.y, (double)c.z);", this.noises.normalNoise(noise))
                + line("return d >= %s && d <= %s;", DensityCodegen.lit((Double)field(node, "minThreshold")), DensityCodegen.lit((Double)field(node, "maxThreshold")));
          }
          case "SurfaceRules$VerticalGradientConditionSource" -> {

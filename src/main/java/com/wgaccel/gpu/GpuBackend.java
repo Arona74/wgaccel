@@ -4,14 +4,13 @@ import java.util.Locale;
 
 /**
  * Which GPU API the mod's {@link Gpu}, {@link GpuStreams} and {@link GpuApi} use: NVIDIA's CUDA, AMD's HIP
- * ({@link Hip}) or OpenCL ({@link OpenCl}, for Intel's GPUs). HIP's functions mirror CUDA's one for one, so the same
+ * ({@link Hip}) or OpenCL ({@link OpenCl}, any vendor's). HIP's functions mirror CUDA's one for one, so the same
  * kernels and calls run on either; only the compiler and its options differ ({@link GpuSelfTest}, {@link HipSelfTest}).
  * OpenCL takes the same kernels translated ({@link OpenClSource}) and the same calls through {@link OpenCl}.
  * <p>
- * -Dwgaccel.gpuBackend=cuda, hip or opencl chooses; without it, CUDA when NVIDIA's driver is installed and sees a card (so
- * a PC with an NVIDIA card and an AMD or Intel integrated one uses the NVIDIA card), else HIP when AMD's driver has a HIP
- * runtime that sees a card, else OpenCL when it has a separate GPU the mod can use (an integrated one only when chosen),
- * else CUDA (whose self-test then says what is missing). Decided once, the first time the GPU is used.
+ * -Dwgaccel.gpuBackend=cuda, hip or opencl, or config gpuBackend, chooses; automatic is OpenCL, on a separate card first,
+ * then the most compute units ({@link GpuDevice}; Intel integrated graphics only when chosen; none: the GPU stays off).
+ * Decided once, the first time the GPU is used.
  */
 public final class GpuBackend {
    private static final String CHOSEN = choose();
@@ -45,41 +44,12 @@ public final class GpuBackend {
          return configured.toLowerCase(Locale.ROOT);
       }
 
-      boolean nvidia = GpuInventory.nvidiaDriver();
-      if (nvidia && cudaSeesCard()) {
-         reason = "NVIDIA's driver is installed";
-         return "cuda";
-      }
-
-      if (Hip.runtimePresent()) {
-         // 22 Oct 2026, RX 9070 XT PC: an NVIDIA driver left behind from a former card (nvcuda.dll, CUDA 12.9) with no
-         // NVIDIA card in the machine; choosing CUDA by the file alone left the GPU parts off.
-         reason = nvidia ? "NVIDIA's driver is installed but sees no card; AMD's HIP runtime sees one" : "no NVIDIA driver; AMD's HIP runtime sees a card";
-         return "hip";
-      }
-
-      if (OpenCl.automaticDevicePresent()) {
-         reason = "neither CUDA nor HIP sees a card; OpenCL has a separate GPU the mod can use";
-         return "opencl";
-      }
-
-      reason = "neither NVIDIA's driver, a HIP runtime nor a separate OpenCL GPU with what the mod needs was found (an integrated"
-         + " GPU is used only when chosen: slower than the CPU on the one tested)";
-      return "cuda";
-   }
-
-   /**
-    * Whether NVIDIA's driver, once its file is known to be there, sees a card (cuInit fails with CUDA_ERROR_NO_DEVICE
-    * when it doesn't). Runs after {@link GpuEnv#deviceConnections}, which has to come before the first cuInit.
-    */
-   private static boolean cudaSeesCard() {
-      try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
-         java.nio.IntBuffer count = stack.mallocInt(1);
-         return org.lwjgl.cuda.CU.cuInit(0) == org.lwjgl.cuda.CU.CUDA_SUCCESS && org.lwjgl.cuda.CU.cuDeviceGetCount(count) == org.lwjgl.cuda.CU.CUDA_SUCCESS
-            && count.get(0) > 0;
-      } catch (Throwable missing) {
-         return false;
-      }
+      // OpenCL by default: every GPU driver has its compiler (nothing to install), and it ran as fast as CUDA and HIP on the cards
+      // measured (RTX 5060 laptop 0:34 against CUDA 0:32, RX 9070 XT 0:46 as HIP). CUDA and HIP when chosen. Without a GPU
+      // OpenCL can use, the GPU stays off (OpenCl.init refuses Intel integrated graphics chosen automatically).
+      reason = OpenCl.automaticDevicePresent() ? "automatic: OpenCL, through the GPU driver's own compiler"
+         : "automatic: no GPU OpenCL can use (Intel integrated graphics are used only when chosen: slower than the CPU on the one tested)";
+      return "opencl";
    }
 
    /** The backend's name, for the logs. */

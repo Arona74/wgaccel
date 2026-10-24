@@ -9,19 +9,17 @@ On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster**
 
 > [!WARNING]
 > **This mod is AI-generated.** All of its code, these instructions and its config descriptions were written by
-> Claude (an AI made by Anthropic), directed and tested in game by one person. It has been tested on three PCs only (below).
+> Claude (an AI made by Anthropic), directed and tested in game by one person.
 > It changes how chunks are generated, so **back up your worlds**, try it on a copy first, and report problems with your
 > log (`logs/latest.log`). The self-checks catch a wrong result and turn that part off, but no check catches everything.
 
-> [!WARNING]
-> **The GPU parts run on NVIDIA cards (CUDA) and, since 0.16.0, on AMD cards under Windows (HIP).** They
-> were tested on an NVIDIA RTX 3080, an AMD Radeon RX 9070 XT and an AMD Radeon 680M (a laptop's integrated graphics)
-> only. NVIDIA cards from
-> the GTX 10xx (compute capability 6.0) to the newest are supported, and each card, NVIDIA or AMD, gets code compiled
-> for its own architecture. On other cards the GPU parts **may not work, or may crash the game**. On Intel cards, on
-> AMD cards under Linux, or without the CUDA Toolkit (NVIDIA) or the HIP SDK (AMD), the mod still runs with its CPU
-> improvements only. A chat message says this when you join a world; turn it off with `gpuTestedWarning = false` in
-> the config.
+> [!NOTE]
+> **The GPU parts run through OpenCL, on NVIDIA, AMD and Intel GPUs, with nothing to install but the GPU's driver.**
+> The mod uses the OpenCL compiler every GPU driver has. NVIDIA's CUDA (with the CUDA Toolkit) and AMD's HIP (with the
+> HIP SDK, Windows) can be chosen instead in the settings screen. Intel integrated graphics are used only when chosen
+> there: the one measured was slower than its laptop's CPU. Without a GPU OpenCL can use, the mod still runs with its CPU
+> improvements. When you join a world, a chat line names the GPU and the API in use (`gpuTestedWarning = false` turns it
+> off).
 
 > [!IMPORTANT]
 > **Not together with C2ME's OpenCL module** (`c2me-opts-accel-opencl`). Both move world generation to the graphics
@@ -51,7 +49,8 @@ own terrain maps on top (heightmaps, erosion, rivers, cliffs). Worldgen Accelera
 1. **On the CPU**: it removes repeated or wasted work in Minecraft's and FreeTerraForged's code, such as filling
    terrain far above the ground, re-making FreeTerraForged's terrain tiles, looking chunks up again and again for ores,
    or working the same terrain out once per thread. These work on any PC.
-2. **On the GPU**: whole steps are rewritten as GPU programs (CUDA C, which AMD's HIP compiles too) that do a chunk (or
+2. **On the GPU**: whole steps are rewritten as GPU programs (written in CUDA C, translated to OpenCL C for OpenCL; CUDA
+   and HIP compile them as they are) that do a chunk (or
    a FreeTerraForged tile) in one go on the graphics card, operation for operation the same maths as the Java code, so
    the results are bit-identical. The
    GPU programs are built when a world loads, from the world's own settings, datapacks and biome mods, so they follow
@@ -150,7 +149,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | --- | --- | --- |
 | Minecraft | 1.21.1 | |
 | NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | no Fabric version |
-| FreeTerraForged | **1.0.0010 from the `1.21.1_unstable` branch** (22 Oct 2026); **1.0.0013 from the `deleteTiles` branch: experimental support for now** | 1.0.0010 checked; older 1.0.0010 builds work too. The GPU tile parts are for 1.0.0010 (tiles); 1.0.0013 has no tiles, and the branch still changes often. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
+| FreeTerraForged | **1.0.0014 from the `1.21.1_unstable` branch** (24 Oct 2026, with the `deleteTiles` work merged); 1.0.0013 and 1.0.0010 | 1.0.0014 (24 Oct build) checked; its earlier 23 Oct build and 1.0.0013 work too. 1.0.0010 (tiles) gets the GPU tile parts; 1.0.0013 and later have no tiles. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
 | C2ME | 0.4.0-alpha.0.123 (recommended) | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
 | C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off |
 | Lithium | 0.15.4 | works, recommended |
@@ -162,6 +161,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | Still Life | 0.3 (1.21.1 backport) with Lithosphere 1.8.2 and More Density Functions | works, exact |
 | Streams Reflowing | 2.15.2 (tested) | compatible, exact; no acceleration of its own work (its river feature runs on the CPU as it is) |
 | Worldgen Patches | 1.1.0 | works; the GPU surface follows its steepness fix when it is installed |
+| VanillaBackport | 1.2.1 (tested in a vanilla world) | compatible, exact; its sulfur caves' surface rules (3D noise conditions and noise gradients) run on the GPU too. It adds them to the vanilla overworld only, so FreeTerraForged worlds don't get them |
 | Voxy, Sodium, Iris, FerriteCore, Structure Layout Optimizer | | work |
 | Vanilla worlds (no FreeTerraForged) | | the CPU parts help (2:15 -> 1:58); the GPU parts are off by default in vanilla (alone they were slower); with `gpuAreaStep` on they go on and it was 1:22 |
 
@@ -181,52 +181,60 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 
 1. Install NeoForge 21.1.x for Minecraft 1.21.1, then FreeTerraForged (and C2ME, Lithium and ScalableLux if you like).
 2. Put `wgaccel-<version>.jar` into the instance's `mods` folder. That's all for the CPU improvements.
-3. **For the GPU parts on an NVIDIA card:**
-   1. Update the NVIDIA driver.
-   2. Install the **NVIDIA CUDA Toolkit 12.x** from https://developer.nvidia.com/cuda-toolkit-archive (12.9 was
-      tested; pick Windows, x86_64, your Windows version, "exe (network)") with the default ("Express") install.
-      Only its **NVRTC** part (the runtime compiler, `nvrtc64_*.dll`) is used. A GTX 10xx needs 12.x (CUDA 13
-      dropped it); an RTX 50xx needs 12.8 or newer.
-   3. **Restart the launcher** (or the PC): a launcher that was open during the install doesn't see the new
-      `CUDA_PATH`.
-4. **For the GPU parts on an AMD card (Windows):**
-   1. Update the AMD Adrenalin driver. It comes with AMD's HIP runtime (`amdhip64_6.dll` in `C:\Windows\System32`).
-   2. Install the **AMD HIP SDK for Windows** (6.4 was tested) from https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html.
-      Only its **hipRTC** part (the runtime compiler, `hiprtc*.dll`) is used.
-   3. **Restart the launcher** (or the PC), as for NVIDIA.
-5. Start the game and open a world. The log (`logs/latest.log`) should show `WGA GPU backend: CUDA` or `HIP`,
+3. **For the GPU parts:** update your GPU's driver (NVIDIA, AMD Adrenalin or Intel). That's all: the mod builds its
+   GPU programs with the driver's own OpenCL compiler.
+4. Start the game and open a world. The log (`logs/latest.log`) should show `WGA GPU backend: OpenCL`,
    `WGA GPU self-test: BIT-IDENTICAL` and lines like `WGA GPU noise fill: ready`. If the GPU can't be used it says
    `WGA GPU unavailable: <why>` and the mod carries on with the CPU part.
 
-**NVIDIA or AMD:** when NVIDIA's driver is installed and sees a card the mod uses CUDA (so a laptop with an NVIDIA
-card and AMD integrated graphics uses the NVIDIA card); otherwise HIP, if AMD's runtime sees a card. An NVIDIA driver
-left behind from a former card doesn't count.
+**Which API:** OpenCL by default. It needs no SDK and ran about as fast as the vendors' own APIs on the cards measured
+(an RTX 5060 laptop: 0:34 through OpenCL, 0:32 through CUDA; an RX 9070 XT: 0:46 through OpenCL, the same as HIP).
+CUDA and HIP are used only when chosen under Manual in the settings screen (below), and need a compiler of their own:
+
+- **CUDA (NVIDIA):** the **NVIDIA CUDA Toolkit** 12.x or 13.x from https://developer.nvidia.com/cuda-toolkit-archive
+  (Windows, x86_64, "exe (network)", the default "Express" install). Only its **NVRTC** part (`nvrtc64_*.dll`) is used.
+  A GTX 10xx needs 12.x (CUDA 13 dropped it); an RTX 50xx needs 12.8 or newer. Restart the launcher afterwards: one
+  that was open during the install doesn't see the new `CUDA_PATH`.
+- **HIP (AMD, Windows):** the **AMD HIP SDK for Windows** 6.4 or newer from
+  https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html. Only its **hipRTC** part (`hiprtc*.dll`) is used.
+  Restart the launcher afterwards.
 
 **Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, a laptop's
-Intel graphics beside an NVIDIA card, for example) the mod takes the one with the most compute units, a separate card
-before an integrated one. To see or change it, open the **GPU screen**: the mod's logo button in Options (left of the
-field of view, or under Distant Horizons' button), or Config in the mods list. It lists every graphics adapter of the
-PC with what the mod can do with it (CUDA, HIP, or not supported: Intel GPUs have no backend yet), which one this game
-uses, and lets you choose Automatic or one of them. The GPU is chosen once per game: a choice made before opening a
-world applies to it, a later one after restarting the game (the screen says so). The choice is saved as `gpuBackend`
-and `gpuDevice` in the config; `-Dwgaccel.gpuBackend=cuda` or `hip` on Java's command line still wins.
+Intel graphics beside an NVIDIA card, for example) the mod takes a separate card first, then the one with the most
+compute units. An AMD integrated GPU (a laptop's Radeon 680M, for example) is taken when it is the only one; Intel
+integrated graphics only when you choose them (the Arc iGPU measured took 1:49 where its laptop's CPU alone took 0:42). To see or change it, open the **settings screen**: the mod's logo button in
+Options (left of the field of view, or under Distant Horizons' button), or Config in the mods list. Its tabs:
 
-The mod looks for `nvrtc64_*.dll` in `CUDA_PATH` and every `CUDA_PATH_V*` (`bin` and `bin/x64`), then in
+- **Config:** Automatic, or Manual: then you choose the API (OpenCL, CUDA or HIP) and the GPU. It lists every
+  graphics adapter of the PC with what the mod can do with it and which one this game uses. The GPU is chosen once per
+  game: a choice made before opening a world applies to it, a later one after restarting the game (the screen says so).
+  The choice is saved as `gpuBackend` and `gpuDevice` in the config; `-Dwgaccel.gpuBackend=cuda`, `hip` or `opencl` on
+  Java's command line still wins.
+- **GPU improvements** and **CPU improvements:** every improvement with an on/off switch and what it does, and the
+  switch for the whole section. A switch is saved in `overrides` (`[general]` in the config) and wins over the preset;
+  **Defaults** puts the tab back to the preset's values. Changes apply from the next world you open.
+- **System info:** the CPU, memory, GPUs and their drivers, Java, Minecraft, NeoForge, the worldgen mods and the GPU
+  compilers the mod found. **Copy** puts it on the clipboard for a bug report.
+- **Benchmark:** performance tests run from the game, coming in a later version (the tab is greyed for now).
+
+With CUDA chosen, the mod looks for `nvrtc64_*.dll` in `CUDA_PATH` and every `CUDA_PATH_V*` (`bin` and `bin/x64`), then in
 `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*` (newest first), then on `PATH`. To point it somewhere else,
-start Java with `-Dwgaccel.nvrtc=C:/path/to/nvrtc64_120_0.dll`. For AMD it looks for `hiprtc*.dll` in the `bin`
+start Java with `-Dwgaccel.nvrtc=C:/path/to/nvrtc64_120_0.dll`. With HIP it looks for `hiprtc*.dll` in the `bin`
 folder of `HIP_PATH` and every other `HIP_PATH*`, then in `C:/Program Files/AMD/ROCm/*/bin` (newest first), then on
 `PATH`; `-Dwgaccel.hiprtc=C:/path/to/hiprtc0604.dll` points it somewhere else.
 
-On AMD cards the `/wgaccel` report leaves out the GPU time of each step: timing them with GPU events made the results
-wrong on the Radeon 680M, so the mod doesn't time them there (the work and its results are the same).
+Through OpenCL and HIP the `/wgaccel` report leaves out the GPU time of each step (only CUDA times them: under HIP
+GPU events made the results wrong on a Radeon 680M, and OpenCL's time nothing without a profiling queue). The work and
+its results are the same.
 
-The first world takes a few seconds to a minute longer to open while the GPU programs are built (the loading screen
-shows it); after that they come from the disk cache.
+The first world on a new GPU or driver takes longer to open while the GPU programs are built (the loading screen shows
+it): from a few seconds to about a minute and a half (NVIDIA's OpenCL compiler on an RTX 5060 laptop). After that they
+come from the disk cache (`wgaccel-gpu-cache`) and the GPU is ready in about a second.
 
 ## Installation (dedicated server)
 
-A dedicated server needs the same CUDA Toolkit (NVIDIA) or HIP SDK (AMD) as a client (steps 3 and 4 above), and
-LWJGL, which a client has and a server doesn't:
+A dedicated server needs a GPU driver as a client does (and the CUDA Toolkit or HIP SDK only when CUDA or HIP is
+chosen, `gpuBackend` in the config), and LWJGL, which a client has and a server doesn't:
 
 1. Put the mod's jar (and FreeTerraForged, C2ME, ...) into the server's `mods` folder.
 2. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` from a client's `libraries/org/lwjgl/lwjgl/3.3.3/`
@@ -273,14 +281,15 @@ say how much they gained on the test PC.
 | Section | What's in it |
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
-| `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report) |
+| `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
 | `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastBlockPredicates` (off: it was slower) |
-| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat warning), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the GPU screen), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
+| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 
 The GPU steps take `OFF`, `CHECK` (the GPU and the CPU both do the work and every result is compared: slower, for
 testing) or `ON` (the GPU's result is used; every 64th is still compared). With `CLIENT` or `SERVER` the values in the
-file are kept but not used; set `preset = "CUSTOM"` to change single settings. The section switches,
+file are kept but not used; switch single improvements in the settings screen (whatever the preset), or set
+`preset = "CUSTOM"` to use every value written in the file. The section switches, `overrides`,
 `gpuTestedWarning`, `gpuBackend`, `gpuDevice`, `gpuStreamPool`, `fastBlockPredicates`, `gpuAreaStep` and `gpuNoiseFillCpuDimensions` always follow
 the file.
 

@@ -9,12 +9,12 @@ public final class ClientSetup {
    private ClientSetup() {
    }
 
-   /** The mods list's Config button opens the GPU screen. */
+   /** The mods list's Config button opens the settings screen. */
    public static void register(ModContainer container) {
       container.registerExtensionPoint(IConfigScreenFactory.class, new IConfigScreenFactory() {
          @Override
          public Screen createScreen(ModContainer mod, Screen parent) {
-            return new GpuScreen(parent);
+            return new WgaScreen(parent);
          }
       });
    }

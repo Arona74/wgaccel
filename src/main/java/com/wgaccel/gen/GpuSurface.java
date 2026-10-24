@@ -67,7 +67,13 @@ public final class GpuSurface {
    private static final int CHECK_EVERY = 64;
    private static final int LOGGED_MAX = 12;
 
-   record Program(RandomState random, SurfaceSystem system, SurfaceRules.RuleSource rules, Registry<Biome> biomes, long zoomSeed,
+   /**
+    * The GPU's surface program. rules: the tree it was made from; source: that tree before FreeTerraForged's
+    * FastStrataSequenceRule.optimize (the same object when there is none). A vanilla generator hands buildSurface the
+    * source and FreeTerraForged optimizes it inside (its ModifyVariable, after this mod's wrap sees the argument); its
+    * optimize gives the same object for the same tree (FastStrataOnceMixin), so a chunk given the source runs rules.
+    */
+   record Program(RandomState random, SurfaceSystem system, SurfaceRules.RuleSource rules, SurfaceRules.RuleSource source, Registry<Biome> biomes, long zoomSeed,
          BlockState defaultBlock, BlockState[] table, SurfaceGpu gpu, com.wgaccel.gpu.SurfaceBatcher batcher) {
    }
 
@@ -188,6 +194,22 @@ public final class GpuSurface {
       }
    }
 
+   /**
+    * VanillaBackport's sulfur caves: its mixin wraps NoiseBasedChunkGenerator.buildSurface's settings.surfaceRule() for
+    * the minecraft:overworld settings (ModSurfaceRuleData.merge(rules, [makeRules()])), so the rules the CPU runs are not
+    * the settings' own. The GPU takes the same tree, made by the same two calls; anything else is left as it is.
+    */
+   private static SurfaceRules.RuleSource vanillaBackport(NoiseBasedChunkGenerator generator, SurfaceRules.RuleSource rules) throws ReflectiveOperationException {
+      if (!net.neoforged.fml.ModList.get().isLoaded("vanillabackport") || !generator.generatorSettings().is(net.minecraft.world.level.levelgen.NoiseGeneratorSettings.OVERWORLD)) {
+         return rules;
+      }
+
+      Class<?> data = Class.forName("com.blackgear.vanillabackport.common.worldgen.surface.ModSurfaceRuleData");
+      Object sulfur = data.getMethod("makeRules").invoke(null);
+      WorldgenAccelerator.LOG.info("WGA GPU surface: VanillaBackport's surface rules (sulfur caves) merged into the overworld's, as its buildSurface does");
+      return (SurfaceRules.RuleSource)data.getMethod("merge", SurfaceRules.RuleSource.class, java.util.List.class).invoke(null, rules, java.util.List.of(sulfur));
+   }
+
    private static Program build(ServerLevel overworld) throws Exception {
       if (!(overworld.getChunkSource().getGenerator() instanceof NoiseBasedChunkGenerator generator)) {
          throw new IllegalStateException("the overworld has no noise generator");
@@ -197,7 +219,7 @@ public final class GpuSurface {
       SurfaceSystem system = random.surfaceSystem();
       SurfaceRules.RuleSource rules = ftfSurfaceRoot(random);
       if (rules == null) {
-         rules = generator.generatorSettings().value().surfaceRule();
+         rules = vanillaBackport(generator, generator.generatorSettings().value().surfaceRule());
       }
 
       if (generator.generatorSettings().value().useLegacyRandomSource()) {
@@ -208,6 +230,7 @@ public final class GpuSurface {
       WorldGenerationContext context = new WorldGenerationContext(generator, overworld);
       long zoomSeed = BiomeManager.obfuscateSeed(overworld.getSeed());
       SurfaceCodegen codegen = new SurfaceCodegen(random, context, biomes, system);
+      SurfaceRules.RuleSource unoptimized = rules;
       if (codegen.fastStrata()) {
          // FreeTerraForged's 740a69e3 build wraps its rules at every buildSurface (FastStrataSequenceRule.optimize: its
          // StrataRule taken out of the tree and asked after it, deep stone short-cut): the GPU makes the same tree.
@@ -270,7 +293,7 @@ public final class GpuSurface {
          states, strata == null ? "none" : "up to " + strataMax + " layers" + strataSampled, source.length() / 1024));
       int batch = Config.GPU_SURFACE_BATCH_CHUNKS.get();
       com.wgaccel.gpu.SurfaceBatcher batcher = batch > 0 ? new com.wgaccel.gpu.SurfaceBatcher(gpu, batch, Config.GPU_SURFACE_BATCH_THREADS.get(), 200L) : null;
-      return new Program(random, system, rules, biomes, zoomSeed, defaultBlock, table, gpu, batcher);
+      return new Program(random, system, rules, unoptimized, biomes, zoomSeed, defaultBlock, table, gpu, batcher);
    }
 
    private static int id(Registry<Biome> biomes, net.minecraft.resources.ResourceKey<Biome> key) {
@@ -365,7 +388,7 @@ public final class GpuSurface {
          return;
       }
 
-      if (system != p.system || biomes != p.biomes || legacy || rules != p.rules) {
+      if (system != p.system || biomes != p.biomes || legacy || rules != p.rules && rules != p.source) {
          other(chunk, system != p.system ? "another surface system" : biomes != p.biomes ? "another biome registry" : legacy ? "legacy random"
             : "another rule source");
          return;

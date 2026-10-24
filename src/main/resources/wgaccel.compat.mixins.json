@@ -1,0 +1,12 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin.compat",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "VanillaBackportRulesOnceMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

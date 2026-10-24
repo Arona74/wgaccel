@@ -10,7 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 
 /**
- * The button with the mod's logo (logo.png simplified, 20 x 20) in Options that opens the GPU screen; a white outline
+ * The button with the mod's logo (logo.png simplified, 20 x 20) in Options that opens the settings screen; a white outline
  * when hovered. Placed left of the field of view's slider; when first drawn (every mod's buttons made by then) it moves
  * under another mod's small button found there (Distant Horizons') and takes its size.
  */
@@ -22,12 +22,12 @@ public final class LogoButton extends Button {
    private boolean aligned;
 
    public LogoButton(int x, int y, Screen parent, int row, int sliderLeft) {
-      super(x, y, 20, 20, Component.literal("Worldgen Accelerator"), pressed -> net.minecraft.client.Minecraft.getInstance().setScreen(new GpuScreen(parent)),
+      super(x, y, 20, 20, Component.literal("Worldgen Accelerator"), pressed -> net.minecraft.client.Minecraft.getInstance().setScreen(new WgaScreen(parent)),
          DEFAULT_NARRATION);
       this.parent = parent;
       this.row = row;
       this.sliderLeft = sliderLeft;
-      this.setTooltip(Tooltip.create(Component.literal("Worldgen Accelerator: which GPU it uses")));
+      this.setTooltip(Tooltip.create(Component.literal("Worldgen Accelerator: settings, GPU choice and system info")));
    }
 
    private void align() {

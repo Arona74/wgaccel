@@ -1,6 +1,6 @@
 package com.wgaccel.mixin.client;
 
-import com.wgaccel.client.GpuScreen;
+import com.wgaccel.client.WgaScreen;
 import com.wgaccel.client.LogoButton;
 import java.util.TreeSet;
 import net.minecraft.client.gui.components.AbstractWidget;
@@ -14,8 +14,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * A 20 x 20 button with the mod's logo in Options, left of the field of view's slider, opening the GPU screen
- * ({@link GpuScreen}). Distant Horizons puts its own icon there; with it, ours goes right under it.
+ * A 20 x 20 button with the mod's logo in Options, left of the field of view's slider, opening the settings screen
+ * ({@link WgaScreen}). Distant Horizons puts its own icon there; with it, ours goes right under it.
  */
 @Mixin(OptionsScreen.class)
 public abstract class OptionsScreenMixin extends Screen {
