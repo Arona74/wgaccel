@@ -46,6 +46,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
       NoiseBasedChunkGeneratorInvoker self = (NoiseBasedChunkGeneratorInvoker)this;
       NoiseChunk noise = chunk.getOrCreateNoiseChunk(c -> self.wgaccel$createNoiseChunk(c, structures, blender, random));
       int cells = Math.min(cellCountY, ((NoiseChunkAccessor)noise).wgaccel$cellCountY());
+      // Blocks before the fill: Distant Horizons filling again a chunk it read from the save, trees and all.
+      boolean prefilled = chunk.getHighestFilledSectionIndex() >= 0;
       // GPU step G2.5: the chunk from the GPU (ON), or worked out on the GPU and compared with the CPU's fill (CHECK).
       GpuNoiseFill.Pending gpu = GpuNoiseFill.prepare(noise, chunk, random, minCellY, cells);
       ChunkAccess filled;
@@ -78,7 +80,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
       int cellHeight = ((NoiseBasedChunkGenerator)(Object)this).generatorSettings().value().noiseSettings().getCellHeight();
       int needed = neededLayers(filled, minCellY * cellHeight, cellHeight, cellCountY);
       Stats.noiseLayers(cells, needed);
-      FillToGround.check(chunk.getPos(), cells, cellCountY, needed);
+      FillToGround.check(chunk.getPos(), cells, cellCountY, needed, prefilled);
       return filled;
    }
 

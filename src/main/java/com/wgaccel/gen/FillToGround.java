@@ -42,6 +42,8 @@ public final class FillToGround {
    private static volatile boolean ftfGroundGone;
    public static final LongAdder CUT = new LongAdder();
    public static final LongAdder TOUCHED = new LongAdder();
+   /** Chunks that held blocks before their fill, not checked. */
+   public static final LongAdder PREFILLED = new LongAdder();
    private static final AtomicInteger WARNINGS = new AtomicInteger();
 
    /** The full noise settings of the noise chunk being made, when trim cut it: its aquifer keeps the full height. */
@@ -171,10 +173,20 @@ public final class FillToGround {
       }
    }
 
-   /** After the fill: blocks reaching the top cell of a cut (or of the cut a chunk on probation would have had). */
-   public static void check(ChunkPos pos, int cellsFilled, int fullCells, int cellsNeeded) {
+   /**
+    * After the fill: blocks reaching the top cell of a cut (or of the cut a chunk on probation would have had). A chunk
+    * that held blocks before its fill is not judged: its highest block may be its own from before (Distant Horizons'
+    * Surface Only generation fills again chunks it read from the save; a tree on a peak reached the top cell of the
+    * cut, 25 Oct 2026). The fill sets no air, so those blocks stay whatever the cut.
+    */
+   public static void check(ChunkPos pos, int cellsFilled, int fullCells, int cellsNeeded, boolean prefilled) {
       World current = world;
       Integer predicted = PROBATION.remove(pos.toLong());
+      if (prefilled) {
+         PREFILLED.increment();
+         return;
+      }
+
       if (predicted != null && current != null && !current.off) {
          if (cellsNeeded >= predicted) {
             current.off = true;

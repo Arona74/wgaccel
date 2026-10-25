@@ -325,9 +325,10 @@ public final class Reporter {
          return "";
       }
 
-      return String.format(Locale.ROOT, " | noise layers per chunk: %.0f filled, %.0f needed by the highest block (%.0f%%) | fill-to-ground so far: %,d chunks cut, %,d warnings",
+      return String.format(Locale.ROOT, " | noise layers per chunk: %.0f filled, %.0f needed by the highest block (%.0f%%) | fill-to-ground so far: %,d chunks cut, %,d warnings%s",
          (double)s.layersFilled() / chunks, (double)s.layersNeeded() / chunks, 100.0 * s.layersNeeded() / s.layersFilled(),
-         FillToGround.CUT.sum(), FillToGround.TOUCHED.sum());
+         FillToGround.CUT.sum(), FillToGround.TOUCHED.sum(),
+         FillToGround.PREFILLED.sum() == 0L ? "" : String.format(Locale.ROOT, ", %,d not checked (blocks before the fill)", FillToGround.PREFILLED.sum()));
    }
 
    private static String waits(Stats.Snapshot s, SlowestLookup slowest) {
