@@ -1,6 +1,6 @@
 # Worldgen Accelerator
 
-Faster world generation for Minecraft 1.21.1 (NeoForge), built first for **FreeTerraForged**. The world comes out the
+Faster world generation for Minecraft 1.21.1 (NeoForge and Fabric), built first for **FreeTerraForged**. The world comes out the
 same, block for block: every speed-up is checked against Minecraft's and FreeTerraForged's own results while you
 play, and a part whose answer differs turns itself off and the game carries on with the normal code.
 
@@ -148,7 +148,8 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | | Version | Notes |
 | --- | --- | --- |
 | Minecraft | 1.21.1 | |
-| NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | no Fabric version |
+| NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | `wgaccel-neoforge-<version>.jar` |
+| Fabric | Fabric Loader 0.16 or later with Fabric API (tested Loader 0.19.5, Fabric API 0.116.17) | `wgaccel-fabric-<version>.jar`; since 0.50.0, the same mod and checks as on NeoForge (tested with FreeTerraForged 1.0.0014's Fabric build and C2ME 0.4.0-alpha.0.30, area step too). ModMenu (optional) gives it a Config button |
 | FreeTerraForged | **1.0.0014 from the `1.21.1_unstable` branch** (24 Oct 2026, with the `deleteTiles` work merged); 1.0.0013 and 1.0.0010 | 1.0.0014 (24 Oct build) checked; its earlier 23 Oct build and 1.0.0013 work too. 1.0.0010 (tiles) gets the GPU tile parts; 1.0.0013 and later have no tiles. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
 | C2ME | 0.4.0-alpha.0.123 (recommended) | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
 | C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off |
@@ -165,7 +166,7 @@ Even a laptop's integrated graphics almost doubled the speed of the CPU improvem
 | Streams Reflowing | 2.15.2 (tested) | compatible, exact; no acceleration of its own work (its river feature runs on the CPU as it is) |
 | Worldgen Patches | 1.1.0 | works; the GPU surface follows its steepness fix when it is installed |
 | Nature's Spirit | 2.3.1 with Lithostitched 1.8.1 (tested with FreeTerraForged: r1000 1:25) | compatible, exact; chunks with its stone pillars (Sugi Forest, Stratified Desert and its dunes, about 4%) get their surface on the CPU, as vanilla's eroded badlands do. Its cliff and layer features (about 65,000 single blocks a chunk) are most of its cost and run on the CPU as they are |
-| No Man's Land + Biolith | 1.6.2 / 3.0.14 (tested with FreeTerraForged) | compatible, exact; its surface rules (biome tags, its y test, strata) run on the GPU too, with its steepness fix. Chunks around its Meeting Point altar fill on the CPU (it reshapes the terrain there). Faster on the CPU (r1000 2:06 -> 1:36 on the test PC): Biolith's sub-biome checks find their closest climate points through a tree instead of a scan of the whole table (`fasterBiomeChoice`), its every-layer features scan each column once, and its ore veins fill their noise once per layer and test the block they just read (`fastLayerPlacement`) |
+| No Man's Land + Biolith | 1.6.2 / 3.0.14 (tested with FreeTerraForged; NeoForge only) | compatible, exact; its surface rules (biome tags, its y test, strata) run on the GPU too, with its steepness fix. Chunks around its Meeting Point altar fill on the CPU (it reshapes the terrain there). Faster on the CPU (r1000 2:06 -> 1:36 on the test PC): Biolith's sub-biome checks find their closest climate points through a tree instead of a scan of the whole table (`fasterBiomeChoice`), its every-layer features scan each column once, and its ore veins fill their noise once per layer and test the block they just read (`fastLayerPlacement`) |
 | VanillaBackport | 1.2.1 (tested in a vanilla world) | compatible, exact; its sulfur caves' surface rules (3D noise conditions and noise gradients) run on the GPU too. It adds them to the vanilla overworld only, so FreeTerraForged worlds don't get them |
 | Voxy, Sodium, Iris, FerriteCore, Structure Layout Optimizer | | work |
 | Vanilla worlds (no FreeTerraForged) | | the CPU parts help (2:15 -> 1:58); the GPU parts are off by default in vanilla (alone they were slower); with `gpuAreaStep` on they go on and it was 1:22 |
@@ -184,8 +185,10 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 
 ## Installation (client)
 
-1. Install NeoForge 21.1.x for Minecraft 1.21.1, then FreeTerraForged (and C2ME, Lithium and ScalableLux if you like).
-2. Put `wgaccel-<version>.jar` into the instance's `mods` folder. That's all for the CPU improvements.
+1. Install NeoForge 21.1.x, or Fabric Loader with Fabric API, for Minecraft 1.21.1, then FreeTerraForged (and C2ME,
+   Lithium and ScalableLux if you like).
+2. Put the jar for your loader into the instance's `mods` folder: `wgaccel-neoforge-<version>.jar` or
+   `wgaccel-fabric-<version>.jar`. That's all for the CPU improvements.
 3. **For the GPU parts:** update your GPU's driver (NVIDIA, AMD Adrenalin or Intel). That's all: the mod builds its
    GPU programs with the driver's own OpenCL compiler.
 4. Start the game and open a world. The log (`logs/latest.log`) should show `WGA GPU backend: OpenCL`,
@@ -241,15 +244,25 @@ come from the disk cache (`wgaccel-gpu-cache`) and the GPU is ready in about a s
 A dedicated server needs a GPU driver as a client does (and the CUDA Toolkit or HIP SDK only when CUDA or HIP is
 chosen, `gpuBackend` in the config), and LWJGL, which a client has and a server doesn't:
 
-1. Put the mod's jar (and FreeTerraForged, C2ME, ...) into the server's `mods` folder.
+1. Put the mod's jar (and FreeTerraForged, C2ME, ...) into the server's `mods` folder (on Fabric, Fabric API too).
 2. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` from a client's `libraries/org/lwjgl/lwjgl/3.3.3/`
-   to the server's `libraries/org/lwjgl/lwjgl/3.3.3/`.
-3. Open `libraries/net/neoforged/neoforge/<version>/win_args.txt` (keep a copy first: reinstalling NeoForge rewrites
-   it) and add both jars to the end of the `-DlegacyClassPath=` list, separated by `;`:
-   `...;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar`
-   (on Linux: `unix_args.txt`, the `natives-linux` jar, and `:` as the separator).
+   to the server's `libraries/org/lwjgl/lwjgl/3.3.3/` (on Linux, the `natives-linux` jar instead; both are also on
+   Maven Central, `org.lwjgl:lwjgl:3.3.3`).
+3. Add both jars to the server's Java class path:
+   - **NeoForge:** open `libraries/net/neoforged/neoforge/<version>/win_args.txt` (keep a copy first: reinstalling
+     NeoForge rewrites it) and add them to the end of the `-DlegacyClassPath=` list, separated by `;`:
+     `...;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar`
+     (on Linux: `unix_args.txt` and `:` as the separator).
+   - **Fabric** (the server launcher jar from fabricmc.net): start it with `-cp` and its main class instead of `-jar`:
+     ```
+     java -Xmx8G -cp "fabric-server-mc.1.21.1-loader.0.19.3-launcher.1.1.0.jar;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar;libraries/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar" net.fabricmc.installer.ServerLauncher nogui
+     ```
+     (the launcher's own file name as downloaded; on Linux `:` as the separator). Tested with Loom's production
+     server, which starts the same launcher this way.
 4. Start the server. The log shows `WGA GPU self-test: BIT-IDENTICAL` when the GPU works, or
    `WGA GPU unavailable: LWJGL is not loaded` when steps 2-3 are missing.
+
+Without LWJGL a server starts all the same and runs the CPU improvements only.
 
 Players joining the server don't need the mod: world generation happens on the server.
 
@@ -286,7 +299,7 @@ say how much they gained on the test PC.
 | Section | What's in it |
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
-| `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
+| `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `debugInfoLevel` (`VERBOSE` every log line, for a bug report; `NORMAL`, the default, each kind of line the first time and every 10th time after; `SILENT` warnings and errors only; also on the settings screen's Config tab), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
 | `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastBlockPredicates` (off: it was slower) |
 | `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
@@ -306,7 +319,11 @@ second, time per step, what the GPU did and every check's result.
 Put a FreeTerraForged 1.0.0010 jar into `libs/` as `libs/freeterraforged-1.0.0010.jar` (or pass `-PftfJar=<path>`),
 and into `libs/c2me/` the jars inside the C2ME jar's `META-INF/jars/` that the build compiles against:
 `c2me-neoforge-base-<version>-all.jar`, `c2me-neoforge-rewrites-chunk-system-<version>.jar`, `rxjava-*.jar` and
-`reactive-streams-*.jar`. Then run `gradlew build`; the mod is `build/libs/wgaccel-<version>.jar`.
+`reactive-streams-*.jar`. Then run `gradlew build`; the mod is `build/libs/wgaccel-neoforge-<version>.jar`.
+
+The sources are in `common/` (the whole mod, with Mojang's names), `neoforge/` and `fabric/` (each loader's entry point
+and its jar), built with Architectury's Gradle plugins (build time only); the Fabric jar is
+`build/libs/wgaccel-fabric-<version>.jar`. `gradlew :fabric:prodServer` runs it in Fabric's production server.
 
 The offline GPU checks (`gradlew cudaCompileCheck` and the other `cuda*` tasks) need the CUDA Toolkit, and some read
 files the mod saves into the game's logs folder: pass `-Plogs=<instance>/logs`. On an AMD card, `gradlew hipCheck`

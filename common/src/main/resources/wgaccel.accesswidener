@@ -1,0 +1,7 @@
+accessWidener v2 named
+
+# Only what NeoForge does not open itself: widening a member NeoForge has already made public stops its dev runs
+# (Biome.climateSettings: read through fabric/mixin/BiomeAccessor instead).
+
+# Biome climates (SurfaceInputs), read through LoaderHooks.
+accessible class net/minecraft/world/level/biome/Biome$ClimateSettings

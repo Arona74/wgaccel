@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "wgaccel",
+  "version": "${version}",
+  "name": "Worldgen Accelerator",
+  "description": "Faster chunk generation with FreeTerraForged, the same world block for block: exact CPU speed-ups and GPU generation (OpenCL; CUDA or HIP when chosen), every GPU result checked against the CPU's now and then. Measures every generation stage (/wgaccel for the totals, /wgaccel reset to start a new measurement).",
+  "license": "MIT",
+  "icon": "logo.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.wgaccel.fabric.WorldgenAcceleratorFabric"
+    ],
+    "modmenu": [
+      "com.wgaccel.fabric.WgaModMenu"
+    ]
+  },
+  "mixins": [
+    "wgaccel.mixins.json",
+    "wgaccel.ftf.mixins.json",
+    "wgaccel.check.mixins.json",
+    "wgaccel.c2me.mixins.json",
+    "wgaccel.compat.mixins.json",
+    "wgaccel.fabric.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "1.21.1",
+    "java": ">=21"
+  },
+  "suggests": {
+    "freeterraforged": "*",
+    "modmenu": "*"
+  }
+}

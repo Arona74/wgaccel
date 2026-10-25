@@ -1,4 +1,4 @@
-// ASM for the jar's relocation of the copied LWJGL modules (see jar below).
+// ASM for the loader jars' relocation of the copied LWJGL modules (relocateLwjgl below).
 buildscript {
     repositories {
         mavenCentral()
@@ -8,488 +8,191 @@ buildscript {
     }
 }
 
+// Built with Architectury's Gradle plugins (build time only: neither jar needs Architectury in the game). common/ is
+// compiled once with Mojang's names; neoforge/ and fabric/ each make their loader's jar from it.
 plugins {
-    id 'java-library'
-    id 'net.neoforged.moddev' version '2.0.140'
+    id 'architectury-plugin' version '3.4.164'
+    id 'dev.architectury.loom' version '1.11.458' apply false
 }
 
-version = mod_version
-group = mod_group_id
-
-base {
-    archivesName = mod_id
+architectury {
+    minecraft = minecraft_version
 }
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'architectury-plugin'
+    apply plugin: 'dev.architectury.loom'
 
-neoForge {
-    version = project.neo_version
-}
-
-configurations {
-    shade
-    implementation.extendsFrom shade
-}
-
-dependencies {
-    // Optional at run time: FreeTerraForged's tiles are read for the ground height (copy its jar into libs/ to build).
-    compileOnly files(project.findProperty('ftfJar') ?: 'libs/freeterraforged-1.0.0010.jar')
-    // FreeTerraForged's deleteTiles builds (1.0.0013, now 1.0.0014) after it, for the classes 1.0.0010 does not have
-    // (cell.filter.FilterGrid for the erosion filter on its chunk grids); the ones both have resolve to 1.0.0010's above.
-    compileOnly files(project.findProperty('ftf13Jar') ?: 'libs/freeterraforged-1.0.0014.jar')
-    // Optional at run time: C2ME's chunk system (the 4x4 area step's status and dependency hooks). Copied from the C2ME
-    // jar's META-INF/jars into libs/c2me/ (base-all for flowsched, rewrites-chunk-system, rxjava) to build.
-    compileOnly fileTree(dir: 'libs/c2me', include: '*.jar')
-    // Optional at run time: No Man's Land's ore veins and noise fields (mixin/compat; copy its jar into libs/ to build).
-    compileOnly files('libs/nomansland-1.6.2.jar')
-    // The CUDA driver API and NVRTC from Java: LWJGL's CUDA module, matching Minecraft 1.21.1's LWJGL 3.3.3 (its core
-    // comes with the game). Its classes are copied into the mod's own jar without its module descriptor (see jar
-    // below): as a nested module it required org.lwjgl, which a dedicated server does not have, and the server would
-    // not start; now a server without LWJGL starts and the mod leaves the GPU off (gpu/Lwjgl).
-    shade('org.lwjgl:lwjgl-cuda:3.3.3') {
-        transitive = false
+    version = mod_version
+    group = mod_group_id
+    base {
+        archivesName = project.name == 'common' ? mod_id : "${mod_id}-${project.name}"
     }
-    // OpenCL (gpu/OpenCl): GPUs with neither CUDA nor HIP (Intel's). Java only: the library is the driver's OpenCL.dll.
-    shade('org.lwjgl:lwjgl-opencl:3.3.3') {
-        transitive = false
+
+    loom {
+        silentMojangMappingsLicense()
+    }
+
+    dependencies {
+        minecraft "com.mojang:minecraft:${minecraft_version}"
+        mappings loom.officialMojangMappings()
+    }
+
+    java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.release = 21
     }
 }
 
-// The copied LWJGL CUDA and OpenCL classes are moved to com.wgaccel.shaded.lwjgl, and the mod's own classes made to
-// use them there: another mod with its own copy of org.lwjgl.opencl (RoadWeaver 2.3.2) made two modules export the same
-// package and the game did not start. LWJGL's core (org.lwjgl.system), which they call, stays the game's.
+// The LWJGL CUDA and OpenCL modules (Java only: the libraries are the driver's), copied into each loader jar without
+// their module descriptors: as a nested module LWJGL CUDA required org.lwjgl, which a dedicated server does not have,
+// and the server would not start; now a server without LWJGL starts and the mod leaves the GPU off (gpu/Lwjgl). Their
+// classes are moved to com.wgaccel.shaded.lwjgl, and the mod's own classes made to use them there: another mod with its
+// own copy of org.lwjgl.opencl (RoadWeaver 2.3.2) made two modules export the same package and the game did not start.
+// LWJGL's core (org.lwjgl.system), which they call, stays the game's.
+ext.lwjglShaded = ['org.lwjgl:lwjgl-cuda:3.3.3', 'org.lwjgl:lwjgl-opencl:3.3.3']
 def relocations = ['org/lwjgl/opencl/': 'com/wgaccel/shaded/lwjgl/opencl/', 'org/lwjgl/cuda/': 'com/wgaccel/shaded/lwjgl/cuda/']
 
-jar {
-    from({ configurations.shade.collect { zipTree(it) } }) {
-        exclude 'META-INF/**'
-    }
-    doLast {
-        def file = archiveFile.get().asFile
-        def moved = new File(file.parentFile, file.name + '.relocating')
-        def remapper = new org.objectweb.asm.commons.Remapper() {
-            @Override
-            String map(String name) {
-                for (def entry : relocations.entrySet()) {
-                    if (name.startsWith(entry.key)) {
-                        return entry.value + name.substring(entry.key.length())
-                    }
+/**
+ * Adds the shaded jars' classes to a finished loader jar and moves them (and the mod's uses of them) to
+ * com.wgaccel.shaded.lwjgl; added: further files for the jar, by their path in it.
+ */
+ext.relocateLwjgl = { File file, Collection<File> shaded, Map<String, byte[]> added = [:] ->
+    def moved = new File(file.parentFile, file.name + '.relocating')
+    def remapper = new org.objectweb.asm.commons.Remapper() {
+        @Override
+        String map(String name) {
+            for (def entry : relocations.entrySet()) {
+                if (name.startsWith(entry.key)) {
+                    return entry.value + name.substring(entry.key.length())
                 }
-                return name
             }
+            return name
         }
-        def input = new java.util.zip.ZipFile(file)
-        def output = new java.util.zip.ZipOutputStream(new FileOutputStream(moved))
-        try {
-            for (def entry : input.entries().toList()) {
-                // The emptied folders (org/, org/lwjgl/) are left out.
-                if (entry.directory && relocations.keySet().any { it.startsWith(entry.name) }) {
-                    continue
-                }
+    }
+    def output = new java.util.zip.ZipOutputStream(new FileOutputStream(moved))
+    def written = new HashSet<String>()
+    def copy = { java.util.zip.ZipFile input, boolean dependency ->
+        for (def entry : input.entries().toList()) {
+            // The LWJGL jars' META-INF (manifest, module descriptor) is left out, and so are the emptied folders (org/, org/lwjgl/).
+            if (dependency && (entry.directory || entry.name.startsWith('META-INF/'))) {
+                continue
+            }
+            if (entry.directory && relocations.keySet().any { it.startsWith(entry.name) }) {
+                continue
+            }
 
-                def bytes = input.getInputStream(entry).bytes
-                def name = entry.name
-                if (name.endsWith('.class')) {
-                    def writer = new org.objectweb.asm.ClassWriter(0)
-                    new org.objectweb.asm.ClassReader(bytes).accept(new org.objectweb.asm.commons.ClassRemapper(writer, remapper), 0)
-                    bytes = writer.toByteArray()
-                    name = remapper.map(name.substring(0, name.length() - 6)) + '.class'
-                } else {
-                    for (def relocation : relocations.entrySet()) {
-                        if (name.startsWith(relocation.key)) {
-                            name = relocation.value + name.substring(relocation.key.length())
-                        }
+            def bytes = input.getInputStream(entry).bytes
+            def name = entry.name
+            if (name.endsWith('.class')) {
+                def writer = new org.objectweb.asm.ClassWriter(0)
+                new org.objectweb.asm.ClassReader(bytes).accept(new org.objectweb.asm.commons.ClassRemapper(writer, remapper), 0)
+                bytes = writer.toByteArray()
+                name = remapper.map(name.substring(0, name.length() - 6)) + '.class'
+            } else {
+                for (def relocation : relocations.entrySet()) {
+                    if (name.startsWith(relocation.key)) {
+                        name = relocation.value + name.substring(relocation.key.length())
                     }
                 }
-                def copy = new java.util.zip.ZipEntry(name)
-                copy.time = entry.time
-                output.putNextEntry(copy)
-                output.write(bytes)
-                output.closeEntry()
             }
+            if (!written.add(name)) {
+                continue
+            }
+
+            def out = new java.util.zip.ZipEntry(name)
+            out.time = entry.time
+            output.putNextEntry(out)
+            output.write(bytes)
+            output.closeEntry()
+        }
+    }
+    try {
+        def input = new java.util.zip.ZipFile(file)
+        try {
+            copy(input, false)
         } finally {
-            output.close()
             input.close()
         }
-        file.delete()
-        moved.renameTo(file)
+        for (File jar : shaded) {
+            def dependency = new java.util.zip.ZipFile(jar)
+            try {
+                copy(dependency, true)
+            } finally {
+                dependency.close()
+            }
+        }
+        added.each { name, bytes ->
+            output.putNextEntry(new java.util.zip.ZipEntry(name))
+            output.write(bytes)
+            output.closeEntry()
+        }
+    } finally {
+        output.close()
     }
+    file.delete()
+    moved.renameTo(file)
 }
 
-// The version the game shows (neoforge.mods.toml) is mod_version from gradle.properties, as the jar's name is: written by
-// hand there it stayed at 0.5.6 while the jar went on to 0.11.5.
-processResources {
-    def properties = [mod_version: mod_version]
-    inputs.properties properties
-    filesMatching('META-INF/neoforge.mods.toml') {
-        expand properties
+/**
+ * The runtime-to-Mojang name table for Fabric's jar (platform/Names reads it), from Loom's mappings (intermediary and
+ * Mojang's names): "c <intermediary class> <Mojang class>" for every renamed class, "m <intermediary member> <Mojang
+ * name>" for every renamed field and method (an intermediary member name names one member), and "o <owner> <member>
+ * <Mojang name>" for the few intermediary names that two Mojang names share (Items.DEEPSLATE and SleepStatus.activePlayers).
+ */
+ext.namesTable = { java.nio.file.Path tiny ->
+    def classes = new StringBuilder()
+    def members = new LinkedHashMap<String, LinkedHashMap<String, String>>()
+    tiny.withReader('UTF-8') { reader ->
+        def header = reader.readLine().split('\t')
+        int intermediary = header.findIndexOf { it == 'intermediary' } - 3
+        int named = header.findIndexOf { it == 'named' } - 3
+        String owner = null
+        String line
+        while ((line = reader.readLine()) != null) {
+            def parts = line.split('\t', -1)
+            if (parts[0] == 'c') {
+                owner = parts[1 + intermediary]
+                if (owner != parts[1 + named]) {
+                    classes.append(['c', owner, parts[1 + named]].join('\t')).append('\n')
+                }
+            } else if (parts.length > 3 + named && parts[0] == '' && (parts[1] == 'f' || parts[1] == 'm')) {
+                def runtime = parts[3 + intermediary]
+                def mojang = parts[3 + named]
+                if (runtime != mojang && (runtime.startsWith('field_') || runtime.startsWith('method_') || runtime.startsWith('comp_'))) {
+                    members.computeIfAbsent(runtime) { new LinkedHashMap<String, String>() }.put(owner, mojang)
+                }
+            }
+        }
     }
-}
-
-// The game instance's logs folder, where the mod saves the sources and chunks the offline checks read: -Plogs=<folder>,
-// or logs=<folder> in the user's own ~/.gradle/gradle.properties.
-def gameLogs = project.findProperty('logs') ?: 'run/logs'
-tasks.withType(JavaExec).configureEach {
-    systemProperty 'wgaccel.logs', gameLogs
-    // Offline checks for another GPU architecture: -PgpuArch=61 (GTX 10xx), 75 (RTX 20xx), ... (a newer card runs older PTX).
-    if (project.findProperty('gpuArch')) {
-        systemProperty 'wgaccel.gpuArch', project.findProperty('gpuArch')
+    def text = new StringBuilder(classes)
+    members.each { runtime, byOwner ->
+        def names = byOwner.values() as Set
+        text.append(['m', runtime, byOwner.values().first()].join('\t')).append('\n')
+        if (names.size() > 1) {
+            byOwner.each { owner, mojang -> text.append(['o', owner, runtime, mojang].join('\t')).append('\n') }
+        }
     }
-    // The checks that go through gpu/Gpu on an AMD card: -PgpuBackend=hip (e.g. `gradlew.bat cudaErosionCheck -PgpuBackend=hip`).
-    if (project.findProperty('gpuBackend')) {
-        systemProperty 'wgaccel.gpuBackend', project.findProperty('gpuBackend')
-    }
+    def bytes = new ByteArrayOutputStream()
+    def gzip = new java.util.zip.GZIPOutputStream(bytes)
+    gzip.write(text.toString().getBytes('UTF-8'))
+    gzip.close()
+    return bytes.toByteArray()
 }
 
-tasks.withType(JavaCompile).configureEach {
-    options.encoding = 'UTF-8'
+// `gradlew.bat build` also copies both loader jars to build/libs here, where the jars of earlier versions are.
+tasks.register('collectJars', Copy) {
+    dependsOn ':neoforge:remapJar', ':fabric:remapJar'
+    from(project(':neoforge').tasks.named('remapJar'))
+    from(project(':fabric').tasks.named('remapJar'))
+    into layout.buildDirectory.dir('libs')
 }
 
-// A standalone check of the GPU route, outside the game: `gradlew.bat cudaCheck` lists the GPU, compiles a kernel with
-// NVRTC at run time and compares its float results with Java's, bit for bit. LWJGL 3.3.3 is Minecraft 1.21.1's.
-repositories {
-    mavenCentral()
-}
+apply plugin: 'base'
 
-sourceSets {
-    cudacheck {
-        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
-        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
-    }
-}
-
-dependencies {
-    cudacheckImplementation 'org.lwjgl:lwjgl:3.3.3'
-    cudacheckImplementation 'org.lwjgl:lwjgl-cuda:3.3.3'
-    cudacheckImplementation 'org.lwjgl:lwjgl-opencl:3.3.3'
-    cudacheckRuntimeOnly 'org.lwjgl:lwjgl:3.3.3:natives-windows'
-    // FreeTerraForged's NoiseUtil (its noise tables) loads on its own, without Minecraft.
-    cudacheckImplementation files('libs/freeterraforged-1.0.0010.jar')
-}
-
-tasks.register('cudaCheck', JavaExec) {
-    group = 'verification'
-    description = 'Runs the standalone CUDA check (GPU, NVRTC, bit-identical floats).'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.CudaCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// The same on an AMD card: `gradlew.bat hipCheck` uses the driver's HIP runtime and the AMD HIP SDK's hipRTC (found as
-// the mod finds it: -Dwgaccel.hiprtc, HIP_PATH, C:/Program Files/AMD/ROCm/*, PATH), then compiles the fixed kernel sources.
-// Whether an OpenCL backend (Intel GPUs) is worth making: `gradlew.bat openClProbeJar` makes build/libs/
-// wgaccel-openclprobe.jar, which runs on any Windows PC with Java (`java -jar wgaccel-openclprobe.jar`); `openclCheck`
-// runs it here. Its data (vanilla noise values from the real game classes, the kernels' CUDA sources) is made first.
-def probeData = layout.buildDirectory.dir('openclprobe')
-tasks.register('openClProbeData', JavaExec) {
-    group = 'verification'
-    description = 'Makes the OpenCL probe\'s data (kernel sources, vanilla noise values).'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.OpenClProbeData'
-    args probeData.get().file('openclprobe.bin').asFile.path
-    outputs.dir probeData
-}
-
-tasks.register('openClProbeJar', Jar) {
-    group = 'verification'
-    description = 'Makes the standalone OpenCL probe jar (java -jar wgaccel-openclprobe.jar).'
-    dependsOn 'openClProbeData', 'cudacheckClasses'
-    archiveFileName = 'wgaccel-openclprobe.jar'
-    destinationDirectory = layout.buildDirectory.dir('libs')
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    from(sourceSets.cudacheck.output) {
-        include 'com/wgaccel/cudacheck/OpenClProbe.class', 'com/wgaccel/cudacheck/OpenClProbe$*.class', 'com/wgaccel/cudacheck/OpenClProbeData.class'
-    }
-    from probeData
-    from({ configurations.cudacheckRuntimeClasspath.filter { it.name.startsWith('lwjgl') }.collect { zipTree(it) } }) {
-        exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**'
-    }
-    manifest {
-        attributes 'Main-Class': 'com.wgaccel.cudacheck.OpenClProbe'
-    }
-}
-
-// The noise fill bench for another PC (`gradlew.bat fillCheckJar`): java -Dwgaccel.gpuBackend=opencl -Dwgaccel.gpuDevice=1
-// -Dwgaccel.logs=<instance logs> -Dwgaccel.veinDebug=true -jar wgaccel-fillcheck.jar. The mod's GPU classes and LWJGL only.
-tasks.register('fillCheckJar', Jar) {
-    group = 'verification'
-    description = 'Makes the standalone noise fill bench jar (game-saved chunks against a GPU backend).'
-    dependsOn 'cudacheckClasses', 'classes'
-    archiveFileName = 'wgaccel-fillcheck.jar'
-    destinationDirectory = layout.buildDirectory.dir('libs')
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    from(sourceSets.cudacheck.output) {
-        include 'com/wgaccel/cudacheck/FillBench.class', 'com/wgaccel/cudacheck/FillBench$*.class'
-    }
-    from(sourceSets.main.output) {
-        include 'com/wgaccel/gpu/**'
-    }
-    from({ configurations.cudacheckRuntimeClasspath.filter { it.name.startsWith('lwjgl') }.collect { zipTree(it) } }) {
-        exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**'
-    }
-    manifest {
-        attributes 'Main-Class': 'com.wgaccel.cudacheck.FillBench'
-    }
-}
-
-tasks.register('openclCheck', JavaExec) {
-    group = 'verification'
-    description = 'Runs the OpenCL probe here.'
-    dependsOn 'openClProbeData'
-    classpath = sourceSets.cudacheck.runtimeClasspath + files(probeData)
-    mainClass = 'com.wgaccel.cudacheck.OpenClProbe'
-    workingDir = layout.buildDirectory.dir('openclprobe').get().asFile
-}
-
-tasks.register('gpuMemoryCheck', JavaExec) {
-    group = 'verification'
-    description = 'Measures the RAM the GPU runtime takes per stream and per loaded program.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.GpuMemoryCheck'
-}
-
-// Any check on another backend: `gradlew.bat cudaErosionCheck -PgpuBackend=opencl` (or hip).
-tasks.withType(JavaExec).configureEach {
-    if (project.findProperty('gpuBackend')) {
-        systemProperty 'wgaccel.gpuBackend', project.findProperty('gpuBackend')
-    }
-}
-
-// The OpenCL backend outside the game: the self-test and the fixed kernel sources translated and built.
-tasks.register('openclSelfCheck', JavaExec) {
-    group = 'verification'
-    description = 'Runs the self-test through the OpenCL backend and builds the fixed kernel sources.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.OpenClCheck'
-    systemProperty 'wgaccel.gpuBackend', 'opencl'
-    if (project.findProperty('gpuDevice')) {
-        systemProperty 'wgaccel.gpuDevice', project.findProperty('gpuDevice')
-    }
-}
-
-// The game's saved noise trees on a backend: `gradlew.bat treeReplay -Pcu=<logs>/wgaccel-tile-noise.cu -Pout=<file> -PgpuBackend=hip`.
-tasks.register('treeReplay', JavaExec) {
-    group = 'verification'
-    description = 'Runs every root of a saved noise-tree source at fixed points and writes the values.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.TreeReplay'
-    args project.findProperty('cu') ?: 'missing.cu', project.findProperty('out') ?: 'tree-replay.bin'}
-
-tasks.register('hipCheck', JavaExec) {
-    group = 'verification'
-    description = 'Runs the standalone HIP check on an AMD card (GPU, hipRTC, bit-identical floats).'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.HipCheck'
-    if (project.findProperty('hipArch')) {
-        systemProperty 'wgaccel.hipArch', project.findProperty('hipArch')
-    }
-}
-
-// Generated noise trees outside the game: `gradlew.bat cudaTreeCheck` builds stand-in trees of every FreeTerraForged
-// noise kind, generates their CUDA, compiles it with NVRTC and runs it (catches codegen mistakes before a world load).
-tasks.register('cudaTreeCheck', JavaExec) {
-    group = 'verification'
-    description = 'Generates, compiles and runs CUDA for stand-in noise trees of every kind.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.TreeCodegenCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// FreeTerraForged's tile erosion filter outside the game: `gradlew.bat cudaErosionCheck` runs a plain-Java copy of it and
-// the GPU kernels on a made-up tile and compares them bit for bit.
-tasks.register('cudaErosionCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compares the GPU erosion filter with a Java copy of the FreeTerraForged one on a made-up tile.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.ErosionFilterCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// The End's islands outside the game (C2.5): `gradlew.bat cudaEndIslandsCheck` runs Minecraft's own End islands function
-// against its generated CUDA and compares them bit for bit.
-tasks.register('cudaEndIslandsCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compares the GPU version of the End islands density function with the Minecraft class.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.EndIslandsCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// Vanilla's NormalNoise outside the game: `gradlew.bat cudaVanillaNoiseCheck` runs Minecraft's own noise classes against
-// the GPU kernels and compares them bit for bit.
-tasks.register('cudaVanillaNoiseCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compares the GPU version of vanilla NormalNoise with the Minecraft classes.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.VanillaNoiseCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// Generated density functions outside the game: `gradlew.bat cudaDensityCheck` builds stand-in trees of every vanilla
-// density function kind the overworld uses (real NormalNoises), generates their CUDA, compiles it and runs it.
-// C2 (vanilla): `gradlew.bat cudaVanillaDensityCheck` compares the GPU's ShiftA, ShiftB, Shift, ShiftedNoise and
-// BlendedNoise with Minecraft's own Java, bit for bit.
-// C2: `gradlew.bat cudaCornerColumnsCheck`: corners with column subtrees cached per corner column vs worked out per
-// corner, bit for bit, on a vanilla-like tree.
-tasks.register('cudaCornerColumnsCheck', JavaExec) {
-    group = 'verification'
-    description = 'Checks the corner kernel with cached column subtrees against the plain one, bit for bit.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.CornerColumnsCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-tasks.register('cudaVanillaDensityCheck', JavaExec) {
-    group = 'verification'
-    description = 'Checks the vanilla-only density function kinds on the GPU against Minecraft, bit for bit.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.VanillaDensityCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-tasks.register('cudaDensityCheck', JavaExec) {
-    group = 'verification'
-    description = 'Generates, compiles and runs CUDA for stand-in density function trees of every kind.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.DensityCodegenCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// The real noise fill outside the game: `gradlew.bat cudaFillBench` compiles the instance's logs/wgaccel-noise-fill.cu,
-// checks the chunks the game saved beside it (wgaccel-noise-fill-sample-N.bin) byte for byte and times the kernels.
-tasks.register('cudaFillBench', JavaExec) {
-    group = 'verification'
-    description = 'Runs the game-made noise fill code on the GPU against the chunks the game saved, and times it.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.FillBench'
-    if (project.hasProperty('veinDebug')) {
-        systemProperty 'wgaccel.veinDebug', 'true'
-    }
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-    if (project.hasProperty('fillSource')) {
-        systemProperty 'wgaccel.fillSource', project.property('fillSource')
-    }
-    if (project.hasProperty('cache')) {
-        systemProperty 'wgaccel.cache', project.property('cache')
-    }
-}
-
-// A game-made CUDA source compiled outside the game: `gradlew.bat cudaCompileCheck -Pcu=<path to a .cu>`.
-tasks.register('cudaCompileCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compiles a saved CUDA source with NVRTC and the mod options.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.CompileCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-    args project.findProperty('cu') ?: 'missing.cu'
-}
-
-// I3: the surface prepass's warp column walk against the old one-thread walk on made-up columns.
-tasks.register('cudaPrepassCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compares the warp surface prepass with the one-thread one on made-up columns.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.PrepassCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// I3: the strata noise per chunk with different block shapes, on the game's saved strata source.
-tasks.register('cudaStrataShapeBench', JavaExec) {
-    group = 'verification'
-    description = 'Times the strata columns kernel with different block shapes.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.StrataShapeBench'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// I3: a high-priority launch's wait next to busy low-priority streams, with -Pconnections=8 (default) or 32.
-tasks.register('cudaQueueBench', JavaExec) {
-    group = 'verification'
-    description = 'Times a high-priority launch next to busy streams for a CUDA_DEVICE_MAX_CONNECTIONS value.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.QueueBench'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-    systemProperty 'connections', project.findProperty('connections') ?: '8'
-    systemProperty 'preload', project.findProperty('preload') ?: 'false'
-}
-
-// Where the mod finds NVRTC when the game has no CUDA_PATH (started before the toolkit was installed).
-tasks.register('cudaNvrtcLookupCheck', JavaExec) {
-    group = 'verification'
-    description = 'Finds and loads NVRTC as the mod does, with CUDA_PATH and CUDA_PATH_V* removed.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.NvrtcLookupCheck'
-    environment.keySet().removeIf { it.toUpperCase().startsWith('CUDA_PATH') }
-}
-
-tasks.register('cudaSurfaceInputsCheck', JavaExec) {
-    group = 'verification'
-    description = 'Compiles the surface input kernel with stand-in constants.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.SurfaceInputsCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-}
-
-// The tree for FreeTerraForged's closest candidates (Biolith sub-biome criteria) against its scan, CPU only.
-tasks.register('candidateTreeCheck', JavaExec) {
-    group = 'verification'
-    description = 'Checks CandidateTree against FreeTerraForged\'s CandidateFit scan on random tables and times both.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.CandidateTreeCheck'
-}
-
-tasks.register('oreNoiseBench', JavaExec) {
-    group = 'verification'
-    description = 'Times vanilla\'s ore vein noises as No Man\'s Land\'s ore veins sample them.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.OreNoiseBench'
-}
-
-tasks.register('cudaBiomeBench', JavaExec) {
-    group = 'verification'
-    description = 'Checks and times the biome kernels on chunks saved from the game (-Plogs=<instance logs folder>).'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.BiomeBench'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
-    args = [gameLogs]
-}
-
-tasks.register('cudaBeardifierCheck', JavaExec) {
-    group = 'verification'
-    description = 'The GPU Beardifier against the Minecraft methods, bit for bit.'
-    classpath = sourceSets.cudacheck.runtimeClasspath
-    mainClass = 'com.wgaccel.cudacheck.BeardifierCheck'
-    def cuda = System.getenv('CUDA_PATH') ?: 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9'
-    environment 'PATH', "${cuda}/bin;" + System.getenv('PATH')
-    systemProperty 'wgaccel.nvrtc', "${cuda}/bin/nvrtc64_120_0.dll"
+tasks.named('build') {
+    dependsOn 'collectJars'
 }

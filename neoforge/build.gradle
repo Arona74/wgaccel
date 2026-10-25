@@ -1,0 +1,68 @@
+plugins {
+    id 'com.gradleup.shadow' version '9.2.2'
+}
+
+architectury {
+    platformSetupLoomIde()
+    neoForge()
+}
+
+loom {
+    accessWidenerPath = project(':common').loom.accessWidenerPath
+}
+
+configurations {
+    common
+    shadowCommon
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentNeoForge.extendsFrom common
+    shade
+    implementation.extendsFrom shade
+}
+
+repositories {
+    maven { url 'https://maven.neoforged.net/releases/' }
+}
+
+dependencies {
+    neoForge "net.neoforged:neoforge:${neo_version}"
+    common(project(path: ':common', configuration: 'namedElements')) { transitive = false }
+    shadowCommon(project(path: ':common', configuration: 'transformProductionNeoForge')) { transitive = false }
+    rootProject.lwjglShaded.each { shade(it) { transitive = false } }
+}
+
+// The version the game shows (neoforge.mods.toml) is mod_version from gradle.properties, as the jar's name is: written by
+// hand there it stayed at 0.5.6 while the jar went on to 0.11.5.
+processResources {
+    def properties = [mod_version: mod_version]
+    inputs.properties properties
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand properties
+    }
+}
+
+shadowJar {
+    exclude 'fabric.mod.json', 'architectury.common.json'
+    configurations = [project.configurations.shadowCommon]
+    archiveClassifier = 'dev-shadow'
+}
+
+shadow {
+    addShadowVariantIntoJavaComponent = false
+}
+
+remapJar {
+    atAccessWideners.add('wgaccel.accesswidener')
+    input.set shadowJar.archiveFile
+    dependsOn shadowJar
+    archiveClassifier = null
+    def shaded = configurations.shade
+    doLast {
+        rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files)
+    }
+}
+
+jar {
+    archiveClassifier = 'dev'
+}

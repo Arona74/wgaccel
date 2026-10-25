@@ -1,0 +1,92 @@
+plugins {
+    id 'com.gradleup.shadow' version '9.2.2'
+}
+
+architectury {
+    platformSetupLoomIde()
+    fabric()
+}
+
+loom {
+    accessWidenerPath = project(':common').loom.accessWidenerPath
+}
+
+configurations {
+    common
+    shadowCommon
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentFabric.extendsFrom common
+    shade
+    implementation.extendsFrom shade
+}
+
+repositories {
+    // ModMenu (optional in the game: its Config button for the settings screen).
+    maven { url 'https://maven.terraformersmc.com/releases/' }
+}
+
+dependencies {
+    modImplementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+    modCompileOnly("com.terraformersmc:modmenu:${modmenu_version}") { transitive = false }
+    common(project(path: ':common', configuration: 'namedElements')) { transitive = false }
+    shadowCommon(project(path: ':common', configuration: 'transformProductionFabric')) { transitive = false }
+    rootProject.lwjglShaded.each { shade(it) { transitive = false } }
+}
+
+processResources {
+    def properties = [version: mod_version]
+    inputs.properties properties
+    filesMatching('fabric.mod.json') {
+        expand properties
+    }
+}
+
+shadowJar {
+    exclude 'architectury.common.json'
+    configurations = [project.configurations.shadowCommon]
+    archiveClassifier = 'dev-shadow'
+}
+
+shadow {
+    addShadowVariantIntoJavaComponent = false
+}
+
+remapJar {
+    injectAccessWidener = true
+    input.set shadowJar.archiveFile
+    dependsOn shadowJar
+    archiveClassifier = null
+    def shaded = configurations.shade
+    // Fabric runs Minecraft with intermediary names: the table back to Mojang's for the mod's reflection (platform/Names).
+    def tiny = project.provider { loom.mappingConfiguration.tinyMappings.toFile() }
+    inputs.file tiny
+    doLast {
+        rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files, ['wgaccel-names.tsv.gz': rootProject.namesTable(tiny.get().toPath())])
+    }
+}
+
+jar {
+    archiveClassifier = 'dev'
+}
+
+// The jar as players get it, in Fabric's production server (intermediary names, platform/Names' table in use):
+// `gradlew.bat :fabric:prodServer`, run folder fabric/run-prod.
+tasks.register('prodServer', net.fabricmc.loom.task.prod.ServerProductionRunTask) {
+    group = 'fabric'
+    loaderVersion = fabric_loader_version
+    minecraftVersion = minecraft_version
+    mods.from(remapJar)
+    mods.from(configurations.detachedConfiguration(dependencies.create("net.fabricmc.fabric-api:fabric-api:${fabric_api_version}")).setTransitive(false))
+    runDir = file('run-prod')
+    // -PprodMods=<folder>: other mods' jars to run with (the ones a report names).
+    if (project.hasProperty('prodMods')) {
+        mods.from(fileTree(project.property('prodMods')) { include '*.jar' })
+    }
+    // -PprodLwjgl: LWJGL on the server's classpath, as a server set up for the GPU parts has it (the GPU code runs).
+    if (project.hasProperty('prodLwjgl')) {
+        getClasspath().from(configurations.detachedConfiguration(
+            dependencies.create('org.lwjgl:lwjgl:3.3.3'), dependencies.create('org.lwjgl:lwjgl:3.3.3:natives-windows')).setTransitive(false))
+    }
+}
