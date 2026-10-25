@@ -186,7 +186,8 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 ## Installation (client)
 
 1. Install NeoForge 21.1.x, or Fabric Loader with Fabric API, for Minecraft 1.21.1, then FreeTerraForged (and C2ME,
-   Lithium and ScalableLux if you like).
+   Lithium and ScalableLux if you like). On Fabric, ModMenu is optional: it adds the mod's settings button to the mods
+   list.
 2. Put the jar for your loader into the instance's `mods` folder: `wgaccel-neoforge-<version>.jar` or
    `wgaccel-fabric-<version>.jar`. That's all for the CPU improvements.
 3. **For the GPU parts:** update your GPU's driver (NVIDIA, AMD Adrenalin or Intel). That's all: the mod builds its
@@ -211,18 +212,21 @@ CUDA and HIP are used only when chosen under Manual in the settings screen (belo
 Intel graphics beside an NVIDIA card, for example) the mod takes a separate card first, then the one with the most
 compute units. An AMD integrated GPU (a laptop's Radeon 680M, for example) is taken when it is the only one; Intel
 integrated graphics only when you choose them (the Arc iGPU measured took 1:49 where its laptop's CPU alone took 0:42). To see or change it, open the **settings screen**: the mod's logo button in
-Options (left of the field of view, or under Distant Horizons' button), or Config in the mods list. Its tabs:
+Options (left of the field of view, or under Distant Horizons' button), or the mods list (Config on NeoForge, the
+mod's settings button in ModMenu on Fabric). Its tabs:
 
 - **Config:** Automatic, or Manual: then you choose the API (OpenCL, CUDA or HIP) and the GPU. It lists every
   graphics adapter of the PC with what the mod can do with it and which one this game uses. The GPU is chosen once per
   game: a choice made before opening a world applies to it, a later one after restarting the game (the screen says so).
   The choice is saved as `gpuBackend` and `gpuDevice` in the config; `-Dwgaccel.gpuBackend=cuda`, `hip` or `opencl` on
-  Java's command line still wins.
+  Java's command line still wins. Below it, **Debug info level** sets how much the mod writes to the log: Verbose
+  (every line, for a bug report), Normal (the default, about ten times fewer lines) or Silent (warnings and errors
+  only); it applies at once.
 - **GPU improvements** and **CPU improvements:** every improvement with an on/off switch and what it does, and the
   switch for the whole section. A switch is saved in `overrides` (`[general]` in the config) and wins over the preset;
   **Defaults** puts the tab back to the preset's values. Changes apply from the next world you open.
-- **System info:** the CPU, memory, GPUs and their drivers, Java, Minecraft, NeoForge, the worldgen mods and the GPU
-  compilers the mod found. **Copy** puts it on the clipboard for a bug report.
+- **System info:** the CPU, memory, GPUs and their drivers, Java, Minecraft, the mod loader (NeoForge, or Fabric
+  Loader and Fabric API), the worldgen mods and the GPU compilers the mod found. **Copy** puts it on the clipboard for a bug report.
 - **Benchmark:** performance tests run from the game, coming in a later version (the tab is greyed for now).
 
 With CUDA chosen, the mod looks for `nvrtc64_*.dll` in `CUDA_PATH` and every `CUDA_PATH_V*` (`bin` and `bin/x64`), then in
