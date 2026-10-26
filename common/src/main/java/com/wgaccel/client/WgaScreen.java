@@ -20,9 +20,11 @@ import net.minecraft.util.FormattedCharSequence;
  * The mod's settings screen (Options' WGA button, or the mods list's Config), in tabs:
  * <ul>
  * <li>Config: the GPU, Automatic or a manual choice of the API (CUDA, HIP, OpenCL) and the GPU, saved as config
- * gpuBackend and gpuDevice. The GPU is chosen once per game, so a new choice applies after a restart.</li>
+ * gpuBackend and gpuDevice. The GPU is chosen once per game, so a new choice applies after a restart. Then the general
+ * settings (preset, Chunky, memory report, the GPU chat line) and the debug info level.</li>
  * <li>GPU improvements and CPU improvements: each improvement with a switch and what it does, its section's switch on
  * top. A switch is saved in config overrides (it wins over the preset); Defaults takes the tab's out.</li>
+ * <li>Advanced: the GPU's checks and tuning in groups ({@link Advanced}), each with the control its value takes.</li>
  * <li>System info: the hardware and the software the mod runs with, which Copy puts on the clipboard.</li>
  * <li>Benchmark: performance tests, to come; its button is greyed for now.</li>
  * </ul>
@@ -44,6 +46,7 @@ public final class WgaScreen extends Screen {
       CONFIG("Config"),
       GPU("GPU improvements"),
       CPU("CPU improvements"),
+      ADVANCED("Advanced"),
       SYSTEM("System info"),
       /** Performance tests run from the screen: shown, not open yet. */
       BENCHMARK("Benchmark", false);
@@ -107,6 +110,7 @@ public final class WgaScreen extends Screen {
             "Off: the GPU is never used; the CPU improvements still apply.", Improvements.GPU);
          case CPU -> this.improvements(widgets, Config.CPU_IMPROVEMENTS, "All CPU improvements",
             "Off: none of the improvements below; the GPU ones still apply.", Improvements.CPU);
+         case ADVANCED -> this.advanced(widgets);
          case SYSTEM -> this.system();
          case BENCHMARK -> this.text(Component.literal("Coming in a later version."), this.left(), 0, this.width - this.left() - 8, GREY);
       };
@@ -132,6 +136,19 @@ public final class WgaScreen extends Screen {
             this.rebuildWidgets();
          }).bounds(this.width / 2 - 154, buttons, 150, 20).build();
          defaults.setTooltip(Tooltip.create(Component.literal("Every improvement of this tab back to the preset's value (Config: preset).")));
+         this.addRenderableWidget(defaults);
+         this.addRenderableWidget(Button.builder(Component.literal("Done"), pressed -> this.onClose()).bounds(this.width / 2 + 4, buttons, 150, 20).build());
+      } else if (this.tab == Tab.ADVANCED) {
+         Button defaults = Button.builder(Component.literal("Defaults"), pressed -> {
+            for (Advanced.Group group : Advanced.GROUPS) {
+               for (Advanced.Entry entry : group.entries()) {
+                  reset(entry.setting());
+               }
+            }
+
+            this.rebuildWidgets();
+         }).bounds(this.width / 2 - 154, buttons, 150, 20).build();
+         defaults.setTooltip(Tooltip.create(Component.literal("Every value of this tab back to its default (the preset's, or the config file's).")));
          this.addRenderableWidget(defaults);
          this.addRenderableWidget(Button.builder(Component.literal("Done"), pressed -> this.onClose()).bounds(this.width / 2 + 4, buttons, 150, 20).build());
       } else if (this.tab == Tab.SYSTEM) {
@@ -170,7 +187,7 @@ public final class WgaScreen extends Screen {
       y += this.text(Component.literal(note), left, y, this.width - left - 8, pending != null ? YELLOW : GREY) + 8;
       if (inventory == null) {
          y += this.text(Component.literal("Looking for GPUs..."), left, y, this.width - left - 8, GREY);
-         return this.debugInfoLevel(widgets, y + 12);
+         return this.general(widgets, y + 12);
       }
 
       boolean automatic = automaticChosen();
@@ -218,7 +235,153 @@ public final class WgaScreen extends Screen {
          y += 4 + this.text(Component.literal("Listing problems: " + String.join("; ", inventory.problems())), left, y + 4, this.width - left - 8, YELLOW);
       }
 
-      return this.debugInfoLevel(widgets, y + 12);
+      return this.general(widgets, y + 12);
+   }
+
+   /** The Config tab's general settings (preset, Chunky, memory report, the GPU chat line), then the debug info level. */
+   private int general(List<Placed> widgets, int y) {
+      int left = this.left();
+      y += this.text(Component.literal("General").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+      y += this.text(Component.literal("Preset: which values the improvements take. AUTO is CLIENT in the game and SERVER on a dedicated server (the"
+         + " measured best for each); CUSTOM takes every value as written in the config file. Switches made in these tabs win over it."), left, y,
+         this.width - left - 8, GREY) + 2;
+      Config.Preset preset = Config.PRESET.get();
+      int buttonX = left;
+      for (Config.Preset each : Config.Preset.values()) {
+         Button button = this.pick(each.name(), each == preset, true, () -> {
+            Config.PRESET.set(each);
+            Config.PRESET.save();
+            Setting.invalidate();
+            this.rebuildWidgets();
+         }, buttonX, 76);
+         button.setTooltip(Tooltip.create(Component.literal("Config preset")));
+         widgets.add(new Placed(button, y));
+         buttonX += 80;
+      }
+
+      y += 26;
+      y += this.setting(widgets, Config.CHUNKY_MAX_WORKING_COUNT, "Chunky chunks in flight",
+         "How many chunks Chunky keeps in flight while pregenerating. 0: automatic, from the memory and the world's height; -1: Chunky's own setting."
+            + " Applies to the next pregeneration.", y);
+      y += this.setting(widgets, Config.MEMORY_REPORT, "Memory report",
+         "For a bug report about memory: while the memory is above 80% of its maximum, once a minute (8 times at most per world), the log gets"
+            + " what still fills it (a pause of about a second each time).", y);
+      y += this.setting(widgets, Config.GPU_TESTED_WARNING, "GPU chat line", "A chat line naming the GPU and the API in use when you join a world.", y);
+      return this.debugInfoLevel(widgets, y + 8);
+   }
+
+   // The Advanced tab.
+
+   private int advanced(List<Placed> widgets) {
+      int left = this.left();
+      int y = 0;
+      y += this.text(Component.literal("The GPU's checks and tuning, for tests and benchmarks. The defaults are the measured best and every value gives the"
+         + " same world. Most apply from the next world you open; the ones that say so, when the GPU or the game starts."), left, y,
+         this.width - left - 8, GREY) + 8;
+      for (Advanced.Group group : Advanced.GROUPS) {
+         y += this.text(Component.literal(group.title()).withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+         for (Advanced.Entry entry : group.entries()) {
+            y += this.setting(widgets, entry.setting(), entry.name(), entry.description(), y);
+         }
+
+         y += 6;
+      }
+
+      return y;
+   }
+
+   /**
+    * A setting's row with the control its value takes: a switch (true or false), a mode button (cycles its modes), a
+    * number box (red while not a number in its range) or a list box under the text (entries separated by ";"). Returns
+    * the row's height.
+    */
+   @SuppressWarnings("unchecked")
+   private int setting(List<Placed> widgets, Setting<?> setting, String name, String description, int y) {
+      int left = this.left();
+      Object value = setting.chosen();
+      boolean changed = setting.normal() == null ? !java.util.Objects.equals(value, setting.fileDefault()) : setting.overriddenNow();
+      Tooltip tooltip = Tooltip.create(Component.literal("Config " + setting.key() + (changed ? " (changed from its default)" : "")));
+      String label = name + (changed ? "  (changed)" : "");
+      int nameColor = changed ? YELLOW : WHITE;
+      if (value instanceof Boolean on) {
+         Button toggle = this.toggle(on ? "ON" : "OFF", on, pressed -> {
+            apply(setting, !on);
+            this.rebuildWidgets();
+         });
+         toggle.setTooltip(tooltip);
+         widgets.add(new Placed(toggle, y));
+      } else if (value instanceof Enum<?> mode) {
+         Object[] modes = mode.getDeclaringClass().getEnumConstants();
+         Button cycle = this.toggle(mode.name(), Improvements.on(mode), pressed -> {
+            apply(setting, modes[(mode.ordinal() + 1) % modes.length]);
+            this.rebuildWidgets();
+         });
+         cycle.setTooltip(tooltip);
+         widgets.add(new Placed(cycle, y));
+      } else if (value instanceof Number) {
+         net.minecraft.client.gui.components.EditBox box = new net.minecraft.client.gui.components.EditBox(this.font, left, 0, 60, 20, Component.literal(name));
+         box.setValue(String.valueOf(value));
+         box.setTooltip(tooltip);
+         box.setResponder(text -> {
+            Object parsed = number(setting, text);
+            box.setTextColor(parsed == null ? 0xFFFF5555 : 0xFFE0E0E0);
+            if (parsed != null && !parsed.equals(setting.chosen())) {
+               apply(setting, parsed);
+            }
+         });
+         widgets.add(new Placed(box, y));
+      } else if (value instanceof List<?> list) {
+         int height = this.row(label, description, this.textLeft(), y, nameColor, GREY);
+         net.minecraft.client.gui.components.EditBox box = new net.minecraft.client.gui.components.EditBox(this.font, this.textLeft(), 0, this.room(), 18,
+            Component.literal(name));
+         box.setMaxLength(1024);
+         box.setValue(String.join("; ", list.stream().map(String::valueOf).toList()));
+         box.setTooltip(tooltip);
+         box.setResponder(text -> apply(setting, java.util.Arrays.stream(text.split(";")).map(String::trim).filter(each -> !each.isEmpty()).toList()));
+         widgets.add(new Placed(box, y + height - 2));
+         return height + 22;
+      }
+
+      return this.row(label, description, this.textLeft(), y, nameColor, GREY);
+   }
+
+   /** The text as a number of the setting's kind within its range, or null. */
+   @SuppressWarnings("unchecked")
+   private static Object number(Setting<?> setting, String text) {
+      try {
+         Object like = setting.fileDefault();
+         Comparable<Object> parsed = like instanceof Double ? (Comparable<Object>)(Object)Double.valueOf(text.trim())
+            : (Comparable<Object>)(Object)Integer.valueOf(text.trim());
+         Object min = setting.raw().min();
+         Object max = setting.raw().max();
+         if (min != null && parsed.compareTo(min) < 0 || max != null && parsed.compareTo(max) > 0) {
+            return null;
+         }
+
+         return parsed;
+      } catch (NumberFormatException notNumber) {
+         return null;
+      }
+   }
+
+   /** A value from the screen: a setting the presets give is chosen (config overrides), one they leave alone is written. */
+   @SuppressWarnings("unchecked")
+   private static void apply(Setting<?> setting, Object value) {
+      if (setting.normal() == null) {
+         ((Setting<Object>)setting).set(value);
+      } else {
+         ((Setting<Object>)setting).choose(value);
+      }
+   }
+
+   /** Back to its default: the preset's (the screen's choice taken out), or the file's default. */
+   @SuppressWarnings("unchecked")
+   private static void reset(Setting<?> setting) {
+      if (setting.normal() == null) {
+         ((Setting<Object>)setting).set(setting.fileDefault());
+      } else {
+         setting.unchoose();
+      }
    }
 
    /** The Config tab's last part: how much the mod writes to the log (applies at once). */

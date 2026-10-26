@@ -219,12 +219,17 @@ mod's settings button in ModMenu on Fabric). Its tabs:
   graphics adapter of the PC with what the mod can do with it and which one this game uses. The GPU is chosen once per
   game: a choice made before opening a world applies to it, a later one after restarting the game (the screen says so).
   The choice is saved as `gpuBackend` and `gpuDevice` in the config; `-Dwgaccel.gpuBackend=cuda`, `hip` or `opencl` on
-  Java's command line still wins. Below it, **Debug info level** sets how much the mod writes to the log: Verbose
+  Java's command line still wins. Below it, **General**: the preset, Chunky's chunks in flight, the memory report and
+  the GPU chat line. Then **Debug info level** sets how much the mod writes to the log: Verbose
   (every line, for a bug report), Normal (the default, about ten times fewer lines) or Silent (warnings and errors
   only); it applies at once.
 - **GPU improvements** and **CPU improvements:** every improvement with an on/off switch and what it does, and the
   switch for the whole section. A switch is saved in `overrides` (`[general]` in the config) and wins over the preset;
   **Defaults** puts the tab back to the preset's values. Changes apply from the next world you open.
+- **Advanced:** the GPU's checks and tuning (`[gpu.tuning]`), in groups: checks, queue and batches, streams and
+  threads, look-ahead, surface, other. Switches, mode buttons, number boxes (red while out of range) and list boxes
+  (entries separated by `;`). For tests and benchmarks: the defaults are the measured best and every value gives the
+  same world. **Defaults** puts the tab back.
 - **System info:** the CPU, memory, GPUs and their drivers, Java, Minecraft, the mod loader (NeoForge, or Fabric
   Loader and Fabric API), the worldgen mods and the GPU compilers the mod found. **Copy** puts it on the clipboard for a bug report.
 - **Benchmark:** performance tests run from the game, coming in a later version (the tab is greyed for now).
@@ -304,7 +309,7 @@ say how much they gained on the test PC.
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
 | `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `debugInfoLevel` (`VERBOSE` every log line, for a bug report; `NORMAL`, the default, each kind of line the first time and every 10th time after; `SILENT` warnings and errors only; also on the settings screen's Config tab), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
-| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastBlockPredicates` (off: it was slower) |
+| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastBlockPredicates` (off: it was slower) |
 | `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 
@@ -316,7 +321,8 @@ file are kept but not used; switch single improvements in the settings screen (w
 the file.
 
 `/wgaccel` in game shows what world generation did since the world opened (or since `/wgaccel reset`): chunks per
-second, time per step, what the GPU did and every check's result.
+second, time per step, what the GPU did and every check's result. `/wgaccel profile [seconds]` (60 by default) samples
+the generation threads while chunks generate and logs where their time goes: by mod, by method, and what they wait on.
 
 ## Building from source
 

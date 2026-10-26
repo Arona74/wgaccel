@@ -58,6 +58,8 @@ final class Improvements {
          "FreeTerraForged 1.0.0013 and later: keeps more chunks' raw heightmaps (about 47 KB each) than its own 1,024, so fewer are made again.", null),
       new Improvement(Config.FTF_REGION_PREFETCH, "Region prefetch",
          "FreeTerraForged 1.0.0013 and later: a region's 36 chunks made on 4 threads at once instead of one after another.", null),
+      new Improvement(Config.FAST_CHUNK_COMPRESSION, "Fast chunk compression",
+         "Saved chunks compressed in large blocks at zlib's fastest level: less CPU while saving, region files somewhat larger, the same world.", null),
       new Improvement(Config.FTF_FAST_RIVERS, "Fast rivers", "FreeTerraForged's river carving skips the rivers too far away to touch a column.", null),
       new Improvement(Config.TILE_CACHE_TILES, "Bigger tile cache",
          "FreeTerraForged 1.0.0010 (tiles): keeps more of its terrain tiles (4 to 6 MB each) than its own 4 to 32, so they are not made again and again.",

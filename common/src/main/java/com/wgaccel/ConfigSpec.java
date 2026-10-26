@@ -285,6 +285,16 @@ public final class ConfigSpec {
          return this.defaultValue;
       }
 
+      /** A number's lowest allowed value (the settings screen's boxes), or null for other values. */
+      public Object min() {
+         return null;
+      }
+
+      /** A number's highest allowed value, or null for other values. */
+      public Object max() {
+         return null;
+      }
+
       /** Its table names and its key: [gpu, tuning, gpuQueueOpenBelow]. */
       public List<String> getPath() {
          return this.path;
@@ -332,6 +342,16 @@ public final class ConfigSpec {
       @Override
       List<String> notes() {
          return List.of("# Default: " + Toml.write(this.getDefault()), "# Range: " + Toml.write(this.min) + " ~ " + Toml.write(this.max));
+      }
+
+      @Override
+      public Object min() {
+         return this.min;
+      }
+
+      @Override
+      public Object max() {
+         return this.max;
       }
 
       @Override

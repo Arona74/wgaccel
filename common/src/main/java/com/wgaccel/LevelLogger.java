@@ -13,9 +13,11 @@ import org.slf4j.helpers.MessageFormatter;
  * The mod's log (WorldgenAccelerator.LOG) at the config's debugInfoLevel: VERBOSE every line; NORMAL each kind of info
  * line (its text up to the first digit: "WGA GPU tile noise: ", "WGA " for the 10 s report) the first time and every 10th
  * time after, so one-off lines all stay and repeating ones come about ten times less; SILENT warnings and errors only.
- * Warnings and errors always go through.
+ * Warnings and errors always go through, and so do lines with the {@link #ALWAYS} marker unless the level is SILENT.
  */
-final class LevelLogger extends AbstractLogger {
+public final class LevelLogger extends AbstractLogger {
+   /** A report asked for in the config (the memory report): past NORMAL's every-10th rule. */
+   public static final Marker ALWAYS = org.slf4j.MarkerFactory.getMarker("WGA_ALWAYS");
    private static final int EVERY = 10;
    private final transient Logger delegate;
    private final Map<String, AtomicLong> seen = new ConcurrentHashMap<>();
@@ -96,11 +98,25 @@ final class LevelLogger extends AbstractLogger {
 
    @Override
    protected void handleNormalizedLoggingCall(Level level, Marker marker, String pattern, Object[] arguments, Throwable throwable) {
-      if (level.toInt() < Level.WARN.toInt() && !this.wanted(pattern, arguments)) {
+      if (level.toInt() < Level.WARN.toInt() && marker != ALWAYS && !this.wanted(pattern, arguments)) {
          return;
       }
 
-      Object[] args = arguments == null ? new Object[0] : arguments;
+      if (arguments == null || arguments.length == 0) {
+         // A text without arguments goes as plain text: a "{}" in it (an empty map written out) is not a placeholder
+         // (log4j complained of one with no argument, 25 Oct 2026).
+         switch (level) {
+            case TRACE -> this.delegate.trace(marker, pattern, throwable);
+            case DEBUG -> this.delegate.debug(marker, pattern, throwable);
+            case INFO -> this.delegate.info(marker, pattern, throwable);
+            case WARN -> this.delegate.warn(marker, pattern, throwable);
+            case ERROR -> this.delegate.error(marker, pattern, throwable);
+         }
+
+         return;
+      }
+
+      Object[] args = arguments;
       if (throwable != null) {
          args = java.util.Arrays.copyOf(args, args.length + 1);
          args[args.length - 1] = throwable;

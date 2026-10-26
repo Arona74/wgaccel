@@ -1122,9 +1122,16 @@ public final class GpuSurface {
       int count = (job.height + 15) / 16;
       int[] changes = new int[count];
       boolean[] toAir = new boolean[count];
-      for (int t = 0; t < 256; t++) {
-         for (int y = Math.min(job.tops[t], job.minY + job.height - 1); y >= job.minY; y--) {
-            int at = (y - job.minY) * 256 + t;
+      // Row by row (the arrays' own order; only counts, so the order does not matter): column by column stepped 512
+      // bytes at a time through about 400 KB per chunk (0.50.1 profile: this pass 2.5% of the generation threads).
+      for (int y = job.minY + job.height - 1; y >= job.minY; y--) {
+         int row = (y - job.minY) * 256;
+         for (int t = 0; t < 256; t++) {
+            if (y > job.tops[t]) {
+               continue;
+            }
+
+            int at = row + t;
             int code = out[at];
             if (code >= 0) {
                BlockState state = table[code];
@@ -1151,10 +1158,18 @@ public final class GpuSurface {
 
             LevelChunkSection section = sections[lowSection + i];
             BlockState[] blocks = new BlockState[4096];
-            // Block by block (0.9.51's one pass, PalettedContainer.getAll, threw "No value with id -1" with Lithium's
-            // palettes and turned the GPU surface off).
-            for (int b = 0; b < 4096; b++) {
-               blocks[b] = section.getBlockState(b & 15, b >> 8, (b >> 4) & 15);
+            // A section of one block (the fill's stone under the strata, most of them): no palette entry other than its
+            // first block means every block is that one (an unused entry only sends it the long way). 0.50.1's profile:
+            // the block-by-block read was 2.3% of the generation threads' time.
+            BlockState first = section.getBlockState(0, 0, 0);
+            if (!section.getStates().maybeHas(state -> state != first)) {
+               java.util.Arrays.fill(blocks, first);
+            } else {
+               // Block by block (0.9.51's one pass, PalettedContainer.getAll, threw "No value with id -1" with Lithium's
+               // palettes and turned the GPU surface off).
+               for (int b = 0; b < 4096; b++) {
+                  blocks[b] = section.getBlockState(b & 15, b >> 8, (b >> 4) & 15);
+               }
             }
 
             bulk[i] = blocks;

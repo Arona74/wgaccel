@@ -129,12 +129,22 @@ public final class Names {
       return REMAPPED ? memberName(component.getDeclaringRecord(), component.getName()) : component.getName();
    }
 
+   /** A stack frame's "Class.method" with Mojang's names (the class's simple name, nested ones with their outer). */
+   public static String frame(String className, String method) {
+      String name = translate(className);
+      return name.substring(name.lastIndexOf('.') + 1) + "." + (REMAPPED ? memberName(className, method) : method);
+   }
+
    private static String memberName(Class<?> owner, String name) {
+      return memberName(owner.getName(), name);
+   }
+
+   private static String memberName(String owner, String name) {
       if (!name.startsWith("field_") && !name.startsWith("method_") && !name.startsWith("comp_")) {
          return name;
       }
 
-      String owned = OWNED.isEmpty() ? null : OWNED.get(owner.getName() + "#" + name);
+      String owned = OWNED.isEmpty() ? null : OWNED.get(owner + "#" + name);
       return owned != null ? owned : MEMBERS.getOrDefault(name, name);
    }
 

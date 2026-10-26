@@ -28,6 +28,7 @@ public final class Config {
    public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
    public static final Setting<Boolean> FTF_FAST_RIVERS;
    public static final Setting<Boolean> FTF_REGION_PREFETCH;
+   public static final Setting<Boolean> FAST_CHUNK_COMPRESSION;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
    public static final Setting<Boolean> MEMORY_REPORT;
@@ -155,8 +156,9 @@ public final class Config {
             "Takes effect for a pregeneration started after the world has loaded.")
          .defineInRange("chunkyMaxWorkingCount", 0, -1, 65536), 0, 0);
       MEMORY_REPORT = Setting.custom(builder
-         .comment("For a bug report about memory: when the heap first passes 80% and 95% of its maximum, log what holds it (a class",
-            "histogram after a full collection, a pause of about a second, and the mod's cache sizes). Off by default.")
+         .comment("For a bug report about memory: while the heap is above 80% of its maximum, once a minute and 8 times at most per",
+            "world, log what still holds it (a class histogram after a full collection, a pause of about a second each time, and",
+            "the mod's cache sizes). Off by default.")
          .define("memoryReport", false));
       DEBUG_INFO_LEVEL = Setting.custom(builder
          .comment("How much the mod writes to the log (set by the settings screen's Config tab): VERBOSE every line (for a bug report),",
@@ -251,6 +253,12 @@ public final class Config {
             "chunks made in parallel on 4 threads of our own before its one thread walks them, while every other thread wanting",
             "a chunk of the region waits for it. The same cells.")
          .define("ftfRegionPrefetch", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_CHUNK_COMPRESSION = Setting.of(builder
+         .comment("Saved chunks compressed in large blocks at zlib's fastest level (1) instead of 8 bytes at a time (Minecraft writes",
+            "the chunk straight into the compressor, one native call per number) at its default (6). The same deflate format, so",
+            "the world opens without the mod, and the same blocks; region files somewhat larger. The 0.50.1 profiles",
+            "(FreeTerraForged, C2ME, 12 workers): compressing was 7-13% of the generation threads' time.")
+         .define("fastChunkCompression", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_BLOCK_PREDICATES = Setting.custom(builder
          .comment("Block predicates (placement filters, rule-based block choices) read each block once per evaluation: a block read",
             "again in the same evaluation comes from that evaluation's own reads (nothing writes blocks while a predicate runs).",

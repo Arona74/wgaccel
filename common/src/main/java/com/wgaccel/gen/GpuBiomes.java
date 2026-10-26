@@ -550,8 +550,11 @@ public final class GpuBiomes {
             EXTRA_SEARCHES.increment();
          }
 
-         @SuppressWarnings("unchecked")
-         Holder<Biome> found = (Holder<Biome>)p.table.biomes.get(chosen);
+         Holder<Biome> found = fromGpu(p.table, chosen);
+         if (found == null) {
+            return null;
+         }
+
          long[] t = current.projected;
          int at = cell * 6;
          Climate.TargetPoint projected = new Climate.TargetPoint(t[at], t[at + 1], t[at + 2], t[at + 3], t[at + 4], t[at + 5]);
@@ -575,17 +578,23 @@ public final class GpuBiomes {
 
          SEARCHES.increment();
          EXTRA_SEARCHES.increment();
-         @SuppressWarnings("unchecked")
-         Holder<Biome> other = (Holder<Biome>)p.table.biomes.get(chosen);
+         Holder<Biome> other = fromGpu(p.table, chosen);
+         if (other == null) {
+            return null;
+         }
+
          long[] c = current.climate;
          int at = cell * 6;
          Climate.TargetPoint projected = new Climate.TargetPoint(c[at], c[at + 1], current.extraCC[k * n + cell], c[at + 3], c[at + 4], c[at + 5]);
          return newResult(domain, other, p.table.extraCandidates.get(k), projected);
       }
 
+      Holder<Biome> biome = fromGpu(p.table, current.chosen[cell]);
+      if (biome == null) {
+         return null;
+      }
+
       SEARCHES.increment();
-      @SuppressWarnings("unchecked")
-      Holder<Biome> biome = (Holder<Biome>)p.table.biomes.get(current.chosen[cell]);
       long[] t = current.projected;
       int at = cell * 6;
       Climate.TargetPoint projected = new Climate.TargetPoint(t[at], t[at + 1], t[at + 2], t[at + 3], t[at + 4], t[at + 5]);
@@ -616,8 +625,31 @@ public final class GpuBiomes {
          return null;
       }
 
-      SEARCHES.increment();
-      return (Holder<Biome>)current.program.table.biomes.get(current.chosen[cell]);
+      Holder<Biome> biome = fromGpu(current.program.table, current.chosen[cell]);
+      if (biome != null) {
+         SEARCHES.increment();
+      }
+
+      return biome;
+   }
+
+   /**
+    * The table's biome for a number the GPU gave, or null when it is not one of the table's (the GPU biomes then turn off
+    * and the CPU searches): a bad number once threw out of the biome step and the chunk failed to load (Packtrix, 25 Oct
+    * 2026: "Index 9999 out of bounds for length 53", every GPU part's results wrong in that world).
+    */
+   @SuppressWarnings("unchecked")
+   private static Holder<Biome> fromGpu(BiomeTable table, int number) {
+      if (number >= 0 && number < table.biomes.size()) {
+         return (Holder<Biome>)table.biomes.get(number);
+      }
+
+      if (!failed) {
+         failed = true;
+         com.wgaccel.WgaChat.warnOff("WGA GPU biomes off (the CPU from now on): the GPU gave biome number {} of {}", number, table.biomes.size());
+      }
+
+      return null;
    }
 
    @SuppressWarnings({"unchecked", "rawtypes"})
@@ -655,6 +687,8 @@ public final class GpuBiomes {
          int at = cell * 6;
          if (chosen < 0) {
             TIES.increment();
+         } else if (chosen >= table.biomes.size()) {
+            difference(current, String.format(Locale.ROOT, "search in %s of %s: the GPU gave biome number %d of %d", domain, target, chosen, table.biomes.size()));
          } else if (c[at] != projected.temperature() || c[at + 1] != projected.humidity() || current.extraCC[k * n + cell] != projected.continentalness()
             || c[at + 3] != projected.erosion() || c[at + 4] != projected.depth() || c[at + 5] != projected.weirdness() || !table.biomes.get(chosen).equals(biome)) {
             difference(current, String.format(Locale.ROOT, "search in %s of %s: game %s %s, gpu %s (cc %d)", domain, target,
@@ -668,7 +702,13 @@ public final class GpuBiomes {
       int at = cell * 6;
       boolean same = t[at] == projected.temperature() && t[at + 1] == projected.humidity() && t[at + 2] == projected.continentalness()
          && t[at + 3] == projected.erosion() && t[at + 4] == projected.depth() && t[at + 5] == projected.weirdness();
-      Object gpuBiome = current.program.table.biomes.get(current.chosen[cell]);
+      int number = current.chosen[cell];
+      if (number < 0 || number >= table.biomes.size()) {
+         difference(current, String.format(Locale.ROOT, "search of %s: the GPU gave biome number %d of %d", target, number, table.biomes.size()));
+         return;
+      }
+
+      Object gpuBiome = table.biomes.get(number);
       if (current.tied[cell] != 0) {
          TIES.increment();
       } else if (!same || !gpuBiome.equals(biome)) {
