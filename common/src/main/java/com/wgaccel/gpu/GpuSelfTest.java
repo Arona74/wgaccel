@@ -206,6 +206,13 @@ public final class GpuSelfTest {
          return;
       }
 
+      if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux")) {
+         // LWJGL's own name (libnvrtc.so) through the system's library search: the CUDA package's folder is on it (Manjaro,
+         // 26 Oct 2026: NVRTC 12.9 found, while this said the Windows search had failed).
+         nvrtcState = "libnvrtc.so through the system's library search (else -Dwgaccel.nvrtc=<path to libnvrtc.so>)";
+         return;
+      }
+
       List<File> folders = new ArrayList<>();
       List<String> roots = new ArrayList<>();
       String cuda = System.getenv("CUDA_PATH");

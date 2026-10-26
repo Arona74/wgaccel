@@ -37,7 +37,7 @@ public final class Hip {
 
    /** The runtime's functions, looked up the first time one is called. */
    private static final class Runtime {
-      static final SharedLibrary LIBRARY = Library.loadNative(Hip.class, "org.lwjgl", System.getProperty("wgaccel.hip", "amdhip64_6"));
+      static final SharedLibrary LIBRARY = Library.loadNative(Hip.class, "org.lwjgl", System.getProperty("wgaccel.hip", runtimeName()));
       static final long hipInit = function(LIBRARY, "hipInit");
       static final long hipGetDeviceCount = function(LIBRARY, "hipGetDeviceCount");
       static final long hipDeviceGetName = function(LIBRARY, "hipDeviceGetName");
@@ -103,6 +103,42 @@ public final class Hip {
       } catch (Throwable missing) {
          return false;
       }
+   }
+
+   /**
+    * Whether the automatic choice takes HIP: on Linux, when ROCm's HIP runtime sees a card and hipRTC is installed, unless
+    * the GPU OpenCL would take (a separate card first, then the most units) is another vendor's: an NVIDIA card beside a
+    * Ryzen's own Radeon stays OpenCL's, an RX 7900 XTX beside an RTX 3060 (a user's Manjaro PC) goes to HIP. A Radeon 680M
+    * (ROCm 6.4, 27 Oct 2026) took r1000 in 1:29 as HIP, 2:26 on the CPU alone, and its tile noise was 10-15x slower
+    * through ROCm's OpenCL than through HIP. On Windows OpenCL stays (as fast as HIP on the RX 9070 XT). Never throws.
+    */
+   public static boolean linuxAutomatic() {
+      if (!linux() || !runtimePresent() || configureHiprtc() == null) {
+         return false;
+      }
+
+      try {
+         OpenCl.Device best = null;
+         for (OpenCl.Device device : OpenCl.devices()) {
+            if (device.automatic() && (best == null || score(device) > score(best))) {
+               best = device;
+            }
+         }
+
+         return best == null || amd(best.vendor());
+      } catch (Throwable failure) {
+         return true;
+      }
+   }
+
+   /** As GpuDevice and GpuInventory rank: a separate card first, then the most units. */
+   private static long score(OpenCl.Device device) {
+      return (device.integrated() ? 0L : 1L << 32) + device.units();
+   }
+
+   private static boolean amd(String vendor) {
+      String upper = vendor.toUpperCase(Locale.ROOT);
+      return upper.contains("AMD") || upper.contains("ADVANCED MICRO");
    }
 
    // The runtime.
@@ -260,8 +296,21 @@ public final class Hip {
       return JNI.callPPPPPI(MemoryUtil.memAddress(program), MemoryUtil.memAddress(source), MemoryUtil.memAddress(name), 0, 0L, 0L, Rtc.hiprtcCreateProgram);
    }
 
+   /**
+    * On Linux one compile at a time: ROCm 6.4's code object manager builds through temporary folders in /tmp that one
+    * compile's cleanup removed under another's ("unable to rename temporary ... worldgen.cu.o", then the game died with
+    * a segmentation fault; a Radeon 680M, 27 Oct 2026, the mod's programs compiled on five threads at once).
+    */
+   private static final Object COMPILING = new Object();
+
    public static int hiprtcCompileProgram(long program, PointerBuffer options) {
-      return JNI.callPPI(program, options.remaining(), MemoryUtil.memAddress(options), Rtc.hiprtcCompileProgram);
+      if (!linux()) {
+         return JNI.callPPI(program, options.remaining(), MemoryUtil.memAddress(options), Rtc.hiprtcCompileProgram);
+      }
+
+      synchronized (COMPILING) {
+         return JNI.callPPI(program, options.remaining(), MemoryUtil.memAddress(options), Rtc.hiprtcCompileProgram);
+      }
    }
 
    public static int hiprtcGetProgramLogSize(long program, PointerBuffer size) {
@@ -315,6 +364,58 @@ public final class Hip {
    public static volatile String hiprtcState = "not looked for yet";
    private static volatile String hiprtcPath;
 
+   private static boolean linux() {
+      return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux");
+   }
+
+   /**
+    * ROCm's lib folders on Linux, newest first: ROCM_PATH, /opt/rocm (the installed version's link), then each
+    * /opt/rocm-x.y.z.
+    */
+   private static List<File> linuxFolders() {
+      List<File> folders = new ArrayList<>();
+      String rocm = System.getenv("ROCM_PATH");
+      if (rocm != null) {
+         folders.add(new File(rocm, "lib"));
+      }
+
+      folders.add(new File("/opt/rocm/lib"));
+      File[] versions = new File("/opt").listFiles((dir, name) -> name.startsWith("rocm-"));
+      if (versions != null) {
+         java.util.Arrays.stream(versions).sorted(java.util.Comparator.comparing(File::getName).reversed()).forEach(v -> folders.add(new File(v, "lib")));
+      }
+
+      return folders;
+   }
+
+   /** The first library in ROCm's lib folders whose name starts with the prefix (not hipRTC's builtins), or null. */
+   private static String linuxLibrary(String prefix) {
+      for (File folder : linuxFolders()) {
+         File[] found = folder.listFiles((dir, name) -> name.startsWith(prefix) && name.contains(".so") && !name.contains("builtins"));
+         if (found != null && found.length > 0) {
+            // The plain name (libamdhip64.so) before its versioned ones when it is there.
+            java.util.Arrays.sort(found, java.util.Comparator.comparing(File::getName));
+            return found[0].getAbsolutePath();
+         }
+      }
+
+      return null;
+   }
+
+   /**
+    * The HIP runtime: amdhip64_6.dll on Windows (with the graphics driver); on Linux ROCm's libamdhip64.so, by its path
+    * in ROCm's folders or else by its runtime name for the system's own search (26 Oct 2026: LWJGL's name mapping made
+    * "amdhip64_6" libamdhip64_6.so, which no ROCm has).
+    */
+   private static String runtimeName() {
+      if (!linux()) {
+         return "amdhip64_6";
+      }
+
+      String found = linuxLibrary("libamdhip64");
+      return found != null ? found : "libamdhip64.so";
+   }
+
    /**
     * Finds the HIP SDK's hipRTC (hiprtc*.dll, not its builtins) once. Looked for, in order: the system property
     * wgaccel.hiprtc; the bin folders of HIP_PATH and every other HIP_PATH* variable; the SDK's usual install folder
@@ -330,6 +431,12 @@ public final class Hip {
       if (explicit != null) {
          hiprtcState = explicit + " (-Dwgaccel.hiprtc)";
          return hiprtcPath = explicit;
+      }
+
+      if (linux()) {
+         String found = linuxLibrary("libhiprtc");
+         hiprtcState = found != null ? found : "no libhiprtc.so in ROCm's folders (" + linuxFolders() + "); install ROCm's hiprtc (package hip-runtime-amd) or start Java with -Dwgaccel.hiprtc=<path>";
+         return hiprtcPath = found;
       }
 
       List<String> roots = new ArrayList<>();
@@ -389,7 +496,8 @@ public final class Hip {
          throw new IllegalStateException("hipRTC: " + hiprtcState);
       }
 
-      File[] beside = new File(path).getAbsoluteFile().getParentFile().listFiles((dir, name) -> {
+      // Windows only: on Linux the loader finds them through the library's own run path.
+      File[] beside = linux() ? null : new File(path).getAbsoluteFile().getParentFile().listFiles((dir, name) -> {
          String lower = name.toLowerCase(Locale.ROOT);
          return lower.endsWith(".dll") && (lower.startsWith("amd_comgr") || lower.startsWith("hiprtc-builtins"));
       });

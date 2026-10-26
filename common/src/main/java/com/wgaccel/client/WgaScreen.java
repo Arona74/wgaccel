@@ -194,7 +194,8 @@ public final class WgaScreen extends Screen {
       GpuInventory.Device first = firstUsable(inventory);
       Button auto = this.pick("Automatic", automatic, true, () -> this.choose(Config.GpuBackendChoice.AUTO, -1), left, 100);
       auto.setTooltip(Tooltip.create(Component.literal("Let the mod choose: OpenCL, through the GPU driver's own compiler, on a separate card first, then the"
-         + " one with the most compute units (Intel integrated graphics only when chosen by hand). CUDA and HIP are used only when chosen under Manual.")));
+         + " one with the most compute units (Intel integrated graphics only when chosen by hand). On Linux with ROCm's HIP and hipRTC installed: HIP, on an AMD GPU."
+         + " Otherwise CUDA and HIP are used only when chosen under Manual.")));
       Button manual = this.pick("Manual", !automatic, first != null, () -> this.chooseManually(inventory, first), left + 104, 100);
       manual.setTooltip(Tooltip.create(Component.literal(first == null ? "No GPU on this PC can run the mod's GPU parts." : "Choose the API and the GPU below.")));
       widgets.add(new Placed(auto, y));

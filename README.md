@@ -16,7 +16,8 @@ On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster**
 > [!NOTE]
 > **The GPU parts run through OpenCL, on NVIDIA, AMD and Intel GPUs, with nothing to install but the GPU's driver.**
 > The mod uses the OpenCL compiler every GPU driver has. NVIDIA's CUDA (with the CUDA Toolkit) and AMD's HIP (with the
-> HIP SDK, Windows) can be chosen instead in the settings screen. Intel integrated graphics are used only when chosen
+> HIP SDK on Windows, ROCm on Linux) can be chosen instead in the settings screen; on Linux with ROCm installed HIP is
+> taken by itself (see [Linux](#linux)). Intel integrated graphics are used only when chosen
 > there: the one measured was slower than its laptop's CPU. Without a GPU OpenCL can use, the mod still runs with its CPU
 > improvements. When you join a world, a chat line names the GPU and the API in use (`gpuTestedWarning = false` turns it
 > off).
@@ -198,7 +199,8 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 
 **Which API:** OpenCL by default. It needs no SDK and ran about as fast as the vendors' own APIs on the cards measured
 (an RTX 5060 laptop: 0:34 through OpenCL, 0:32 through CUDA; an RX 9070 XT: 0:46 through OpenCL, the same as HIP).
-CUDA and HIP are used only when chosen under Manual in the settings screen (below), and need a compiler of their own:
+CUDA and HIP are used only when chosen under Manual in the settings screen (below), but for HIP on Linux with ROCm
+(see [Linux](#linux)), and need a compiler of their own:
 
 - **CUDA (NVIDIA):** the **NVIDIA CUDA Toolkit** 12.x or 13.x from https://developer.nvidia.com/cuda-toolkit-archive
   (Windows, x86_64, "exe (network)", the default "Express" install). Only its **NVRTC** part (`nvrtc64_*.dll`) is used.
@@ -207,6 +209,7 @@ CUDA and HIP are used only when chosen under Manual in the settings screen (belo
 - **HIP (AMD, Windows):** the **AMD HIP SDK for Windows** 6.4 or newer from
   https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html. Only its **hipRTC** part (`hiprtc*.dll`) is used.
   Restart the launcher afterwards.
+- **HIP (AMD, Linux):** ROCm; see [Linux](#linux).
 
 **Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, a laptop's
 Intel graphics beside an NVIDIA card, for example) the mod takes a separate card first, then the one with the most
@@ -239,6 +242,32 @@ With CUDA chosen, the mod looks for `nvrtc64_*.dll` in `CUDA_PATH` and every `CU
 start Java with `-Dwgaccel.nvrtc=C:/path/to/nvrtc64_120_0.dll`. With HIP it looks for `hiprtc*.dll` in the `bin`
 folder of `HIP_PATH` and every other `HIP_PATH*`, then in `C:/Program Files/AMD/ROCm/*/bin` (newest first), then on
 `PATH`; `-Dwgaccel.hiprtc=C:/path/to/hiprtc0604.dll` points it somewhere else.
+
+### Linux
+
+Tested on Linux Mint 22 (Ubuntu 24.04 base), kernel 7.0, with a Radeon 680M (Ryzen 7 PRO 6850H): r1000 in 1:29 through
+HIP against 2:26 on the CPU alone, every check identical.
+
+- **OpenCL** loads `libOpenCL.so.1` (the ICD loader, package `ocl-icd-libopencl1`) by itself; the development package
+  is not needed. `-Dorg.lwjgl.opencl.libname=<path>` points it somewhere else.
+- **Mesa's OpenCL (rusticl, clover) is not used automatically:** on the 680M (Mesa 25.2) it compiled the kernels for
+  over 3 minutes and then stalled. Chosen by hand it needs `RUSTICL_ENABLE=radeonsi` and `RUSTICL_FEATURES=fp64`.
+- **AMD: install ROCm and use HIP.** ROCm's OpenCL works, but on the 680M it was 10-15x slower than HIP (on an RX 7900 XTX it ran well). With ROCm's
+  HIP runtime and hipRTC installed, the automatic choice takes HIP on the AMD GPU, unless the GPU it would otherwise
+  take (a separate card first, then the most compute units) is another vendor's: an NVIDIA card beside a Ryzen's own
+  Radeon stays on OpenCL, while an RX 7900 XTX beside an RTX 3060 goes to HIP. Steps (Ubuntu 24.04 and Mint 22):
+  1. Add AMD's ROCm apt repository (https://rocm.docs.amd.com, "Quick start installation", version 6.4 or newer) and
+     install `hip-runtime-amd` (and `rocm-opencl-runtime` for OpenCL).
+  2. `sudo usermod -aG render,video $USER`, then **log out and back in** (or restart): until then `/dev/kfd` is
+     closed to the game and ROCm finds no GPU.
+  3. Integrated Radeons that ROCm does not list (680M and 660M: gfx1035) need `HSA_OVERRIDE_GFX_VERSION=10.3.0` in
+     the game's environment (in Prism: the instance's Settings, Environment variables). Graphics cards ROCm supports
+     need nothing.
+
+  The mod looks for `libamdhip64.so` and `libhiprtc.so` in `ROCM_PATH/lib`, `/opt/rocm/lib` and `/opt/rocm-x.y.z/lib`
+  (newest first); `-Dwgaccel.hip=<path>` and `-Dwgaccel.hiprtc=<path>` point it somewhere else. The first world takes
+  about 30 s longer to open on the 680M while the GPU programs are built. If no GPU is taken, the `WGA GPU backend`
+  line in the log says what the search found and what is missing.
 
 Through OpenCL and HIP the `/wgaccel` report leaves out the GPU time of each step (only CUDA times them: under HIP
 GPU events made the results wrong on a Radeon 680M, and OpenCL's time nothing without a profiling queue). The work and

@@ -38,7 +38,7 @@ public final class OpenCl {
 
    /** An OpenCL GPU and what the mod needs of it. */
    public record Device(long platform, long id, String name, String vendor, String version, String driver, int units, boolean integrated, long memory,
-         boolean doubles, boolean svm, boolean generic, boolean priorities) {
+         boolean doubles, boolean svm, boolean generic, boolean priorities, boolean mesa) {
       /** Double precision, and shared virtual memory but on NVIDIA's (plain buffers there: {@link #buffers}). */
       public boolean usable() {
          return this.doubles && (this.svm || this.nvidia());
@@ -51,7 +51,17 @@ public final class OpenCl {
        * Intel's still run.
        */
       public boolean automatic() {
-         return this.usable() && !(this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL"));
+         return this.usable() && !this.mesa && !(this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL"));
+      }
+
+      /**
+       * Why the automatic choice passes it over ("" when it does not). Mesa's OpenCL (rusticl): a Radeon 680M on Mesa 25.2
+       * (26 Oct 2026, RUSTICL_FEATURES=fp64) took 6 s for the biome kernels and over 180 s without finishing the noise fill,
+       * surface and tile noise (AMD's own compiler: under 1 s each), then the game stopped soon after Chunky started.
+       */
+      public String passedOver() {
+         return !this.usable() ? "no " + this.missing() : this.mesa ? "Mesa's OpenCL (rusticl): compiles the kernels for minutes and stalled; used only when chosen"
+            : this.automatic() ? "" : "Intel integrated graphics: slower than the CPU on the one tested; used only when chosen";
       }
 
       boolean nvidia() {
@@ -162,33 +172,137 @@ public final class OpenCl {
       }
 
       List<Device> list = new ArrayList<>();
+      List<String> seen = new ArrayList<>();
+      String library = linuxLibrary();
+      if (library != null) {
+         seen.add("library " + library);
+      }
+
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer count = stack.mallocInt(1);
-         if (clGetPlatformIDs(null, count) == CL_SUCCESS && count.get(0) > 0) {
+         int result = clGetPlatformIDs(null, count);
+         if (result != CL_SUCCESS || count.get(0) == 0) {
+            seen.add("no OpenCL platform (" + (result == CL_SUCCESS ? "none listed" : code(result)) + ")");
+         } else {
             PointerBuffer platforms = stack.mallocPointer(count.get(0));
             clGetPlatformIDs(platforms, (IntBuffer)null);
             for (int p = 0; p < platforms.capacity(); p++) {
+               long platform = platforms.get(p);
+               String name = platformText(platform, CL_PLATFORM_NAME) + " " + platformText(platform, CL_PLATFORM_VERSION);
                IntBuffer found = stack.mallocInt(1);
-               if (clGetDeviceIDs(platforms.get(p), CL_DEVICE_TYPE_GPU, null, found) != CL_SUCCESS || found.get(0) == 0) {
+               result = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, null, found);
+               if (result != CL_SUCCESS || found.get(0) == 0) {
+                  seen.add("platform " + name.trim() + ": no GPU (" + (result == CL_SUCCESS ? "none listed" : code(result)) + ")"
+                     + (name.toLowerCase(Locale.ROOT).contains("rusticl") && System.getenv("RUSTICL_ENABLE") == null
+                        ? "; Mesa's rusticl lists GPUs only with RUSTICL_ENABLE (e.g. radeonsi) set in the game's own environment" : "")
+                     + (name.contains("AMD-APP") && System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux") ? rocmHint() : ""));
                   continue;
                }
 
                PointerBuffer ids = stack.mallocPointer(found.get(0));
-               clGetDeviceIDs(platforms.get(p), CL_DEVICE_TYPE_GPU, ids, (IntBuffer)null);
+               clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, ids, (IntBuffer)null);
                for (int d = 0; d < ids.capacity(); d++) {
-                  list.add(describe(platforms.get(p), ids.get(d)));
+                  Device device = describe(platform, ids.get(d), name.toLowerCase(Locale.ROOT).matches(".*(rusticl|clover|mesa).*"));
+                  list.add(device);
+                  seen.add("platform " + name.trim() + ": " + device.name() + " (" + device.version() + ", driver " + device.driver() + ")"
+                     + (device.passedOver().isEmpty() ? "" : ", not taken automatically: " + device.passedOver())
+                     // Mesa's rusticl keeps double precision off unless asked for (a Radeon 680M, Mesa 25.2, 26 Oct 2026).
+                     + (!device.doubles() && name.toLowerCase(Locale.ROOT).contains("rusticl")
+                        && !String.valueOf(System.getenv("RUSTICL_FEATURES")).contains("fp64") ? " (rusticl turns it on with RUSTICL_FEATURES=fp64 in the game's environment)" : ""));
                }
             }
          }
       } catch (Throwable missing) {
-         // No OpenCL library (OpenCL.dll comes with every GPU driver; a PC without one has no GPU to use).
+         // No OpenCL library (OpenCL.dll comes with every GPU driver; a PC without one has no GPU to use; on Linux the ICD
+         // loader, libOpenCL.so.1, is a package of its own).
+         seen.add("the OpenCL library did not load: " + missing);
       }
 
+      survey = String.join("; ", seen);
       devices = List.copyOf(list);
       return devices;
    }
 
-   private static Device describe(long platform, long device) {
+   /**
+    * On Linux, the OpenCL ICD loader by its runtime name, before LWJGL's first OpenCL call loads it: LWJGL looks for
+    * libOpenCL.so, which only the loader's development package installs (Ubuntu's ocl-icd-opencl-dev), so a Radeon 680M
+    * laptop with Mesa's rusticl (26 Oct 2026) had no OpenCL at all while libOpenCL.so.1 was there. Left alone when the
+    * library was named with -Dorg.lwjgl.opencl.libname. Returns what was chosen, or null.
+    */
+   private static String linuxLibrary() {
+      if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux") || org.lwjgl.system.Configuration.OPENCL_LIBRARY_NAME.get() != null) {
+         return null;
+      }
+
+      for (String dir : new String[] {"/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib", "/usr/lib/aarch64-linux-gnu"}) {
+         for (String name : new String[] {"libOpenCL.so.1", "libOpenCL.so"}) {
+            java.nio.file.Path path = java.nio.file.Path.of(dir, name);
+            if (java.nio.file.Files.exists(path)) {
+               org.lwjgl.system.Configuration.OPENCL_LIBRARY_NAME.set(path.toString());
+               return path.toString();
+            }
+         }
+      }
+
+      // Not in the usual places: the dynamic loader's own search by the runtime name.
+      org.lwjgl.system.Configuration.OPENCL_LIBRARY_NAME.set("libOpenCL.so.1");
+      return "libOpenCL.so.1 (the system's search)";
+   }
+
+   /**
+    * ROCm's OpenCL listing no GPU on Linux: what the game's process has of what it needs. ROCm reaches the GPU through
+    * /dev/kfd (the user in the render group), and passes over GPUs it does not list (a Radeon 680M, gfx1035) unless
+    * HSA_OVERRIDE_GFX_VERSION names one it does (10.3.0); both checked from inside the game, where a launcher's
+    * environment applies (26 Oct 2026: ROCm 6.4 installed, its platform there, no GPU).
+    */
+   private static String rocmHint() {
+      String override = System.getenv("HSA_OVERRIDE_GFX_VERSION");
+      java.nio.file.Path kfd = java.nio.file.Path.of("/dev/kfd");
+      String access = !java.nio.file.Files.exists(kfd) ? "missing (the kernel's amdgpu driver without its compute part)"
+         : java.nio.file.Files.isReadable(kfd) && java.nio.file.Files.isWritable(kfd) ? "usable" : "not usable by this user (add it to the render group, then log in again)";
+      return "; ROCm: HSA_OVERRIDE_GFX_VERSION " + (override == null ? "not set in the game's environment (10.3.0 for a Radeon 680M / 660M)" : "= " + override)
+         + ", /dev/kfd " + access;
+   }
+
+   /** What {@link #devices} found, platform by platform, and why a platform gave no GPU (for the logs). */
+   public static String survey() {
+      devices();
+      return survey;
+   }
+
+   private static volatile String survey = "";
+
+   private static String platformText(long platform, int parameter) {
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         PointerBuffer size = stack.mallocPointer(1);
+         if (clGetPlatformInfo(platform, parameter, (ByteBuffer)null, size) != CL_SUCCESS || size.get(0) <= 1L) {
+            return "";
+         }
+
+         ByteBuffer value = MemoryUtil.memAlloc((int)size.get(0));
+         try {
+            clGetPlatformInfo(platform, parameter, value, null);
+            return MemoryUtil.memUTF8(value, (int)size.get(0) - 1).trim();
+         } finally {
+            MemoryUtil.memFree(value);
+         }
+      }
+   }
+
+   /** An OpenCL error code with its name, for the ones listing platforms and devices gives. */
+   private static String code(int result) {
+      String name = switch (result) {
+         case -1 -> "CL_DEVICE_NOT_FOUND";
+         case -30 -> "CL_INVALID_VALUE";
+         case -31 -> "CL_INVALID_DEVICE_TYPE";
+         case -32 -> "CL_INVALID_PLATFORM";
+         case -1001 -> "CL_PLATFORM_NOT_FOUND_KHR: the ICD loader found no driver";
+         default -> "";
+      };
+      return name.isEmpty() ? "error " + result : "error " + result + " " + name;
+   }
+
+   private static Device describe(long platform, long device, boolean mesa) {
       String version = text(device, CL_DEVICE_VERSION);
       boolean two = version.startsWith("OpenCL 2");
       boolean three = version.startsWith("OpenCL 3");
@@ -201,7 +315,7 @@ public final class OpenCl {
          text(device, CL_DRIVER_VERSION),
          (int)number(device, CL_DEVICE_MAX_COMPUTE_UNITS), number(device, org.lwjgl.opencl.CL11.CL_DEVICE_HOST_UNIFIED_MEMORY) != 0L,
          number(device, CL_DEVICE_GLOBAL_MEM_SIZE), number(device, CL12.CL_DEVICE_DOUBLE_FP_CONFIG) != 0L, (svm & CL20.CL_DEVICE_SVM_COARSE_GRAIN_BUFFER) != 0L, generic,
-         extensions.contains("cl_khr_priority_hints"));
+         extensions.contains("cl_khr_priority_hints"), mesa);
    }
 
    private static String text(long device, int parameter) {
@@ -277,8 +391,7 @@ public final class OpenCl {
 
       if (!device.automatic() && GpuDevice.configured < 0) {
          // Automatic never takes Intel integrated graphics (Device#automatic): chosen in the settings screen they run.
-         throw new IllegalStateException("no GPU OpenCL can use automatically; " + device.name() + " (Intel integrated graphics) is used only when chosen in"
-            + " the settings screen (slower than the CPU on the one tested)");
+         throw new IllegalStateException("no GPU OpenCL can use automatically; " + device.name() + ": " + device.passedOver() + " (in the settings screen)");
       }
 
       try (MemoryStack stack = MemoryStack.stackPush()) {

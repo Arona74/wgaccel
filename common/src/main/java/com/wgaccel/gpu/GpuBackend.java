@@ -8,7 +8,8 @@ import java.util.Locale;
  * kernels and calls run on either; only the compiler and its options differ ({@link GpuSelfTest}, {@link HipSelfTest}).
  * OpenCL takes the same kernels translated ({@link OpenClSource}) and the same calls through {@link OpenCl}.
  * <p>
- * -Dwgaccel.gpuBackend=cuda, hip or opencl, or config gpuBackend, chooses; automatic is OpenCL, on a separate card first,
+ * -Dwgaccel.gpuBackend=cuda, hip or opencl, or config gpuBackend, chooses; automatic is HIP on Linux with ROCm
+ * ({@link Hip#linuxAutomatic}), otherwise OpenCL, on a separate card first,
  * then the most compute units ({@link GpuDevice}; Intel integrated graphics only when chosen; none: the GPU stays off).
  * Decided once, the first time the GPU is used.
  */
@@ -44,11 +45,17 @@ public final class GpuBackend {
          return configured.toLowerCase(Locale.ROOT);
       }
 
+      if (Hip.linuxAutomatic()) {
+         reason = "automatic: HIP, ROCm's runtime with hipRTC " + Hip.hiprtcState + " (Linux: faster than ROCm's OpenCL)";
+         return "hip";
+      }
+
       // OpenCL by default: every GPU driver has its compiler (nothing to install), and it ran as fast as CUDA and HIP on the cards
       // measured (RTX 5060 laptop 0:34 against CUDA 0:32, RX 9070 XT 0:46 as HIP). CUDA and HIP when chosen. Without a GPU
       // OpenCL can use, the GPU stays off (OpenCl.init refuses Intel integrated graphics chosen automatically).
-      reason = OpenCl.automaticDevicePresent() ? "automatic: OpenCL, through the GPU driver's own compiler"
-         : "automatic: no GPU OpenCL can use (Intel integrated graphics are used only when chosen: slower than the CPU on the one tested)";
+      reason = OpenCl.automaticDevicePresent() ? "automatic: OpenCL, through the GPU driver's own compiler (" + OpenCl.survey() + ")"
+         : OpenCl.devices().isEmpty() ? "automatic: OpenCL lists no GPU: " + OpenCl.survey()
+         : "automatic: no GPU OpenCL can use (" + OpenCl.survey() + ")";
       return "opencl";
    }
 

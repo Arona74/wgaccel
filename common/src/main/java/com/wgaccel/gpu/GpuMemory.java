@@ -57,10 +57,31 @@ public final class GpuMemory {
    private static final AtomicLong STREAMS = new AtomicLong();
    private static final AtomicLong STREAM_GROWTH = new AtomicLong();
 
-   /** The process's committed memory (Windows: private bytes), or -1. */
+   private static final boolean LINUX = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("linux");
+
+   /** The process's committed memory (Windows: private bytes; Linux: resident, VmRSS), or -1. */
    public static long committed() {
+      if (LINUX) {
+         // Java's figure on Linux is the whole address space (VmSize), which ZGC's multi-mapped heap makes 100+ GB.
+         try {
+            for (String line : java.nio.file.Files.readAllLines(java.nio.file.Path.of("/proc/self/status"))) {
+               if (line.startsWith("VmRSS:")) {
+                  return Long.parseLong(line.substring(6).trim().split("\\s+")[0]) * 1024L;
+               }
+            }
+         } catch (Exception ignored) {
+         }
+
+         return -1L;
+      }
+
       return java.lang.management.ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os
          ? os.getCommittedVirtualMemorySize() : -1L;
+   }
+
+   /** The word for committed() in the log. */
+   public static String committedName() {
+      return LINUX ? "resident" : "committed";
    }
 
    static void moduleLoaded(long committedBefore) {

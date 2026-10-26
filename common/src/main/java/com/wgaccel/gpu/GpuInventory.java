@@ -131,15 +131,17 @@ public final class GpuInventory {
          }
       }
 
-      return new Inventory(List.copyOf(adapters), automatic(openCl), List.copyOf(problems));
+      return new Inventory(List.copyOf(adapters), automatic(hip, openCl), List.copyOf(problems));
    }
 
    /**
-    * As GpuBackend and GpuDevice choose with AUTO and -1: OpenCL's GPUs but Intel integrated graphics
-    * ({@link OpenCl.Device#automatic}), a separate card first, then the most units. CUDA and HIP only when chosen.
+    * As GpuBackend and GpuDevice choose with AUTO and -1: HIP's GPUs on Linux with ROCm ({@link Hip#linuxAutomatic}),
+    * otherwise OpenCL's but Intel integrated graphics ({@link OpenCl.Device#automatic}); a separate card first, then the
+    * most units. CUDA only when chosen.
     */
-   private static Device automatic(List<Device> openCl) {
-      List<Device> list = openCl.stream().filter(device -> OpenCl.devices().get(device.index()).automatic()).toList();
+   private static Device automatic(List<Device> hip, List<Device> openCl) {
+      List<Device> list = !hip.isEmpty() && Hip.linuxAutomatic() ? hip
+         : openCl.stream().filter(device -> OpenCl.devices().get(device.index()).automatic()).toList();
       Device best = null;
       long bestScore = -1L;
       for (Device device : list) {

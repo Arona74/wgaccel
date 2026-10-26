@@ -167,10 +167,10 @@ public final class Reporter {
    private static String memory() {
       Runtime runtime = Runtime.getRuntime();
       String process = "";
-      if (java.lang.management.ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
-         long committed = os.getCommittedVirtualMemorySize();
-         process = String.format(Locale.ROOT, "process committed %.1f GB (heap reserved %.1f GB), ", committed / 1.073741824e9,
-            runtime.totalMemory() / 1.073741824e9);
+      long committed = com.wgaccel.gpu.GpuMemory.committed();
+      if (committed >= 0L) {
+         process = String.format(Locale.ROOT, "process %s %.1f GB (heap reserved %.1f GB), ", com.wgaccel.gpu.GpuMemory.committedName(),
+            committed / 1.073741824e9, runtime.totalMemory() / 1.073741824e9);
       }
 
       return process + com.wgaccel.gpu.GpuMemory.summary();
