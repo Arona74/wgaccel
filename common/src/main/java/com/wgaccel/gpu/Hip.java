@@ -108,7 +108,8 @@ public final class Hip {
    /**
     * Whether the automatic choice takes HIP: on Linux, when ROCm's HIP runtime sees a card and hipRTC is installed, unless
     * the GPU OpenCL would take (a separate card first, then the most units) is another vendor's: an NVIDIA card beside a
-    * Ryzen's own Radeon stays OpenCL's, an RX 7900 XTX beside an RTX 3060 (a user's Manjaro PC) goes to HIP. A Radeon 680M
+    * Ryzen's own Radeon stays OpenCL's, an RX 7900 XTX beside an RTX 3060 (a user's Manjaro PC) goes to HIP; RDNA 1
+    * (gfx101x) stays OpenCL's, faster there. Needs ROCm's OpenCL too, to see which GPU that is. A Radeon 680M
     * (ROCm 6.4, 27 Oct 2026) took r1000 in 1:29 as HIP, 2:26 on the CPU alone, and its tile noise was 10-15x slower
     * through ROCm's OpenCL than through HIP. On Windows OpenCL stays (as fast as HIP on the RX 9070 XT). Never throws.
     */
@@ -125,9 +126,12 @@ public final class Hip {
             }
          }
 
-         return best == null || amd(best.vendor());
+         // None (only GPUs too small, or no ROCm OpenCL to compare with): not HIP either. RDNA 1 (an RX 5700 XT, on Windows)
+         // ran faster through OpenCL than through HIP, and ROCm does not list it; RDNA 3 and 4 (RX 7900 XTX on Linux, RX 9070
+         // XT on Windows) the same either way.
+         return best != null && amd(best.vendor()) && !best.rdna1();
       } catch (Throwable failure) {
-         return true;
+         return false;
       }
    }
 

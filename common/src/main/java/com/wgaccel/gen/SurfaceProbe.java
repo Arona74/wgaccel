@@ -117,6 +117,14 @@ public final class SurfaceProbe {
          return;
       }
 
+      // Not into biomes, registries or the client: a modpack's rules (biome conditions holding biome holders) led the walk
+      // through every biome's features into textures and renderers (30,993 nodes of 226 kinds, 27 Oct 2026).
+      if (node instanceof net.minecraft.world.level.biome.Biome || node instanceof net.minecraft.core.Registry<?> || Names.className(type).contains(".client.")
+         || Names.className(type).startsWith("com.mojang.blaze3d")) {
+         out.append(indent).append(Names.className(type).substring(Names.className(type).lastIndexOf('.') + 1)).append(" (not followed)\n");
+         return;
+      }
+
       if (node instanceof Enum<?> constant && !isRule(type)) {
          out.append(indent).append(constant.name()).append('\n');
          return;

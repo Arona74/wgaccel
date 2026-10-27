@@ -38,7 +38,13 @@ public final class OpenCl {
 
    /** An OpenCL GPU and what the mod needs of it. */
    public record Device(long platform, long id, String name, String vendor, String version, String driver, int units, boolean integrated, long memory,
-         boolean doubles, boolean svm, boolean generic, boolean priorities, boolean mesa) {
+         boolean doubles, boolean svm, boolean generic, boolean priorities, boolean mesa, String chip) {
+      /**
+       * Fewer compute units than this (AMD's CUs, NVIDIA's SMs) and the automatic choice passes the GPU over: a Radeon 610M
+       * (RDNA 2, 2 units) was slower than its laptop's CPU, a Radeon 680M (12 units) 1.6x faster (27 Oct 2026).
+       */
+      public static final int AUTOMATIC_UNITS = 8;
+
       /** Double precision, and shared virtual memory but on NVIDIA's (plain buffers there: {@link #buffers}). */
       public boolean usable() {
          return this.doubles && (this.svm || this.nvidia());
@@ -51,7 +57,7 @@ public final class OpenCl {
        * Intel's still run.
        */
       public boolean automatic() {
-         return this.usable() && !this.mesa && !(this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL"));
+         return this.usable() && !this.mesa && !(this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL")) && this.units >= AUTOMATIC_UNITS;
       }
 
       /**
@@ -61,7 +67,17 @@ public final class OpenCl {
        */
       public String passedOver() {
          return !this.usable() ? "no " + this.missing() : this.mesa ? "Mesa's OpenCL (rusticl): compiles the kernels for minutes and stalled; used only when chosen"
-            : this.automatic() ? "" : "Intel integrated graphics: slower than the CPU on the one tested; used only when chosen";
+            : this.integrated && this.vendor.toUpperCase(Locale.ROOT).contains("INTEL") ? "Intel integrated graphics: slower than the CPU on the one tested; used only when chosen"
+            : this.units < AUTOMATIC_UNITS ? this.units + " compute units, under " + AUTOMATIC_UNITS + ": a GPU this small was slower than the CPU (Radeon 610M); used only when chosen"
+            : "";
+      }
+
+      /**
+       * AMD's RDNA 1 (gfx101x: RX 5000): an RX 5700 XT was faster through OpenCL than through HIP (Windows), and ROCm does
+       * not list it, so Linux's automatic choice keeps OpenCL there.
+       */
+      public boolean rdna1() {
+         return this.chip.toLowerCase(Locale.ROOT).startsWith("gfx101");
       }
 
       boolean nvidia() {
@@ -315,7 +331,7 @@ public final class OpenCl {
          text(device, CL_DRIVER_VERSION),
          (int)number(device, CL_DEVICE_MAX_COMPUTE_UNITS), number(device, org.lwjgl.opencl.CL11.CL_DEVICE_HOST_UNIFIED_MEMORY) != 0L,
          number(device, CL_DEVICE_GLOBAL_MEM_SIZE), number(device, CL12.CL_DEVICE_DOUBLE_FP_CONFIG) != 0L, (svm & CL20.CL_DEVICE_SVM_COARSE_GRAIN_BUFFER) != 0L, generic,
-         extensions.contains("cl_khr_priority_hints"), mesa);
+         extensions.contains("cl_khr_priority_hints"), mesa, text(device, CL_DEVICE_NAME).trim());
    }
 
    private static String text(long device, int parameter) {
@@ -390,7 +406,7 @@ public final class OpenCl {
       }
 
       if (!device.automatic() && GpuDevice.configured < 0) {
-         // Automatic never takes Intel integrated graphics (Device#automatic): chosen in the settings screen they run.
+         // Automatic never takes Intel integrated graphics or GPUs under AUTOMATIC_UNITS (Device#automatic): chosen in the settings screen they run.
          throw new IllegalStateException("no GPU OpenCL can use automatically; " + device.name() + ": " + device.passedOver() + " (in the settings screen)");
       }
 

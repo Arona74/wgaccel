@@ -211,10 +211,22 @@ CUDA and HIP are used only when chosen under Manual in the settings screen (belo
   Restart the launcher afterwards.
 - **HIP (AMD, Linux):** ROCm; see [Linux](#linux).
 
+**When the GPU doesn't help:** the GPU parts pay off on a GPU with enough compute power beside the CPU. On a small or
+old one, the CPU alone can be faster:
+
+- a Radeon 610M (RDNA 2, 2 compute units) was slower than its laptop's CPU, while a Radeon 680M (RDNA 2, 12 units)
+  made its laptop 1.6x faster; the Intel Arc iGPU of an Ultra 9 275HX laptop took 1:49 where the CPU alone took 0:42.
+  The automatic choice skips both kinds (fewer than 8 compute units, Intel integrated graphics);
+- older generations, such as NVIDIA's GTX 10xx and earlier or AMD's Radeons before RDNA 2 (RX 5000 and older), are
+  likely to gain little or lose: they are still taken automatically, so compare a Chunky run with **GPU improvements**
+  off in the settings screen, and leave them off if the CPU alone is faster. (The mod does not use ray-tracing units:
+  what counts is the GPU's general compute power.)
+
 **Which GPU:** on a PC with more than one (a desktop Ryzen's own small Radeon beside the graphics card, a laptop's
 Intel graphics beside an NVIDIA card, for example) the mod takes a separate card first, then the one with the most
 compute units. An AMD integrated GPU (a laptop's Radeon 680M, for example) is taken when it is the only one; Intel
-integrated graphics only when you choose them (the Arc iGPU measured took 1:49 where its laptop's CPU alone took 0:42). To see or change it, open the **settings screen**: the mod's logo button in
+integrated graphics, and any GPU with fewer than 8 compute units (AMD's CUs, NVIDIA's SMs), only when you choose them.
+To see or change it, open the **settings screen**: the mod's logo button in
 Options (left of the field of view, or under Distant Horizons' button), or the mods list (Config on NeoForge, the
 mod's settings button in ModMenu on Fabric). Its tabs:
 
@@ -252,12 +264,19 @@ HIP against 2:26 on the CPU alone, every check identical.
   is not needed. `-Dorg.lwjgl.opencl.libname=<path>` points it somewhere else.
 - **Mesa's OpenCL (rusticl, clover) is not used automatically:** on the 680M (Mesa 25.2) it compiled the kernels for
   over 3 minutes and then stalled. Chosen by hand it needs `RUSTICL_ENABLE=radeonsi` and `RUSTICL_FEATURES=fp64`.
-- **AMD: install ROCm and use HIP.** ROCm's OpenCL works, but on the 680M it was 10-15x slower than HIP (on an RX 7900 XTX it ran well). With ROCm's
-  HIP runtime and hipRTC installed, the automatic choice takes HIP on the AMD GPU, unless the GPU it would otherwise
-  take (a separate card first, then the most compute units) is another vendor's: an NVIDIA card beside a Ryzen's own
-  Radeon stays on OpenCL, while an RX 7900 XTX beside an RTX 3060 goes to HIP. Steps (Ubuntu 24.04 and Mint 22):
+- **AMD: install ROCm.** Which API is faster depends on the GPU's generation:
+  - RDNA 2 integrated (Radeon 680M): HIP, by far (ROCm's OpenCL was 10-15x slower on the same GPU);
+  - RDNA 3 and 4 (RX 7900 XTX, RX 9070 XT): the same either way (a 7900 XTX: 3:22 through HIP, 3:25 through OpenCL);
+  - RDNA 1 (RX 5000): an RX 5700 XT was faster through OpenCL than through HIP (measured on Windows; ROCm does not
+    list RDNA 1 either).
+
+  With ROCm installed, the automatic choice takes HIP on the AMD GPU, but OpenCL on RDNA 1, and OpenCL when the GPU it
+  would otherwise take (a separate card first, then the most compute units) is another vendor's: an NVIDIA card beside
+  a Ryzen's own Radeon stays on OpenCL, while an RX 7900 XTX beside an RTX 3060 goes to HIP. Steps (Ubuntu 24.04 and
+  Mint 22):
   1. Add AMD's ROCm apt repository (https://rocm.docs.amd.com, "Quick start installation", version 6.4 or newer) and
-     install `hip-runtime-amd` (and `rocm-opencl-runtime` for OpenCL).
+     install `hip-runtime-amd` and `rocm-opencl-runtime` (the automatic choice looks at ROCm's OpenCL to tell which
+     GPU HIP should take; without it, choose HIP in the settings screen).
   2. `sudo usermod -aG render,video $USER`, then **log out and back in** (or restart): until then `/dev/kfd` is
      closed to the game and ROCm finds no GPU.
   3. Integrated Radeons that ROCm does not list (680M and 660M: gfx1035) need `HSA_OVERRIDE_GFX_VERSION=10.3.0` in

@@ -282,7 +282,7 @@ public final class Config {
             "small Radeon beside the graphics card is skipped). Read when the GPU is first used: a change takes a restart of the game.")
          .defineInRange("gpuDevice", -1, -1, 15));
       GPU_BACKEND = Setting.custom(builder
-         .comment("Which GPU API: AUTO (OpenCL, a separate card first, then the most compute units; Intel integrated graphics only when chosen; on Linux HIP when ROCm's HIP runtime and hipRTC are installed),",
+         .comment("Which GPU API: AUTO (OpenCL, a separate card first, then the most compute units; Intel integrated graphics and GPUs under 8 compute units only when chosen; on Linux HIP on an AMD GPU (not RDNA 1) when ROCm is installed),",
             "OPENCL, CUDA (NVIDIA, needs the CUDA Toolkit) or HIP (AMD, needs the HIP SDK on Windows, ROCm on Linux). gpuDevice then counts that API's devices. Both are set by the settings screen's Config tab (Options, the WGA button, or the mods list's",
             "Config). Read when the GPU is first used: a change takes a restart of the game. -Dwgaccel.gpuBackend=cuda, hip or opencl still wins.")
          .defineEnum("gpuBackend", GpuBackendChoice.AUTO));
