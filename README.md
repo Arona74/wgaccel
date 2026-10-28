@@ -84,7 +84,7 @@ threads).
 | Surface | the surface rules (grass, sand, snow, FreeTerraForged's strata, Conquest ReTerraForged's beach and sea) | direct block reads (`fastSurfaceReads`) |
 | Structures | | jigsaw connection points cached per template (`fastJigsaw`) |
 | Carvers | | biomes read from the chunk (`carverBiomesFromChunk`; FreeTerraForged worlds only: in vanilla the chunk's biome differs from the carvers' own in about 0.04% of chunks) |
-| Features | | ores without repeated chunk look-ups (`fastOres`), neighbour chunks and worldgen heights kept per region (`fastRegionChunks`, `fastRegionHeights`), Conquest ReTerraForged's landform answers remembered (`fastConquestLandforms`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`); on the GPU: Lithos's rock noise (`gpuLithosNoise`, 26.1.2) |
+| Features | | ores without repeated chunk look-ups (`fastOres`), neighbour chunks and worldgen heights kept per region (`fastRegionChunks`, `fastRegionHeights`), Conquest ReTerraForged's landform answers remembered (`fastConquestLandforms`), Conquest of Arborea's forest cells kept (`fastArboreaCells`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`); on the GPU: Lithos's rock noise (`gpuLithosNoise`, 26.1.2) |
 | Pregeneration | | more chunks in flight for Chunky (`chunkyMaxWorkingCount`) |
 
 ## Measured gains
@@ -188,6 +188,9 @@ The new CPU improvements, measured per part:
 | Lithos's `strata` (`fastRegionChunks`) | 4.92 ms per call | 3.64 ms per call (test server) |
 | Lithos's four features (`fastRegionHeights`, and `fastRegionChunks` without per-call allocation) | 11.2 ms per chunk | 9.7 ms per chunk (test server, 2 runs; all features 23.5 -> 21.6-21.9 ms) |
 | Lithos's rock noise on the GPU (`gpuLithosNoise`): `strata` | 6.2-6.3 ms per call | 3.8-3.9 ms per call (test server, 2 runs; r1000 0:54-0:55 -> 0:50-0:51) |
+| Conquest of Arborea's `tree_forest` (`fastArboreaCells`) | 6.74 ms per call | 4.83 ms per call (test server at 425, 2089; r1000 1:44 -> 1:37-1:42) |
+| Region chunk look-ups decided once per region, last chunk kept (`fastRegionChunks`) | all features 26.9-29.1 ms per chunk | 24.3-24.5 ms per chunk (test server at 425, 2089, 2 runs each; r1000 1:37-1:42 -> 1:28-1:29) |
+| Conquest's surface, scree and river answers remembered too (`fastConquestLandforms`): Arborea's `beach_gradient` | 1.06-1.08 ms per call | 0.35 ms per call (test server at 425, 2089, 2 runs each) |
 | Conquest's walled town search, the same 3 attempts (`fastJigsaw`) | 8.47 s | 7.02 s |
 
 Every check in these runs was identical. A run without the mod has not been measured. Most of the time left is the
@@ -413,7 +416,7 @@ say how much they gained on the test PC.
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
 | `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `debugInfoLevel` (`VERBOSE` every log line, for a bug report; `NORMAL`, the default, each kind of line the first time and every 10th time after; `SILENT` warnings and errors only; also on the settings screen's Config tab), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
-| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastJigsaw`, `fastRegionChunks`, `fastRegionHeights`, `fastConquestLandforms` (26.1.2), `fastBlockPredicates` (off: it was slower) |
+| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastJigsaw`, `fastRegionChunks`, `fastRegionHeights`, `fastArboreaCells` (26.1.2), `fastConquestLandforms` (26.1.2), `fastBlockPredicates` (off: it was slower) |
 | `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, `gpuLithosNoise` (26.1.2, with Lithos), the dimension and vanilla switches (`gpuNoiseFillVanilla` is not needed in Conquest ReTerraForged worlds), `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 

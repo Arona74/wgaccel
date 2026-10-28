@@ -24,6 +24,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_CONQUEST_LANDFORMS;
    public static final Setting<Boolean> FAST_REGION_CHUNKS;
    public static final Setting<Boolean> FAST_REGION_HEIGHTS;
+   public static final Setting<Boolean> FAST_ARBOREA_CELLS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -225,8 +226,9 @@ public final class Config {
       FAST_CONQUEST_LANDFORMS = Setting.of(builder
          .comment("Gain: Conquest of Arborea's tree_forest 5.28 -> 3.17 ms a call (1.7x, two 300 s runs; Conquest ReTerraForged, 26.1.2).",
             "Conquest ReTerraForged's landform answers (a column's landform and height, which Conquest of Arborea's trees ask",
-            "for column after column, 90% of the time a column asked before) remembered per column: the same answers. Every",
-            "256th kept answer is compared with Conquest's own.")
+            "for column after column, 90% of the time a column asked before) remembered per column: the same answers. Also its",
+            "surface height, scree and river answers (Arborea's beach_gradient 1.07 -> 0.35 ms a call). Every 256th kept answer",
+            "is compared with Conquest's own.")
          .define("fastConquestLandforms", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_REGION_CHUNKS = Setting.of(builder
          .comment("Gain: Lithos 1.0.0 (26.1.2) strata 4.92 -> 3.64 ms a call, ground_cover 1.91 -> 1.58; all features ~5% (two 300 s runs, noisy).",
@@ -242,6 +244,12 @@ public final class Config {
             "on (block writes then update only the final ones), so each features region keeps the heights it has read. Every",
             "256th kept height is compared with the region's own answer.")
          .define("fastRegionHeights", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_ARBOREA_CELLS = Setting.of(builder
+         .comment("Minecraft 26.1.2 with Conquest of Arborea: its forest cells (each a new Random seeded from the world seed and the",
+            "cell, asked for every cell around a column, column after column: 22.5% of Arborea's time) kept once made and handed",
+            "out again; the same answers, as they depend on the seed and the cell alone. Every 256th kept cell is compared with",
+            "Arborea's own.")
+         .define("fastArboreaCells", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

@@ -177,7 +177,9 @@ public final class WgaScreen extends CanvasScreen {
       int left = this.left();
       int x = this.textLeft();
       int y = 0;
-      y += this.text(Component.literal(inUse()), left, y, this.width - left - 8, WHITE);
+      // GPU off: the choice below is still saved, but nothing uses it (a yellow line, so it is not taken for in use).
+      boolean off = Config.GPU_MODE.get() == Config.GpuMode.OFF && GpuDevice.chosenName == null;
+      y += this.text(Component.literal(inUse()), left, y, this.width - left - 8, off ? YELLOW : WHITE);
       GpuInventory.Inventory inventory = GpuInventory.get();
       String pending = pending(inventory);
       String note = pending != null ? pending
@@ -562,7 +564,10 @@ public final class WgaScreen extends CanvasScreen {
    private static String inUse() {
       String name = GpuDevice.chosenName;
       if (name == null) {
-         return Config.GPU_IMPROVEMENTS.get() ? "GPU not started yet: it starts with the first world." : "The GPU improvements are off (GPU improvements tab).";
+         return !Config.GPU_IMPROVEMENTS.get() ? "GPU OFF: the GPU improvements are switched off, so no GPU is used, whatever is chosen below."
+            + " Turn them on in the GPU improvements tab."
+            : Config.GPU_MODE.get() == Config.GpuMode.OFF ? "GPU OFF: gpuMode is OFF, so no GPU is used, whatever is chosen below."
+            : "GPU not started yet: it starts with the first world.";
       }
 
       return "In use in this game: " + name + " (" + com.wgaccel.gpu.GpuBackend.name() + ", " + GpuDevice.reason.split(";")[0] + ")";

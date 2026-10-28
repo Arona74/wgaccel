@@ -3,7 +3,6 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -34,8 +33,11 @@ public final class RegionChunks {
    private RegionChunks() {
    }
 
-   /** A kept chunk (immutable: a slot written by one thread is read whole or not at all by another). */
-   public record Entry(int x, int z, ChunkAccess chunk) {
+   /**
+    * A kept chunk (immutable: a slot written by one thread is read whole or not at all by another). Stable: it can no
+    * longer be swapped (not a ProtoChunk, or the imposter around a finished chunk).
+    */
+   public record Entry(int x, int z, ChunkAccess chunk, boolean stable) {
    }
 
    /** A region's table: 8 x 8 slots by the chunk's low coordinate bits (regions are at most 7 chunks wide where it matters). */
@@ -43,35 +45,29 @@ public final class RegionChunks {
       return new Entry[64];
    }
 
-   /**
-    * The kept chunk for WorldGenRegion.getChunk(x, z, status, load), null when there is none (or this is off, or the
-    * request is not EMPTY): then the caller asks the region and hands its answer to {@link #keep}. No lambda per call:
-    * this is every block read and write of every feature.
-    */
-   public static ChunkAccess kept(Entry[] table, int x, int z, ChunkStatus status) {
-      if (status != ChunkStatus.EMPTY || disabled || !Config.FAST_REGION_CHUNKS.get()) {
-         return null;
-      }
+   /** Whether regions keep chunks now (not turned off by a difference, and on in the config). */
+   public static boolean on() {
+      return !disabled && Config.FAST_REGION_CHUNKS.get();
+   }
 
+   /**
+    * The kept entry for an EMPTY request at (x, z), null when there is none: then the caller asks the region and hands
+    * its answer to {@link #keep}. No lambda per call: this is every block read and write of every feature.
+    */
+   public static Entry kept(Entry[] table, int x, int z) {
       Entry entry = table[x & 7 | (z & 7) << 3];
       if (entry == null || entry.x != x || entry.z != z) {
          return null;
       }
 
       // A ProtoChunk at SPAWN may be swapped for its finished chunk's imposter: the region's own answer then.
-      ChunkAccess chunk = entry.chunk;
-      return chunk instanceof ProtoChunk && !(chunk instanceof ImposterProtoChunk) && chunk.getPersistedStatus().isOrAfter(ChunkStatus.SPAWN) ? null : chunk;
-   }
-
-   /** Whether this kept chunk is one of the compared ones (about 1 in 256). */
-   public static boolean sample() {
-      return ThreadLocalRandom.current().nextInt(256) == 0;
+      return entry.stable || !entry.chunk.getPersistedStatus().isOrAfter(ChunkStatus.SPAWN) ? entry : null;
    }
 
    /** Keeps the region's answer for an EMPTY request (vanilla throws for a chunk the region may not hand out: nothing is kept then). */
-   public static ChunkAccess keep(Entry[] table, int x, int z, ChunkStatus status, ChunkAccess chunk) {
-      if (chunk != null && status == ChunkStatus.EMPTY && !disabled) {
-         table[x & 7 | (z & 7) << 3] = new Entry(x, z, chunk);
+   public static ChunkAccess keep(Entry[] table, int x, int z, ChunkAccess chunk) {
+      if (chunk != null && !disabled) {
+         table[x & 7 | (z & 7) << 3] = new Entry(x, z, chunk, !(chunk instanceof ProtoChunk) || chunk instanceof ImposterProtoChunk);
       }
 
       return chunk;

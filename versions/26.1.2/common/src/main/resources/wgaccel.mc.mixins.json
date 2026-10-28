@@ -13,7 +13,8 @@
     "RuleBasedStateProviderMixin",
     "SinglePoolElementMixin",
     "compat.ConquestLandformsMixin",
-    "compat.LithosNoiseMixin"
+    "compat.LithosNoiseMixin",
+    "compat.ArboreaCellsMixin"
   ],
   "injectors": {
     "defaultRequire": 1

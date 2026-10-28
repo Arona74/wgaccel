@@ -76,6 +76,8 @@ final class Improvements {
          "Villages and other jigsaw structures rotate each piece's connection blocks once instead of for every connection they try.", null),
       new Improvement(Config.FAST_CONQUEST_LANDFORMS, "Fast Conquest landforms",
          "Conquest ReTerraForged: each column's landform worked out once for the trees that ask for it again and again.", null),
+      new Improvement(Config.FAST_ARBOREA_CELLS, "Fast Arborea forest cells",
+         "Conquest of Arborea (26.1.2): each forest cell its trees look up worked out once instead of for every column around it.", null),
       new Improvement(Config.FAST_REGION_CHUNKS, "Fast region chunks",
          "Features find the chunk of each block they read or write without looking it up again every time.", null),
       new Improvement(Config.FAST_REGION_HEIGHTS, "Fast region heights",

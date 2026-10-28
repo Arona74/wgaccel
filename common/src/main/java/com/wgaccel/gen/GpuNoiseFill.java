@@ -1478,16 +1478,22 @@ public final class GpuNoiseFill {
                int x = minGridX + gx;
                int y = low + gy;
                int z = minGridZ + gz;
-               long packed = locations[((y - minGridY) * sizeZ + gz) * sizeX + gx];
+               int cell = ((y - minGridY) * sizeZ + gz) * sizeX + gx;
+               long packed = locations[cell];
                if (packed == Long.MAX_VALUE) {
                   RandomSource source = a.wgaccel$random().at(x, y, z);
                   packed = BlockPos.asLong(x * 16 + source.nextInt(10), y * 12 + source.nextInt(9), z * 16 + source.nextInt(10));
+                  // Kept as vanilla's own draw keeps it (the same centre): 26.1's getAquiferStatus(index) works the status out
+                  // at the cached centre, and an unfilled one (Long.MAX_VALUE) gave every such cell a status from a far-off
+                  // position, cached for the CPU fill too: dry oceans in Conquest ReTerraForged without C2ME (seed
+                  // -859374634895007785 at -9619, -4610, 28 Oct 2026), unseen by the checks as both fills used it.
+                  locations[cell] = packed;
                }
 
                job.loc[index * 3] = BlockPos.getX(packed);
                job.loc[index * 3 + 1] = BlockPos.getY(packed);
                job.loc[index * 3 + 2] = BlockPos.getZ(packed);
-               Aquifer.FluidStatus status = Mc.aquiferStatus((Aquifer.NoiseBasedAquifer)(Object)a, ((y - minGridY) * sizeZ + gz) * sizeX + gx, packed);
+               Aquifer.FluidStatus status = Mc.aquiferStatus((Aquifer.NoiseBasedAquifer)(Object)a, cell, packed);
                FluidStatusAccessor fluid = (FluidStatusAccessor)(Object)status;
                int type = fluidCode(fluid.wgaccel$type());
                if (type < 0) {

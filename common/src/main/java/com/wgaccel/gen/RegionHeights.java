@@ -4,7 +4,6 @@ import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import java.util.Arrays;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -71,11 +70,6 @@ public final class RegionHeights {
    /** Whether the slot holds a height. */
    public static boolean known(int height) {
       return height != UNKNOWN;
-   }
-
-   /** Whether this kept height is one of the compared ones (about 1 in 256). */
-   public static boolean sample() {
-      return ThreadLocalRandom.current().nextInt(256) == 0;
    }
 
    /** A compared height: the region's is used; a different one turns this off. */
