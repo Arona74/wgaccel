@@ -1562,14 +1562,16 @@ public final class GpuSurface {
 
    /** A summary every so often: chunks from the GPU, checked and identical, left to the CPU and why, times per chunk. */
    private static void report() {
-      if (!MARK_CALLERS.isEmpty()) {
-         WorldgenAccelerator.LOG.info(markCallers());
-      }
-
       long done = WRITTEN.sum() + CHECKED.sum();
       int next = NEXT_REPORT.get();
       if (done < next || !NEXT_REPORT.compareAndSet(next, next < 1024 ? next * 2 : next + 2048)) {
          return;
+      }
+
+      // The mark callers explain a check's difference: with the summary, and only once a check has found one (it was
+      // logged for every chunk, 28 Oct 2026).
+      if (!MARK_CALLERS.isEmpty() && (DIFFERENT.sum() > 0 || WRITE_DIFFERENT.sum() > 0)) {
+         WorldgenAccelerator.LOG.info(markCallers());
       }
 
       long checked = CHECKED.sum();

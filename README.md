@@ -83,8 +83,8 @@ threads).
 | 3D terrain (noise fill) | density, aquifers (Conquest ReTerraForged's too), ore veins, structure terrain (Beardifier) | fill only up to the ground (`fillToGround`) |
 | Surface | the surface rules (grass, sand, snow, FreeTerraForged's strata, Conquest ReTerraForged's beach and sea) | direct block reads (`fastSurfaceReads`) |
 | Structures | | jigsaw connection points cached per template (`fastJigsaw`) |
-| Carvers | | biomes read from the chunk (`carverBiomesFromChunk`) |
-| Features | | ores without repeated chunk look-ups (`fastOres`), neighbour chunks kept per region (`fastRegionChunks`), Conquest ReTerraForged's landform answers remembered (`fastConquestLandforms`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`) |
+| Carvers | | biomes read from the chunk (`carverBiomesFromChunk`; FreeTerraForged worlds only: in vanilla the chunk's biome differs from the carvers' own in about 0.04% of chunks) |
+| Features | | ores without repeated chunk look-ups (`fastOres`), neighbour chunks and worldgen heights kept per region (`fastRegionChunks`, `fastRegionHeights`), Conquest ReTerraForged's landform answers remembered (`fastConquestLandforms`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`); on the GPU: Lithos's rock noise (`gpuLithosNoise`, 26.1.2) |
 | Pregeneration | | more chunks in flight for Chunky (`chunkyMaxWorkingCount`) |
 
 ## Measured gains
@@ -120,10 +120,24 @@ The same on a dedicated server (same PC, the card free): 0:47.
 | FreeTerraForged 1.0.0010 (22 Oct unstable, a 1,152-block world), overworld r2000 (63,001 chunks) | not measured | 3:14 (325 chunks/s) | |
 | FreeTerraForged 1.0.0013 "deleteTiles" (an earlier build), overworld r1000: before and after the mod's fixes for its new chunk cells (with `gpuAreaStep` on) | 60-90 chunks/s | 1:53 (152 chunks/s) | about 2x |
 | FreeTerraForged 1.0.0010 with the 4 x 4 area step (`gpuAreaStep`, off by default) | 0:46 | 0:44 | 1.05x |
-| Vanilla overworld, radius 2000 (63,001 chunks), with `gpuAreaStep` on (it turns the GPU on in vanilla) | 2:15 | 1:22 | 1.65x |
-| Vanilla overworld, radius 2000, default settings (CPU parts only in vanilla) | 2:15 | 1:58 | 1.14x |
+| Vanilla 1.21.1 overworld, radius 2000 (63,001 chunks), with `gpuAreaStep` on (it turns the GPU on in vanilla) | 2:15 | 1:22 | 1.65x |
+| Vanilla 1.21.1 overworld, radius 2000, default settings (CPU parts only in vanilla) | 2:15 | 1:58 | 1.14x |
 
 Every check in these runs was identical. Your PC, mods and settings will give other numbers.
+
+**Vanilla 26.1.2** (the AMD desktop below: Ryzen 7 7800X3D, RX 9070 XT through OpenCL; Fabric dedicated server, C2ME
+0.4.0-alpha.0.65 with 12 threads, seed 0, radius 2000, 63,001 chunks):
+
+| Setup | Time | Speed-up |
+| --- | --- | --- |
+| Without Worldgen Accelerator | 2:23 | 1.00x |
+| CPU improvements and GPU surface only (the earlier defaults) | 2:23 | 1.00x |
+| + GPU noise fill (now the default; 3 runs: 1:41, 1:41, 1:40) | **1:41** | **1.42x** |
+| + GPU biomes (`gpuBiomesVanilla`) | 1:41 | 1.42x |
+| The 4 x 4 area step (`gpuAreaStep`, off by default; 2 runs: 1:35, 1:33) | 1:34 | 1.52x |
+
+The GPU surface made no difference either way in vanilla (with the GPU fill: 1:41 on, 1:37 and 1:45 off). Every
+GPU check was identical.
 
 **AMD desktop (0.16.1, HIP):** AMD Ryzen 7 7800X3D (8 cores, 16 threads), AMD Radeon RX 9070 XT 16 GB, Windows 11,
 Java 25, 16 GB heap (`-Xmx16G`, ZGC), AMD HIP SDK 6.4, NeoForge 21.1.264, C2ME 0.4.0-alpha.0.123 (its default
@@ -172,6 +186,8 @@ The new CPU improvements, measured per part:
 | --- | --- | --- |
 | Conquest of Arborea's `tree_forest` (`fastConquestLandforms`) | 46 ms per chunk | 8.5-14 ms per chunk |
 | Lithos's `strata` (`fastRegionChunks`) | 4.92 ms per call | 3.64 ms per call (test server) |
+| Lithos's four features (`fastRegionHeights`, and `fastRegionChunks` without per-call allocation) | 11.2 ms per chunk | 9.7 ms per chunk (test server, 2 runs; all features 23.5 -> 21.6-21.9 ms) |
+| Lithos's rock noise on the GPU (`gpuLithosNoise`): `strata` | 6.2-6.3 ms per call | 3.8-3.9 ms per call (test server, 2 runs; r1000 0:54-0:55 -> 0:50-0:51) |
 | Conquest's walled town search, the same 3 attempts (`fastJigsaw`) | 8.47 s | 7.02 s |
 
 Every check in these runs was identical. A run without the mod has not been measured. Most of the time left is the
@@ -208,7 +224,7 @@ that don't exist; reported to its developers), and their search still takes most
 | No Man's Land + Biolith | 1.6.2 / 3.0.14 (tested with FreeTerraForged; NeoForge only) | compatible, exact; its surface rules (biome tags, its y test, strata) run on the GPU too, with its steepness fix. Chunks around its Meeting Point altar fill on the CPU (it reshapes the terrain there). Faster on the CPU (r1000 2:06 -> 1:36 on the test PC): Biolith's sub-biome checks find their closest climate points through a tree instead of a scan of the whole table (`fasterBiomeChoice`), its every-layer features scan each column once, and its ore veins fill their noise once per layer and test the block they just read (`fastLayerPlacement`) |
 | VanillaBackport | 1.2.1 (tested in a vanilla world) | compatible, exact; its sulfur caves' surface rules (3D noise conditions and noise gradients) run on the GPU too. It adds them to the vanilla overworld only, so FreeTerraForged worlds don't get them |
 | Voxy, Sodium, Iris, FerriteCore, Structure Layout Optimizer | | work |
-| Vanilla worlds (no FreeTerraForged) | | the CPU parts help (2:15 -> 1:58); the GPU parts are off by default in vanilla (alone they were slower); with `gpuAreaStep` on they go on and it was 1:22 |
+| Vanilla worlds (no FreeTerraForged) | | on 26.1.2 the GPU noise fill is on by default (r2000 2:23 -> 1:41); on 1.21.1 the CPU parts help (2:15 -> 1:58) and the GPU parts are off by default (alone they were slower), with `gpuAreaStep` on they go on and it was 1:22 |
 
 Other mods that add biomes through datapacks usually work too: the GPU programs are built from the world's own
 settings. If one doesn't, the checks turn the affected part off and the log says which.
@@ -397,8 +413,8 @@ say how much they gained on the test PC.
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
 | `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `debugInfoLevel` (`VERBOSE` every log line, for a bug report; `NORMAL`, the default, each kind of line the first time and every 10th time after; `SILENT` warnings and errors only; also on the settings screen's Config tab), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
-| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastJigsaw`, `fastRegionChunks`, `fastConquestLandforms` (26.1.2), `fastBlockPredicates` (off: it was slower) |
-| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches (`gpuNoiseFillVanilla` is not needed in Conquest ReTerraForged worlds), `gpuAreaStep` |
+| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastJigsaw`, `fastRegionChunks`, `fastRegionHeights`, `fastConquestLandforms` (26.1.2), `fastBlockPredicates` (off: it was slower) |
+| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, `gpuLithosNoise` (26.1.2, with Lithos), the dimension and vanilla switches (`gpuNoiseFillVanilla` is not needed in Conquest ReTerraForged worlds), `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 
 The GPU steps take `OFF`, `CHECK` (the GPU and the CPU both do the work and every result is compared: slower, for

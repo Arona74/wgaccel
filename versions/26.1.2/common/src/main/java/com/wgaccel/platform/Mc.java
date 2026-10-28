@@ -49,6 +49,12 @@ public final class Mc {
    /** The GPU fill's kernel for vanilla's NoiseBasedAquifer here: 3, 26.1's (the global fluid above skipSamplingAboveY, four nearest cells). */
    public static final int VANILLA_AQUIFER = 3;
 
+   /**
+    * gpuNoiseFillVanilla's default: on. Vanilla 26.1.2, seed 0, radius 2000 (63,001 chunks), C2ME 0.4.0 with 12 threads,
+    * RX 9070 XT (28 Oct 2026): 2:23 without the mod and with the CPU parts alone, 1:41 with the GPU fill (3 runs).
+    */
+   public static final boolean GPU_FILL_VANILLA_DEFAULT = true;
+
    private Mc() {
    }
 
@@ -199,5 +205,10 @@ public final class Mc {
    /** A section's block-state data as PalettedContainer.read takes it after the palette: the packed longs, without a length (the reader knows it from the bits). */
    public static void writeStateData(FriendlyByteBuf buffer, long[] data) {
       buffer.writeFixedSizeLongArray(data);
+   }
+
+   /** A features step's region was made, before any feature is placed (the Lithos noise table is queued for its chunk). */
+   public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
+      com.wgaccel.gen.LithosNoise.featuresStart(region);
    }
 }

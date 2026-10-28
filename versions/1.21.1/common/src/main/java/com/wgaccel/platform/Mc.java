@@ -45,6 +45,9 @@ public final class Mc {
    /** The GPU fill's kernel for vanilla's NoiseBasedAquifer here: 1, 1.21.1's. */
    public static final int VANILLA_AQUIFER = 1;
 
+   /** gpuNoiseFillVanilla's default: off (vanilla radius 2000: 2:15 without the mod, 2:29 with the GPU fill). */
+   public static final boolean GPU_FILL_VANILLA_DEFAULT = false;
+
    private Mc() {
    }
 
@@ -197,5 +200,9 @@ public final class Mc {
    /** A section's block-state data as PalettedContainer.read takes it after the palette: the packed longs, with its length first. */
    public static void writeStateData(FriendlyByteBuf buffer, long[] data) {
       buffer.writeLongArray(data);
+   }
+
+   /** A features step's region was made, before any feature is placed (nothing here: Lithos is 26.1.2 only). */
+   public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
    }
 }

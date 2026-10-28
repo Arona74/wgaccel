@@ -71,6 +71,17 @@ public final class PredicateReads {
          return this.depth > 0 && !disabled;
       }
 
+      /** Closes the scope for one read of the world's own block (its depth returned for {@link #resume}). */
+      public int pause() {
+         int depth = this.depth;
+         this.depth = 0;
+         return depth;
+      }
+
+      public void resume(int depth) {
+         this.depth = depth;
+      }
+
       private static int slot(long key) {
          long h = key * 0x9E3779B97F4A7C15L;
          return (int)(h >>> 57);

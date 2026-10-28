@@ -132,7 +132,7 @@ public final class DensityCheck {
    }
 
    /** A PerlinNoise as VanillaKernels packs it: factors, octave count, then per octave its amplitude, offsets and permutation. */
-   private static void pack(PerlinNoise perlin, DoubleArrayList d, IntArrayList p) {
+   static void pack(PerlinNoise perlin, DoubleArrayList d, IntArrayList p) {
       PerlinNoiseAccessor access = (PerlinNoiseAccessor)perlin;
       ImprovedNoise[] levels = access.wgaccel$noiseLevels();
       DoubleList amplitudes = access.wgaccel$amplitudes();

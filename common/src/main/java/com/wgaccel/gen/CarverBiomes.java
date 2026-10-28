@@ -19,9 +19,22 @@ import net.minecraft.world.level.chunk.status.ChunkStatus;
  * the biome step already holds that biome (the biome step stores the biome source's answer for every quart, the GPU's
  * checked identical), so it is read from the chunk; other chunks ask the biome source as before. Every 64th read is
  * compared with the biome source's answer; a difference turns this off and the biome source's answer is used.
+ *
+ * FreeTerraForged worlds only. In vanilla 26.1.2 (seed 0, with and without C2ME, every read compared, 28 Oct 2026) about
+ * 0.04% of chunks held another biome at that corner than the biome source gives there, at the same chunks run after
+ * run: most likely climate ties, which vanilla's search settles by the last answer its thread found (the GPU biomes
+ * count ~0.02% of cells as tied). Vanilla's carvers are cheap (0.5 ms a chunk), so there the biome source is asked.
  */
 public final class CarverBiomes {
    private static volatile boolean disabled;
+   /** Whether the generator is FreeTerraForged's (the only worlds this is on in). */
+   private static final ClassValue<Boolean> TERRAFORGED = new ClassValue<>() {
+      @Override
+      protected Boolean computeValue(Class<?> type) {
+         // As GpuNoiseFill tells FreeTerraForged's generator (Conquest ReTerraForged's is vanilla's NoiseBasedChunkGenerator).
+         return com.wgaccel.platform.Names.className(type).contains("TerraForged");
+      }
+   };
    private static final LongAdder FROM_CHUNK = new LongAdder();
    private static final LongAdder ASKED = new LongAdder();
    private static final LongAdder CHECKED = new LongAdder();
@@ -33,7 +46,7 @@ public final class CarverBiomes {
 
    /** The supplier applyCarvers hands to carverBiome for this chunk, or the original when off. */
    public static Supplier<BiomeGenerationSettings> supplier(ChunkGenerator generator, ChunkAccess chunk, Supplier<BiomeGenerationSettings> original) {
-      if (disabled || !Config.GPU_CARVER_BIOMES.get()) {
+      if (disabled || !Config.GPU_CARVER_BIOMES.get() || !TERRAFORGED.get(generator.getClass())) {
          return original;
       }
 

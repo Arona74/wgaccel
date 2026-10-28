@@ -19,6 +19,9 @@ public final class LandformMemo implements IntBinaryOperator {
    private static final int BITS = 17;
    private static volatile boolean disabled;
    private static final LongAdder CALLS = new LongAdder();
+   /** Answers Conquest worked out (not kept). 2026-10-28, r1000 without Lithos: about 305 a chunk, 80% of answers kept;
+    * a shared, 16 times bigger table gave the same (each column is worked out about once already). */
+   private static final LongAdder COMPUTED = new LongAdder();
    private static final LongAdder CHECKED = new LongAdder();
    private static final AtomicLong CHECK_COUNT = new AtomicLong();
    private static final LongAdder DIFFERENT = new LongAdder();
@@ -57,6 +60,7 @@ public final class LandformMemo implements IntBinaryOperator {
       }
 
       int value = this.real.applyAsInt(x, z);
+      COMPUTED.increment();
       this.slots[slot] = new Entry(key, value);
       return value;
    }
@@ -81,7 +85,9 @@ public final class LandformMemo implements IntBinaryOperator {
    }
 
    public static String summary() {
-      return String.format(Locale.ROOT, "WGA Conquest landforms: %,d kept answers, checked %,d: %s", CALLS.sum(), CHECKED.sum(),
-         DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)");
+      long kept = CALLS.sum();
+      long computed = COMPUTED.sum();
+      return String.format(Locale.ROOT, "WGA Conquest landforms: %,d kept answers, %,d worked out by Conquest (%.1f%% kept), checked %,d: %s", kept, computed,
+         100.0 * kept / Math.max(1, kept + computed), CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)");
    }
 }

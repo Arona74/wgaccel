@@ -12,7 +12,8 @@
     "SerializableChunkDataMixin",
     "RuleBasedStateProviderMixin",
     "SinglePoolElementMixin",
-    "compat.ConquestLandformsMixin"
+    "compat.ConquestLandformsMixin",
+    "compat.LithosNoiseMixin"
   ],
   "injectors": {
     "defaultRequire": 1

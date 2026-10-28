@@ -121,7 +121,12 @@ tasks.register('prodServer', serverRun) {
     loaderVersion = fabric_loader_version
     minecraftVersion = minecraft_version
     // Only the finished jar (Loom adds the dev jar, without the shaded LWJGL modules, by default).
-    mods.setFrom(finalJar)
+    // -PprodNoMod: without this mod (the measurements' baseline).
+    if (!project.hasProperty('prodNoMod')) {
+        mods.setFrom(finalJar)
+    } else {
+        mods.setFrom()
+    }
     mods.from(configurations.detachedConfiguration(dependencies.create("net.fabricmc.fabric-api:fabric-api:${fabric_api_version}")).setTransitive(false))
     runDir = file('run-prod')
     // -PprodMods=<folder>: other mods' jars to run with (the ones a report names).

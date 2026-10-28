@@ -23,6 +23,8 @@ public final class Config {
    public static final Setting<Boolean> FAST_JIGSAW;
    public static final Setting<Boolean> FAST_CONQUEST_LANDFORMS;
    public static final Setting<Boolean> FAST_REGION_CHUNKS;
+   public static final Setting<Boolean> FAST_REGION_HEIGHTS;
+   public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
    public static final Setting<Boolean> GPU_IMPROVEMENTS;
@@ -234,6 +236,12 @@ public final class Config {
             "chunk is compared with the region's own answer. A neighbour that has reached the spawn step is asked for again",
             "each time (it may be finished and swapped for its full chunk). C2ME run: 6 billion kept chunks, identical.")
          .define("fastRegionChunks", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_REGION_HEIGHTS = Setting.of(builder
+         .comment("Features read the worldgen heightmaps (WORLD_SURFACE_WG, OCEAN_FLOOR_WG; Lithos's cliff tests read 450 a column)",
+            "through their region, which looks the chunk up each time. Those heightmaps no longer change from the carvers step",
+            "on (block writes then update only the final ones), so each features region keeps the heights it has read. Every",
+            "256th kept height is compared with the region's own answer.")
+         .define("fastRegionHeights", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",
@@ -401,17 +409,23 @@ public final class Config {
          .defineListAllowEmpty("gpuNoiseFillCpuDimensions", java.util.List.of("minecraft:the_nether", "minecraft:the_end"), () -> "minecraft:the_end",
             value -> value instanceof String));
       GPU_NOISE_FILL_VANILLA = Setting.of(builder
-         .comment("Measured: vanilla r2000 2:15 without the mod, 2:29 with the GPU fill (slower, so off).",
-            "The GPU noise fill in worlds that are not FreeTerraForged's (vanilla and others). Off by default: in vanilla, C2ME's",
-            "compiled CPU fill is already fast and the GPU fill made the overworld slower on the test PC (radius 2000: 2:15",
+         .comment("Measured: vanilla r2000 on 26.1.2 2:23 -> 1:41 (on); on 1.21.1 2:15 without the mod, 2:29 with it (off).",
+            "The GPU noise fill in worlds that are not FreeTerraForged's (vanilla and others). On by default on Minecraft 26.1.2",
+            "(radius 2000 with C2ME: 2:23 without, 1:41 with it), off on 1.21.1, where C2ME's compiled CPU fill was faster (2:15",
             "without this mod, 2:29 with the GPU fill). FreeTerraForged and Conquest ReTerraForged worlds always use it (gpuNoiseFill).")
-         .define("gpuNoiseFillVanilla", false), false, false).under(GPU_IMPROVEMENTS, false);
+         .define("gpuNoiseFillVanilla", com.wgaccel.platform.Mc.GPU_FILL_VANILLA_DEFAULT), com.wgaccel.platform.Mc.GPU_FILL_VANILLA_DEFAULT,
+            com.wgaccel.platform.Mc.GPU_FILL_VANILLA_DEFAULT).under(GPU_IMPROVEMENTS, false);
       GPU_BIOMES_VANILLA = Setting.of(builder
          .comment("Measured: vanilla r2000 2:13 with, 1:58 without (slower, so off).",
             "The GPU biomes in worlds that are not FreeTerraForged's (vanilla's MultiNoiseBiomeSource). Off by default: exact,",
             "but the overworld was slower with it on the test PC (radius 2000: 2:13 against 1:58; vanilla's biome step is",
             "cheap and chunks waited on the look-ahead). FreeTerraForged worlds always use it (gpuBiomes).")
          .define("gpuBiomesVanilla", false), false, false).under(GPU_IMPROVEMENTS, false);
+      GPU_LITHOS_NOISE = Setting.of(builder
+         .comment("Minecraft 26.1.2 with Lithos: Lithos's rock noise (one NormalNoise, five scales, about 4 samples per stone block",
+            "96 blocks deep in every column) worked out on the GPU for each chunk as its features step starts, and read from",
+            "that table when Lithos asks. Every 64th answer is compared with Lithos's own; a difference turns this off.")
+         .define("gpuLithosNoise", true), true, true).under(GPU_IMPROVEMENTS, false);
       GPU_AREA_STEP = Setting.custom(builder
          .comment("Gain: FreeTerraForged 1.0.0010 r1000 0:46 -> 0:44; vanilla r2000 1:58 -> 1:53. Off by default (in development).",
             "The 4 x 4 area step (with C2ME): every chunk's biome step waits for its aligned 4 x 4 area's GPU work, done once",
