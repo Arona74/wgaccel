@@ -1,5 +1,6 @@
 package com.wgaccel.gpu;
 
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -10,7 +11,6 @@ import java.util.Locale;
 import java.util.Map;
 import net.minecraft.core.Registry;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.RandomState;
@@ -56,11 +56,19 @@ public final class SurfaceCodegen {
    /** The prepass's flags of the column's first stone's biome (2 badlands, 4 desert): its expression of fb, or none. */
    private String firstFlags = null;
 
+   private final ColumnConditions columns;
+
+   /** The column conditions the tree reads (answered per column on the CPU, in minBase's high bits), null when none. */
+   public ColumnConditions columns() {
+      return this.columns.isEmpty() ? null : this.columns;
+   }
+
    public SurfaceCodegen(RandomState random, WorldGenerationContext context, Registry<Biome> biomes, Object surfaceSystem) {
       this.random = random;
       this.context = context;
       this.biomes = biomes;
       this.system = surfaceSystem;
+      this.columns = new ColumnConditions(random, context, biomes, surfaceSystem);
       boolean fast;
       try {
          Names.forName("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
@@ -94,12 +102,12 @@ public final class SurfaceCodegen {
          List<Object> badlands = new java.util.ArrayList<>();
          List<Object> deserts = new java.util.ArrayList<>();
          for (Map.Entry<ResourceKey<Biome>, Biome> entry : this.biomes.entrySet()) {
-            net.minecraft.core.Holder<Biome> holder = this.biomes.getHolderOrThrow(entry.getKey());
+            net.minecraft.core.Holder<Biome> holder = Mc.holder(this.biomes, entry.getKey());
             if (holder.is(net.minecraft.tags.BiomeTags.IS_BADLANDS)) {
                badlands.add(entry.getKey());
             }
 
-            if (holder.is(net.minecraft.world.level.biome.Biomes.DESERT) || entry.getKey().location().getPath().contains("desert")) {
+            if (holder.is(net.minecraft.world.level.biome.Biomes.DESERT) || Mc.path(entry.getKey()).contains("desert")) {
                deserts.add(entry.getKey());
             }
          }
@@ -163,7 +171,9 @@ public final class SurfaceCodegen {
              c.steep = r[9];
              c.slope = r[12];
              c.minSurface = r[10];
-             int column = r[11];
+             // The column, with ColumnConditions' bits above its 8 bits.
+             int column = r[11] & 255;
+             c.colFlags = ((unsigned int)r[11]) >> 8;
              c.secondary = secondary[column];
              c.strataDepth = strataDepth + column * strataMax;
              c.strataState = strataState + column * strataMax;
@@ -239,7 +249,9 @@ public final class SurfaceCodegen {
                  int sw = heights[max(lx - 1, 0) * 16 + lz];
                  c.slope = max(max(sn, ss), max(se, sw)) - min(min(sn, ss), min(se, sw));
              }
-             c.minSurface = minBase[t] + depth - 8;
+             // minBase: the preliminary surface base in its low 16 bits (signed), ColumnConditions' bits above.
+             c.minSurface = (int)(short)(minBase[t] & 65535) + depth - 8;
+             c.colFlags = ((unsigned int)minBase[t]) >> 16;
              c.strataDepth = strataDepth + t * strataMax;
              c.strataState = strataState + t * strataMax;
              c.strataCount = strataCount[t];
@@ -481,7 +493,8 @@ public final class SurfaceCodegen {
                  int sw = heights[max(lx - 1, 0) * 16 + lz];
                  c.slope = max(max(sn, ss), max(se, sw)) - min(min(sn, ss), min(se, sw));
              }
-             c.minSurface = minBase[t] + c.depth - 8;
+             c.minSurface = (int)(short)(minBase[t] & 65535) + c.depth - 8;
+             c.colFlags = ((unsigned int)minBase[t]) >> 16;
              c.fastFlags = special[t] >> 1;
              c.strataDepth = strataDepth + t * strataMax;
              c.strataState = strataState + t * strataMax;
@@ -535,6 +548,8 @@ public final class SurfaceCodegen {
           int slope;
           int minSurface;
           int fastFlags;
+          // ColumnConditions' bits for the column.
+          unsigned int colFlags;
           double secondary;
           const float* strataDepth;
           const int* strataState;
@@ -578,6 +593,24 @@ public final class SurfaceCodegen {
    private static String kind(Object node) {
       String name = Names.className(node.getClass());
       return name.substring(name.lastIndexOf('.') + 1);
+   }
+
+   /**
+    * The node's kind for the logs, with its registry id when it is not vanilla's ("a (conquest-reterraforged:conquest_beach)":
+    * an obfuscated mod's class names say nothing).
+    */
+   @SuppressWarnings({"unchecked", "rawtypes"})
+   private static String described(Object node, String kind) {
+      try {
+         Object codec = node instanceof net.minecraft.world.level.levelgen.SurfaceRules.ConditionSource condition ? condition.codec().codec()
+            : node instanceof net.minecraft.world.level.levelgen.SurfaceRules.RuleSource rule ? rule.codec().codec() : null;
+         Registry registry = node instanceof net.minecraft.world.level.levelgen.SurfaceRules.ConditionSource
+            ? net.minecraft.core.registries.BuiltInRegistries.MATERIAL_CONDITION : net.minecraft.core.registries.BuiltInRegistries.MATERIAL_RULE;
+         String id = codec != null ? Mc.name(registry, codec) : null;
+         return id != null && !id.startsWith("minecraft:") ? kind + " (" + id + ")" : kind;
+      } catch (RuntimeException failure) {
+         return kind;
+      }
    }
 
    private String rule(Object node) throws ReflectiveOperationException {
@@ -683,7 +716,7 @@ public final class SurfaceCodegen {
             body = line("int i = (int)sf_round(%s, (double)c.x, 0.0, (double)c.z) * 4.0);", noise) + line("int h = (int)((unsigned int)c.y + (unsigned int)i);")
                + hash + line("return strata%d[((h %% %d) + %d) %% %d];", id, entries.size(), entries.size(), entries.size());
          }
-         default -> throw new DensityCodegen.Unsupported("surface rule " + kind);
+         default -> throw new DensityCodegen.Unsupported("surface rule " + described(node, kind));
       }
 
       String name = "r" + this.next++;
@@ -744,7 +777,7 @@ public final class SurfaceCodegen {
          case "SurfaceRules$VerticalGradientConditionSource" -> {
             int i = ((VerticalAnchor)field(node, "trueAtAndBelow")).resolveY(this.context);
             int j = ((VerticalAnchor)field(node, "falseAtAndAbove")).resolveY(this.context);
-            Object factory = this.random.getOrCreateRandomFactory((ResourceLocation)field(node, "randomName"));
+            Object factory = Mc.randomFactory(this.random, field(node, "randomName"));
             if (!kind(factory).equals("XoroshiroRandomSource$XoroshiroPositionalRandomFactory")) {
                throw new DensityCodegen.Unsupported("positional random " + kind(factory));
             }
@@ -786,7 +819,7 @@ public final class SurfaceCodegen {
             noMansLand(node);
             List<Object> keys = new java.util.ArrayList<>();
             for (Map.Entry<ResourceKey<Biome>, Biome> entry : this.biomes.entrySet()) {
-               net.minecraft.core.Holder<Biome> holder = this.biomes.getHolderOrThrow(entry.getKey());
+               net.minecraft.core.Holder<Biome> holder = Mc.holder(this.biomes, entry.getKey());
                for (Object tag : (List<?>)field(node, "biomeTags")) {
                   @SuppressWarnings("unchecked")
                   net.minecraft.tags.TagKey<Biome> biomeTag = (net.minecraft.tags.TagKey<Biome>)tag;
@@ -806,7 +839,17 @@ public final class SurfaceCodegen {
                + line("y += ((float)c.depth - 2.5f) / 2.5f * %s;", floatLit((Float)field(node, "noiseMultiplier")))
                + line("return y + %s <= (float)%d;", offset, ((VerticalAnchor)field(node, "anchor")).resolveY(this.context));
          }
-         default -> throw new DensityCodegen.Unsupported("surface condition " + kind);
+         default -> {
+            // Column conditions the CPU answers ({@link ColumnConditions}: Conquest ReTerraForged's beach and sea), a bit each.
+            String described = described(node, kind);
+            String id = ColumnConditions.IDS.stream().filter(listed -> described.endsWith("(" + listed + ")")).findFirst().orElse(null);
+            int bit = id != null ? this.columns.bit(node, id) : -1;
+            if (bit < 0) {
+               throw new DensityCodegen.Unsupported("surface condition " + described);
+            }
+
+            yield line("return ((c.colFlags >> %d) & 1u) != 0u;", bit);
+         }
       };
       String name = "q" + this.next++;
       this.code.append("__device__ __noinline__ bool ").append(name).append("(const SCtx& c) {\n").append(body).append("}\n");
@@ -864,7 +907,7 @@ public final class SurfaceCodegen {
       int[] mask = new int[words];
       for (Object key : keys) {
          @SuppressWarnings("unchecked")
-         Biome biome = this.biomes.get((ResourceKey<Biome>)key);
+         Biome biome = Mc.value(this.biomes, (ResourceKey<Biome>)key);
          if (biome != null) {
             int id = this.biomes.getId(biome);
             mask[id >> 5] |= 1 << (id & 31);

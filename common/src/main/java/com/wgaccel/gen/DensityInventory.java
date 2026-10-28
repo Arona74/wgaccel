@@ -3,6 +3,7 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gpu.DensityCheck;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import java.lang.reflect.Array;
@@ -50,7 +51,7 @@ public final class DensityInventory {
          for (RecordComponent component : NoiseRouter.class.getRecordComponents()) {
             int before = ids.size();
             out.append('\n').append(Names.name(component)).append(":\n");
-            dump(component.getAccessor().invoke(router), 1, out, ids, kinds, noises);
+            dump(Names.value(component, router), 1, out, ids, kinds, noises);
             sizes.add(Names.name(component) + " " + (ids.size() - before));
          }
 
@@ -70,14 +71,14 @@ public final class DensityInventory {
                }
             }
 
-            BlockPos spawn = overworld.getSharedSpawnPos();
+            BlockPos spawn = Mc.spawn(overworld);
             boolean veins = overworld.getChunkSource().getGenerator() instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator generator
                && generator.generatorSettings().value().oreVeinsEnabled();
             boolean aquifers = overworld.getChunkSource().getGenerator() instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator generator2
                && generator2.generatorSettings().value().isAquifersEnabled();
             WorldgenAccelerator.LOG.info("WGA overworld noise settings: ore veins {}, aquifers {}", veins ? "on" : "off", aquifers ? "on" : "off");
             DensityCheck.start(new ArrayList<>(noises), functions, router, overworld.getChunkSource().randomState().oreRandom(), veins, spawn.getX(), spawn.getZ(),
-               overworld.getMinBuildHeight(), overworld.getHeight());
+               Mc.minY(overworld), overworld.getHeight());
          }
       } catch (Exception | LinkageError failure) {
          WorldgenAccelerator.LOG.warn("WGA density function inventory failed: {}", failure.toString());
@@ -114,7 +115,7 @@ public final class DensityInventory {
          if (value instanceof DensityFunction || isSpline(value)) {
             children.add(value);
          } else if (value instanceof Holder<?> holder) {
-            String key = holder.unwrapKey().map(k -> k.location().toString()).orElse("direct");
+            String key = holder.unwrapKey().map(Mc::id).orElse("direct");
             Object held = holder.isBound() ? holder.value() : null;
             if (held instanceof DensityFunction) {
                settings.add(name + "=" + key);
@@ -126,7 +127,7 @@ public final class DensityInventory {
             children.addAll(list);
             settings.add(name + "=" + list.size() + " items");
          } else if (value instanceof DensityFunction.NoiseHolder holder) {
-            settings.add(name + "=" + holder.noiseData().unwrapKey().map(k -> k.location().toString()).orElse("direct"));
+            settings.add(name + "=" + holder.noiseData().unwrapKey().map(Mc::id).orElse("direct"));
             if (holder.noise() != null) {
                noises.add(holder.noise());
             }
@@ -195,8 +196,7 @@ public final class DensityInventory {
       Class<?> type = object.getClass();
       if (type.isRecord()) {
          for (RecordComponent component : type.getRecordComponents()) {
-            component.getAccessor().setAccessible(true);
-            values.put(Names.name(component), component.getAccessor().invoke(object));
+            values.put(Names.name(component), Names.value(component, object));
          }
 
          return values;

@@ -2,6 +2,7 @@ package com.wgaccel.gen;
 
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
+import com.wgaccel.platform.Mc;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -77,7 +78,7 @@ public final class LayerGrounds {
          columns.put(key, column);
       }
 
-      int bottom = context.getMinBuildHeight() + 1;
+      int bottom = Mc.minY(context.getLevel()) + 1;
       BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(x, y, z);
       while (column.grounds.size() <= layer && column.y >= bottom) {
          pos.setY(column.y - 1);

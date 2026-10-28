@@ -3,6 +3,7 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gpu.SurfaceGpu;
+import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -62,7 +63,7 @@ public final class SurfaceAhead {
 
    /** The chunk's fill codes (removed), or null. */
    static Codes takeCodes(ChunkAccess chunk) {
-      return CODES.remove(chunk.getPos().toLong());
+      return CODES.remove(Mc.key(chunk.getPos()));
    }
 
    /** The block kinds of the surface's job (air 0, fluid 1, the default block 2, other 3) from the fill's codes. */
@@ -159,7 +160,7 @@ public final class SurfaceAhead {
 
    private static void record(ChunkAccess chunk, GpuSurface.Program p) {
 
-      int quartY = chunk.getMinBuildHeight() >> 2;
+      int quartY = Mc.minY(chunk) >> 2;
       int quartHeight = chunk.getHeight() >> 2;
       int quartX = chunk.getPos().getMinBlockX() >> 2;
       int quartZ = chunk.getPos().getMinBlockZ() >> 2;
@@ -183,7 +184,7 @@ public final class SurfaceAhead {
          }
       }
 
-      long key = chunk.getPos().toLong();
+      long key = Mc.key(chunk.getPos());
       if (BIOMES.put(key, new Biomes(quartY, quartHeight, ids)) == null) {
          BIOME_ORDER.add(key);
          while (BIOMES.size() > BIOME_BUDGET) {
@@ -208,7 +209,7 @@ public final class SurfaceAhead {
       }
 
       // Kept for the surface step's inputs (the usual way too): the codes say every block's kind without reading it back.
-      long codesKey = chunk.getPos().toLong();
+      long codesKey = Mc.key(chunk.getPos());
       if (CODES.put(codesKey, new Codes(codes, fillTable, minCellY * cellHeight, cellCountY * cellHeight, origin)) == null) {
          CODES_ORDER.add(codesKey);
          while (CODES.size() > CODES_BUDGET) {
@@ -226,7 +227,7 @@ public final class SurfaceAhead {
       }
 
       long start = System.nanoTime();
-      int minY = chunk.getMinBuildHeight();
+      int minY = Mc.minY(chunk);
       int fullHeight = chunk.getHeight();
       int minX = chunk.getPos().getMinBlockX();
       int minZ = chunk.getPos().getMinBlockZ();
@@ -289,13 +290,13 @@ public final class SurfaceAhead {
       for (int t = 0; t < 256; t++) {
          int x = minX + t / 16;
          int z = minZ + t % 16;
-         job.minBase[t] = Mth.floor(Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3));
+         job.minBase[t] = GpuSurface.columnBase(Mth.floor(Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3)), x, z);
       }
 
       int gx = (minX >> 2) - 1;
       int gz = (minZ >> 2) - 1;
       int gy = minY >> 2;
-      int fullQuarts = ((chunk.getMaxBuildHeight() - 1) >> 2) - gy + 1;
+      int fullQuarts = ((Mc.maxY(chunk) - 1) >> 2) - gy + 1;
       int sy = Math.max(1, Math.min(fullQuarts, (((minY + height - 1 - 2) >> 2) + 1) - gy + 1));
       job.grid[0] = gx;
       job.grid[1] = gy;
@@ -310,7 +311,7 @@ public final class SurfaceAhead {
          for (int qz = 0; qz < 6; qz++) {
             int x = gx + qx;
             int z = gz + qz;
-            Biomes biomes = BIOMES.get(ChunkPos.asLong(x >> 2, z >> 2));
+            Biomes biomes = BIOMES.get(Mc.key(x >> 2, z >> 2));
             if (biomes == null) {
                NO_NEIGHBOURS.increment();
                return;
@@ -327,7 +328,7 @@ public final class SurfaceAhead {
 
       job.zoomSeed = p.zoomSeed();
       INPUT_NANOS.add(System.nanoTime() - start);
-      long key = chunk.getPos().toLong();
+      long key = Mc.key(chunk.getPos());
       Result result = new Result(job, new short[n]);
       RESULTS.put(key, result);
       QUEUE.add(result);
@@ -335,7 +336,7 @@ public final class SurfaceAhead {
 
    /** At the surface step: the chunk's result, waited for if it is still being made, or null (the usual way). */
    static Result take(ChunkAccess chunk) {
-      Result result = RESULTS.remove(chunk.getPos().toLong());
+      Result result = RESULTS.remove(Mc.key(chunk.getPos()));
       if (result == null) {
          MISSING.increment();
          return null;
@@ -470,7 +471,7 @@ public final class SurfaceAhead {
    }
 
    static void failed(ChunkAccess chunk, Throwable failure) {
-      RESULTS.remove(chunk.getPos().toLong());
+      RESULTS.remove(Mc.key(chunk.getPos()));
       if (FAILURES.incrementAndGet() <= 4) {
          WorldgenAccelerator.LOG.warn("WGA GPU surface ahead: chunk {}'s inputs failed: {}", chunk.getPos(), failure.toString());
       }

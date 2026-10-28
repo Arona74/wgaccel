@@ -1,5 +1,6 @@
 package com.wgaccel.c2me;
 
+import com.wgaccel.platform.Mc;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -46,7 +47,7 @@ public final class AreaStep {
       int n = 0;
       for (int dx = 0; dx < 4; dx++) {
          for (int dz = 0; dz < 4; dz++) {
-            long key = ChunkPos.asLong(origin.x + dx, origin.z + dz);
+            long key = Mc.key(Mc.x(origin) + dx, Mc.z(origin) + dz);
             keys[n++] = key;
             com.wgaccel.gen.GpuNoiseFill.aheadSoon(key);
             com.wgaccel.gen.BiomesAhead.soonKey(key);

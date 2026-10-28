@@ -4,6 +4,7 @@ import com.mojang.datafixers.util.Pair;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gen.BiomeTap;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Platform;
 import java.nio.DoubleBuffer;
 import java.nio.IntBuffer;
@@ -218,6 +219,6 @@ public final class BiomeCheck {
    }
 
    private static String name(Object biome) {
-      return biome instanceof net.minecraft.core.Holder<?> holder ? holder.unwrapKey().map(key -> key.location().toString()).orElse("direct") : String.valueOf(biome);
+      return biome instanceof net.minecraft.core.Holder<?> holder ? holder.unwrapKey().map(Mc::id).orElse("direct") : String.valueOf(biome);
    }
 }

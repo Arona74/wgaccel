@@ -6,7 +6,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
@@ -24,7 +23,7 @@ public final class WorldgenAcceleratorNeoForge {
          return;
       }
 
-      if (FMLEnvironment.dist.isClient()) {
+      if (NeoMc.dist().isClient()) {
          ClientSetup.register(container);
       }
 

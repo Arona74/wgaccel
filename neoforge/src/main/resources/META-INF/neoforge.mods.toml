@@ -16,6 +16,10 @@ world, chunks a second, CPU per thread group and garbage collection, written to 
 [[mixins]]
 config="wgaccel.mixins.json"
 
+# The mixins whose targets differ between Minecraft versions (each version's own, versions/<mc>/common).
+[[mixins]]
+config="wgaccel.mc.mixins.json"
+
 # Only applies when FreeTerraForged is installed (its tiles and filters timed).
 [[mixins]]
 config="wgaccel.ftf.mixins.json"
@@ -34,14 +38,14 @@ config="wgaccel.compat.mixins.json"
 [[dependencies.wgaccel]]
     modId="neoforge"
     type="required"
-    versionRange="[21.1,)"
+    versionRange="${neo_range}"
     ordering="NONE"
     side="BOTH"
 
 [[dependencies.wgaccel]]
     modId="minecraft"
     type="required"
-    versionRange="[1.21.1]"
+    versionRange="[${minecraft_version}]"
     ordering="NONE"
     side="BOTH"
 

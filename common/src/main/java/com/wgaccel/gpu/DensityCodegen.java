@@ -486,7 +486,7 @@ public final class DensityCodegen {
     * function plus the beardifier's 0), then NoiseChunk's MaterialRuleList as in densityStates, written as one byte:
     * the state code (0 to 9, as {@link #statesKernel}) and in bit 4 the aquifer's shouldScheduleFluidUpdate after this
     * block (doFill marks a fluid block for post-processing when it is set). The aquifer argument: 0 the disabled aquifer
-    * (its flag is always false), 1 vanilla 1.21.1's NoiseBasedAquifer, 2 C2ME's rewrite of it (a later Minecraft
+    * (its flag is always false), 1 vanilla 1.21.1's NoiseBasedAquifer, 3 vanilla 26.1's, 2 C2ME's rewrite of it (a later Minecraft
     * version's logic: the nearest four centres by C2ME's packed order, which breaks equal distances differently, and its
     * own flag rule). Statuses come three ints each: level, type code and an identity number (C2ME compares fluid
     * statuses with equals, which in 1.21.1 is object identity; the CPU numbers the objects).
@@ -586,6 +586,8 @@ public final class DensityCodegen {
              int k = c.z;
              if (density > 0.0) return 0;
              AqStatus pick = aq_pick(lava, sea, seaType, lx, lz, j);
+             // 26.1 (C2ME 0.4.0 for it): above skipSamplingAboveY (grid[6]; Integer.MAX_VALUE before) the global fluid, no flag.
+             if (j > grid[6]) return aq_at(pick, j);
              if (aq_at(pick, j) == 9) return 9;
              int gx = (i - 5) >> 4;
              int gy = floor_div(j + 1, 12);
@@ -656,7 +658,117 @@ public final class DensityCodegen {
              }
              return state | (flag ? 16 : 0);
          }
+         // Vanilla 26.1's NoiseBasedAquifer.computeSubstance: above skipSamplingAboveY (grid[6]) the global fluid; the nearest
+         // four centres in vanilla's order (x, then y, then z; a later one wins an equal distance); the flag from the
+         // statuses (compared by equals: the CPU numbers equal records alike), returned in bit 4.
+         __device__ int fa_vanilla26(const DCtx& c, double density, int lx, int lz, const int* grid, const int* loc, const int* status, const int* lava,
+                                     int sea, int seaType) {
+             int i = c.x;
+             int j = c.y;
+             int k = c.z;
+             if (density > 0.0) return 0;
+             AqStatus pick = aq_pick(lava, sea, seaType, lx, lz, j);
+             if (j > grid[6]) return aq_at(pick, j);
+             if (aq_at(pick, j) == 9) return 9;
+             int gx = (i - 5) >> 4;
+             int gy = floor_div(j + 1, 12);
+             int gz = (k - 5) >> 4;
+             int d1 = 2147483647;
+             int d2 = 2147483647;
+             int d3 = 2147483647;
+             int d4 = 2147483647;
+             int a1 = 0;
+             int a2 = 0;
+             int a3 = 0;
+             int a4 = 0;
+             for (int x1 = 0; x1 <= 1; x1++) {
+                 for (int y1 = -1; y1 <= 1; y1++) {
+                     for (int z1 = 0; z1 <= 1; z1++) {
+                         int index = ((gy + y1 - grid[1]) * grid[5] + (gz + z1 - grid[2])) * grid[3] + (gx + x1 - grid[0]);
+                         int dx = loc[index * 3] - i;
+                         int dy = loc[index * 3 + 1] - j;
+                         int dz = loc[index * 3 + 2] - k;
+                         int dist = dx * dx + dy * dy + dz * dz;
+                         if (d1 >= dist) {
+                             a4 = a3; a3 = a2; a2 = a1; a1 = index;
+                             d4 = d3; d3 = d2; d2 = d1; d1 = dist;
+                         } else if (d2 >= dist) {
+                             a4 = a3; a3 = a2; a2 = index;
+                             d4 = d3; d3 = d2; d2 = dist;
+                         } else if (d3 >= dist) {
+                             a4 = a3; a3 = index;
+                             d4 = d3; d3 = dist;
+                         } else if (d4 >= dist) {
+                             a4 = index;
+                             d4 = dist;
+                         }
+                     }
+                 }
+             }
+             double flow = aq_similarity(100, 144);
+             AqStatus s1 = fa_status(status, a1);
+             double s12 = aq_similarity(d1, d2);
+             int state = aq_at(s1, j);
+             int id1 = status[a1 * 3 + 2];
+             int id2 = status[a2 * 3 + 2];
+             if (s12 <= 0.0) {
+                 int flag = s12 >= flow ? id1 != id2 : 0;
+                 return state | (flag ? 16 : 0);
+             }
+             if (state == 8 && aq_at(aq_pick(lava, sea, seaType, lx, lz, j - 1), j - 1) == 9) return state | 16;
+             double barrier = 0.0;
+             int has = 0;
+             AqStatus s2 = fa_status(status, a2);
+             double b12 = s12 * aq_pressure(c, j, s1, s2, &barrier, &has);
+             if (density + b12 > 0.0) return 0;
+             AqStatus s3 = fa_status(status, a3);
+             double s13 = aq_similarity(d1, d3);
+             if (s13 > 0.0) {
+                 double b13 = s12 * s13 * aq_pressure(c, j, s1, s3, &barrier, &has);
+                 if (density + b13 > 0.0) return 0;
+             }
+             double s23 = aq_similarity(d2, d3);
+             if (s23 > 0.0) {
+                 double b23 = s12 * s23 * aq_pressure(c, j, s2, s3, &barrier, &has);
+                 if (density + b23 > 0.0) return 0;
+             }
+             int id3 = status[a3 * 3 + 2];
+             int mayFlow12 = id1 != id2;
+             int mayFlow23 = s23 >= flow && id2 != id3;
+             int mayFlow13 = s13 >= flow && id1 != id3;
+             int flag;
+             if (!mayFlow12 && !mayFlow23 && !mayFlow13) {
+                 flag = s13 >= flow && aq_similarity(d1, d4) >= flow && id1 != status[a4 * 3 + 2];
+             } else {
+                 flag = 1;
+             }
+             return state | (flag ? 16 : 0);
+         }
          %2$s
+         // Conquest ReTerraForged's aquifer (its wrapper, ConquestAquifer) before the vanilla one: its bands from the column's
+         // five numbers q[k * 256 + t] (water top, ground, no-fluid floor, sheet level, sheet top). -1: not its band (the
+         // vanilla aquifer decides); else the code (7 air, 8 water, 10 a water sheet, 0 none) with the flag in bit 4.
+         __device__ __forceinline__ int cq_sheet(int y, int top, int level, int sheetTop) {
+             return top != (-2147483647 - 1) && y > top && (y <= sheetTop || level > 0 && y == top + 1);
+         }
+         __device__ int cq_aquifer(int y, double density, const int* q, int t) {
+             int top = q[t];
+             int ground = q[256 + t];
+             int floor = q[512 + t];
+             int level = q[768 + t];
+             int sheetTop = q[1024 + t];
+             if (density > 0.0 && top != (-2147483647 - 1) && y > ground) {
+                 if (y <= top) return 8;
+                 if (cq_sheet(y, top, level, sheetTop)) return 10;
+                 return 7;
+             }
+             if (density <= 0.0) {
+                 if (y <= top && y > ground) return 8 | (y == top && level == 0 && sheetTop <= top ? 16 : 0);
+                 if (cq_sheet(y, top, level, sheetTop)) return 10;
+                 if (y >= floor && y <= ground) return 0;
+             }
+             return -1;
+         }
          extern "C" __global__ void fillStates(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                int cellWidth, int cellHeight, const double* corners, int cornerStride, long long seedLo, long long seedHi,
                                                int veins, const int* grid, const int* loc, const int* status, const int* lava, int sea, int seaType,
@@ -678,10 +790,17 @@ public final class DensityCodegen {
              int code;
              if (aquifer == 0) {
                  code = density > 0.0 ? 0 : aq_at(aq_pick(lava, sea, seaType, lx, lz, c.y), c.y);
-             } else if (aquifer == 1) {
-                 code = fa_vanilla(c, density, lx, lz, grid, loc, status, lava, sea, seaType);
              } else {
-                 code = fa_c2me(c, density, lx, lz, grid, loc, status, lava, sea, seaType);
+                 code = (aquifer & 8) != 0 ? cq_aquifer(c.y, density, lava + 256, lx * 16 + lz) : -1;
+                 int kind = aquifer & 7;
+                 if (code >= 0) {
+                 } else if (kind == 1) {
+                     code = fa_vanilla(c, density, lx, lz, grid, loc, status, lava, sea, seaType);
+                 } else if (kind == 3) {
+                     code = fa_vanilla26(c, density, lx, lz, grid, loc, status, lava, sea, seaType);
+                 } else {
+                     code = fa_c2me(c, density, lx, lz, grid, loc, status, lava, sea, seaType);
+                 }
              }
              if (code == 0 && veins) code = mc_ore_vein(c, seedLo, seedHi);
              codes[t] = (unsigned char)code;
@@ -864,6 +983,16 @@ public final class DensityCodegen {
       }
    }
 
+   /**
+    * Other mods' kinds known by their registry id, not their class: an obfuscated mod's class names say nothing and
+    * change with each release (Conquest ReTerraForged's cell is its CellSampler: a value per column, worked out on the
+    * CPU like FreeTerraForged's).
+    */
+   private static final Map<String, String> BY_ID = Map.of("conquest-reterraforged:cell", "CellSampler",
+      "conquest-reterraforged:clamp_to_nearest_unit", "ConquestClampToNearestUnit");
+   /** Each such class's kind from BY_ID, "" for none. */
+   private static final Map<Class<?>, String> ALIASES = new java.util.concurrent.ConcurrentHashMap<>();
+
    /** A kind's name: the class name after its package (DensityFunctions' records without the outer name). */
    public static String kind(Object node) {
       if (node instanceof Enum<?> constant) {
@@ -871,8 +1000,73 @@ public final class DensityCodegen {
       }
 
       String name = Names.className(node.getClass());
+      if (node instanceof net.minecraft.world.level.levelgen.DensityFunction function && !name.startsWith("net.minecraft.")) {
+         String alias = ALIASES.computeIfAbsent(node.getClass(), type -> registered(function));
+         if (!alias.isEmpty()) {
+            return alias;
+         }
+      }
+
       String kind = name.substring(name.lastIndexOf('.') + 1);
       return kind.startsWith("DensityFunctions$") ? kind.substring("DensityFunctions$".length()) : kind;
+   }
+
+   /**
+    * The function's kind from BY_ID by its registry id, or "": by its codec, else (a resolved form whose codec() throws,
+    * Conquest ReTerraForged's cell) by a static MapCodec of its class or a class nested in it that is registered.
+    */
+   private static String registered(net.minecraft.world.level.levelgen.DensityFunction function) {
+      try {
+         String id = registryId(function.codec().codec());
+         if (id != null) {
+            return BY_ID.getOrDefault(id, "");
+         }
+      } catch (RuntimeException ignored) {
+      }
+
+      List<Class<?>> types = new ArrayList<>(List.of(function.getClass().getDeclaredClasses()));
+      types.add(0, function.getClass());
+      for (Class<?> type : types) {
+         for (Field field : type.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers()) && com.mojang.serialization.MapCodec.class.isAssignableFrom(field.getType())) {
+               try {
+                  field.setAccessible(true);
+                  String id = registryId(field.get(null));
+                  if (id != null && BY_ID.containsKey(id)) {
+                     return BY_ID.get(id);
+                  }
+               } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+               }
+            }
+         }
+      }
+
+      return "";
+   }
+
+   @SuppressWarnings({"unchecked", "rawtypes"})
+   private static String registryId(Object codec) {
+      return com.wgaccel.platform.Mc.name((net.minecraft.core.Registry)net.minecraft.core.registries.BuiltInRegistries.DENSITY_FUNCTION_TYPE, codec);
+   }
+
+   /** A record's only component of this type (an obfuscated mod's records: their names say nothing). */
+   private static Object only(Map<String, Object> f, Class<?> type) {
+      Object found = null;
+      for (Object value : f.values()) {
+         if (type.isInstance(value)) {
+            if (found != null) {
+               throw new Unsupported("a record with two " + type.getSimpleName() + " components");
+            }
+
+            found = value;
+         }
+      }
+
+      if (found == null) {
+         throw new Unsupported("a record without a " + type.getSimpleName() + " component");
+      }
+
+      return found;
    }
 
    private String call(Object node) throws ReflectiveOperationException {
@@ -1022,6 +1216,7 @@ public final class DensityCodegen {
          case "MulOrAdd", "Mapped", "Clamp", "BlendDensity" -> this.columnOnly(f.get("input"));
          case "RangeChoice" -> this.columnOnly(f.get("input")) && this.columnOnly(f.get("whenInRange")) && this.columnOnly(f.get("whenOutOfRange"));
          case "ClampToNearestUnit" -> this.columnOnly(f.get("function"));
+         case "ConquestClampToNearestUnit" -> this.columnOnly(only(f, net.minecraft.world.level.levelgen.DensityFunction.class));
          case "Spline" -> this.splineColumnOnly(f.get("spline"));
          case "Marker" -> {
             String type = ((Enum<?>)f.get("type")).name();
@@ -1031,6 +1226,47 @@ public final class DensityCodegen {
       };
       this.columnOnly.put(actual, result);
       return result;
+   }
+
+   /** Whether a FlatCache marker is anywhere below node (through holders, splines and lists). */
+   private static boolean hasFlatCache(Object node, Set<Object> seen) throws ReflectiveOperationException {
+      node = unwrap(node);
+      if (node == null || !seen.add(node)) {
+         return false;
+      }
+
+      if (node instanceof List<?> list) {
+         for (Object each : list) {
+            if (hasFlatCache(each, seen)) {
+               return true;
+            }
+         }
+
+         return false;
+      }
+
+      String kind = kind(node);
+      if (!(node instanceof net.minecraft.world.level.levelgen.DensityFunction || node instanceof net.minecraft.core.Holder<?>
+         || kind.startsWith("CubicSpline$") || kind.equals("Spline$Coordinate"))) {
+         return false;
+      }
+
+      if (node instanceof net.minecraft.core.Holder<?> holder) {
+         return holder.isBound() && hasFlatCache(holder.value(), seen);
+      }
+
+      Map<String, Object> f = fields(node);
+      if (kind.equals("Marker") && ((Enum<?>)f.get("type")).name().equals("FlatCache")) {
+         return true;
+      }
+
+      for (Object value : f.values()) {
+         if (hasFlatCache(value, seen)) {
+            return true;
+         }
+      }
+
+      return false;
    }
 
    private boolean splineColumnOnly(Object spline) throws ReflectiveOperationException {
@@ -1122,9 +1358,32 @@ public final class DensityCodegen {
                case "CUBE" -> line("return v * v * v;");
                case "HALF_NEGATIVE" -> line("return v > 0.0 ? v : v * 0.5;");
                case "QUARTER_NEGATIVE" -> line("return v > 0.0 ? v : v * 0.25;");
+               // 26.1's.
+               case "INVERT" -> line("return 1.0 / v;");
                case "SQUEEZE" -> line("double d = mth_clampd(v, -1.0, 1.0);") + line("return d / 2.0 - d * d * d / 24.0;");
                default -> throw new Unsupported("Mapped." + type);
             };
+         }
+         // 26.1's preliminary surface level: from the upper bound rounded down to a cell height, the first y going down
+         // a cell at a time where the density is positive, else the lower bound. The density at each y is worked out
+         // as a single point (SinglePointContext); NoiseChunk's FlatCache still answers such a point from its quarter
+         // columns, which a single point here does not, so not while filling a chunk over a FlatCache.
+         case "FindTopSurface" -> {
+            if (this.mode != Mode.POINT && hasFlatCache(f.get("density"), Collections.newSetFromMap(new IdentityHashMap<>()))) {
+               throw new Unsupported("FindTopSurface over a FlatCache");
+            }
+
+            int lower = (Integer)f.get("lowerBound");
+            int cellHeight = (Integer)f.get("cellHeight");
+            String density = this.function(f.get("density"), Mode.POINT);
+            yield line("int top = mc_floor(%s / %s) * %d;", this.call(f.get("upperBound")), lit(cellHeight), cellHeight)
+               + line("if (top <= %d) return %s;", lower, lit(lower))
+               + line("DCtx p = c;")
+               + line("for (int y = top; y >= %d; y -= %d) {", lower, cellHeight)
+               + line("p.y = y;")
+               + line("if (%s(p) > 0.0) return (double)y;", density)
+               + line("}")
+               + line("return %s;", lit(lower));
          }
          case "Clamp" -> line("return mth_clampd(%s, %s, %s);", this.call(f.get("input")), lit((Double)f.get("minValue")), lit((Double)f.get("maxValue")));
          case "RangeChoice" -> line("double v = %s;", this.call(f.get("input")))
@@ -1207,6 +1466,14 @@ public final class DensityCodegen {
             yield line("double v = %s;", this.call(f.get("function"))) + line("double scaled = v * (double)%d;", resolution)
                + line("if (!isfinite(scaled)) return v;") + line("double truncated = scaled < 0.0 ? ceil(scaled) : floor(scaled);")
                + line("return (truncated + 1.0) / (double)%d;", resolution);
+         }
+         // Conquest ReTerraForged's clamp_to_nearest_unit: Java's (int) of input x resolution, plus one, divided by the
+         // resolution in float, as its own code does (float, unlike FreeTerraForged's).
+         case "ConquestClampToNearestUnit" -> {
+            int resolution = (Integer)only(f, Integer.class);
+            yield line("double v = %s;", this.call(only(f, net.minecraft.world.level.levelgen.DensityFunction.class)))
+               + line("float r = (float)(int)((unsigned int)java_d2i(v * (double)%d) + 1u);", resolution)
+               + line("return (double)(r / (float)%d);", resolution);
          }
          default -> throw new Unsupported(kind);
       };
@@ -1514,9 +1781,7 @@ public final class DensityCodegen {
       Class<?> type = object.getClass();
       if (type.isRecord()) {
          for (RecordComponent component : type.getRecordComponents()) {
-            Method accessor = component.getAccessor();
-            accessor.setAccessible(true);
-            values.put(Names.name(component), accessor.invoke(object));
+            values.put(Names.name(component), Names.value(component, object));
          }
 
          return values;

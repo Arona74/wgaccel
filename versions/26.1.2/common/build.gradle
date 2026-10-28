@@ -1,0 +1,8 @@
+// The 1.21.1 class names FreeTerraForged's jar uses, for compiling the shared FTF layer (src/ftfStubs: never in the jar).
+sourceSets {
+    ftfStubs
+}
+
+dependencies {
+    compileOnly sourceSets.ftfStubs.output
+}

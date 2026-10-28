@@ -7,6 +7,7 @@ import com.wgaccel.gpu.BiomeKernels;
 import com.wgaccel.gpu.BiomeTable;
 import com.wgaccel.gpu.DensityCodegen;
 import com.wgaccel.gpu.GpuService;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import java.nio.charset.StandardCharsets;
@@ -109,6 +110,25 @@ public final class GpuBiomes {
       return program != null && !failed;
    }
 
+   /**
+    * The mods (by mixin id) whose code runs inside Climate.Sampler (its merged handler methods, named
+    * handler$<id>$<mod>$<name> and the like), wgaccel's own left out; empty when none. The vanilla GPU climate is the
+    * router's functions alone: Conquest of Arborea 1.0.0 replaces sample()'s temperature and humidity with its own
+    * latitude climate (2026-10-27: every checked chunk differed in those two), so such a world keeps the CPU's biomes.
+    */
+   static String climateSamplerMods() {
+      java.util.TreeSet<String> mods = new java.util.TreeSet<>();
+      for (java.lang.reflect.Method method : Climate.Sampler.class.getDeclaredMethods()) {
+         String[] parts = method.getName().split("\\$");
+         if (parts.length >= 4 && (parts[0].equals("handler") || parts[0].startsWith("wrap") || parts[0].startsWith("redirect") || parts[0].startsWith("modify"))
+            && !parts[2].equals("wgaccel")) {
+            mods.add(parts[2]);
+         }
+      }
+
+      return String.join(", ", mods);
+   }
+
    /** At the overworld's load (gpuBiomes ON, gpuMode not OFF): makes and compiles the code on its own thread. */
    public static void start(ServerLevel overworld) {
       program = null;
@@ -122,6 +142,12 @@ public final class GpuBiomes {
 
       if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !Config.GPU_BIOMES_VANILLA.get() && !com.wgaccel.c2me.AreaStep.on()) {
          WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (not FreeTerraForged's; gpuBiomesVanilla is false)");
+         return;
+      }
+
+      String climateMods = climateSamplerMods();
+      if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !climateMods.isEmpty()) {
+         WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (Minecraft's climate sampling is changed by {}, which the GPU's climate does not follow)", climateMods);
          return;
       }
 
@@ -267,8 +293,8 @@ public final class GpuBiomes {
       current.chunk = chunk;
       current.quartX = chunk.getPos().getMinBlockX() >> 2;
       current.quartZ = chunk.getPos().getMinBlockZ() >> 2;
-      current.quartY = chunk.getMinBuildHeight() >> 2;
-      current.quartHeight = (chunk.getMaxBuildHeight() >> 2) - current.quartY;
+      current.quartY = Mc.minY(chunk) >> 2;
+      current.quartHeight = (Mc.maxY(chunk) >> 2) - current.quartY;
       current.active = true;
       current.inStep = true;
       BiomesAhead look = BiomesAhead.active();

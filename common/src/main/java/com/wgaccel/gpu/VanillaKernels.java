@@ -328,6 +328,13 @@ public final class VanillaKernels {
           if (a == 0.0 && b == 0.0 && __double_as_longlong(a) == (long long)0x8000000000000000ull) return b;
           return a >= b ? a : b;
       }
+      // Java's (int) of a double: towards zero, NaN 0, saturated at the int range.
+      __device__ __forceinline__ int java_d2i(double v) {
+          if (v != v) return 0;
+          if (v >= 2147483647.0) return 2147483647;
+          if (v <= -2147483648.0) return -2147483647 - 1;
+          return __double2int_rz(v);
+      }
       __device__ __forceinline__ double mth_clampd(double v, double lo, double hi) {
           return v < lo ? lo : java_mind(v, hi);
       }

@@ -1,5 +1,6 @@
 package com.wgaccel.stats;
 
+import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -10,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.levelgen.placement.PlacedFeature;
 import net.minecraft.world.level.levelgen.structure.Structure;
@@ -59,22 +59,22 @@ public final class Named {
    }
 
    public static String feature(WorldGenLevel level, PlacedFeature feature) {
-      ResourceLocation id = level.registryAccess().registryOrThrow(Registries.PLACED_FEATURE).getKey(feature);
+      String id = Mc.name(Mc.registry(level.registryAccess(), Registries.PLACED_FEATURE), feature);
       if (id != null) {
-         return id.toString();
+         return id;
       }
 
       return "inline " + BuiltInRegistries.FEATURE.getKey(feature.feature().value().feature());
    }
 
    public static String structure(StructureSet.StructureSelectionEntry entry) {
-      return entry.structure().unwrapKey().map(key -> key.location().toString())
+      return entry.structure().unwrapKey().map(Mc::id)
          .orElseGet(() -> "inline " + BuiltInRegistries.STRUCTURE_TYPE.getKey(entry.structure().value().type()));
    }
 
    public static String structure(WorldGenLevel level, Structure structure) {
-      ResourceLocation id = level.registryAccess().registryOrThrow(Registries.STRUCTURE).getKey(structure);
-      return id != null ? id.toString() : "inline " + BuiltInRegistries.STRUCTURE_TYPE.getKey(structure.type());
+      String id = Mc.name(Mc.registry(level.registryAccess(), Registries.STRUCTURE), structure);
+      return id != null ? id : "inline " + BuiltInRegistries.STRUCTURE_TYPE.getKey(structure.type());
    }
 
    /** Totals per name: {nanoseconds, calls, hits}. */

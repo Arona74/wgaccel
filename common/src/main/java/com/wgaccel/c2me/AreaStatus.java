@@ -6,6 +6,7 @@ import com.ishland.c2me.rewrites.chunksystem.common.NewChunkStatus;
 import com.ishland.flowsched.scheduler.Cancellable;
 import com.ishland.flowsched.scheduler.ItemHolder;
 import com.ishland.flowsched.scheduler.KeyStatusPair;
+import com.wgaccel.platform.Mc;
 import io.reactivex.rxjava3.core.Completable;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -40,11 +41,11 @@ public final class AreaStatus extends NewChunkStatus {
    }
 
    public static boolean isOrigin(ChunkPos pos) {
-      return (pos.x & 3) == 0 && (pos.z & 3) == 0;
+      return (Mc.x(pos) & 3) == 0 && (Mc.z(pos) & 3) == 0;
    }
 
    public static ChunkPos origin(ChunkPos pos) {
-      return new ChunkPos(pos.x & ~3, pos.z & ~3);
+      return new ChunkPos(Mc.x(pos) & ~3, Mc.z(pos) & ~3);
    }
 
    /** Whether the chunk is still to be generated past this status (its saved status before BIOMES). */
@@ -112,7 +113,7 @@ public final class AreaStatus extends NewChunkStatus {
       for (int dx = 0; dx < 4; dx++) {
          for (int dz = 0; dz < 4; dz++) {
             if (dx != 0 || dz != 0) {
-               pairs[n++] = new KeyStatusPair<>(new ChunkPos(origin.x + dx, origin.z + dz), references);
+               pairs[n++] = new KeyStatusPair<>(new ChunkPos(Mc.x(origin) + dx, Mc.z(origin) + dz), references);
             }
          }
       }

@@ -389,7 +389,19 @@ public final class OpenCl {
    }
 
    /** Creates the context and its own queue on the chosen device ({@link GpuDevice}), once. */
-   public static synchronized void init() {
+   public static void init() {
+      if (started) {
+         return;
+      }
+
+      // The device chosen before this class's lock is taken: GpuDevice.choose holds its own lock while it lists the
+      // devices here (devices() takes this one), so the other order deadlocked the world's loading (GpuSurface.start
+      // choosing while the GPU thread started OpenCL, 26.1.2 server, 27 Oct 2026).
+      GpuDevice.index();
+      start();
+   }
+
+   private static synchronized void start() {
       if (started) {
          return;
       }

@@ -9,6 +9,7 @@ import com.wgaccel.mixin.access.FluidStatusAccessor;
 import com.wgaccel.mixin.access.LevelChunkSectionAccessor;
 import com.wgaccel.mixin.access.NoiseBasedAquiferAccessor;
 import com.wgaccel.mixin.access.NoiseChunkAccessor;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import io.netty.buffer.ByteBuf;
@@ -80,7 +81,7 @@ public final class GpuNoiseFill {
          return false;
       }
 
-      String key = chunk.getPos().x + "," + chunk.getPos().z;
+      String key = Mc.x(chunk.getPos()) + "," + Mc.z(chunk.getPos());
       for (String each : list) {
          if (each.replace(" ", "").equals(key)) {
             return true;
@@ -122,6 +123,8 @@ public final class GpuNoiseFill {
       private long[] oceanFloor;
       private long[] worldSurface;
       private ShortList[] marks;
+      /** Conquest's water sheets: per column (lx * 16 + lz) its sheet level, then from 256 its falling-water top; null without. */
+      private int[] sheets;
 
       private Pending(ChunkAccess chunk, int minCellY, int cellCountY, int cellWidth, int cellHeight, byte[] codes, boolean check, long prepNanos,
             long gpuNanos) {
@@ -144,7 +147,15 @@ public final class GpuNoiseFill {
 
    private static final class Scratch {
       final FillGpu.Job job = new FillGpu.Job();
-      final IdentityHashMap<Object, Integer> identities = new IdentityHashMap<>();
+      /**
+       * In use by a prepare on this thread. Reading a chunk's inputs can wait on another mod's work (Conquest
+       * ReTerraForged's terrain tiles), and a waiting worker runs other chunks' tasks meanwhile: another chunk's noise
+       * step then prepared in the middle of this one, into the same job (2026-10-28: its aquifer numbers in this chunk's).
+       */
+      boolean busy;
+      // The aquifer's statuses numbered as its equals tells them apart: object identity on 1.21.1 (FluidStatus is a class
+      // without equals), the level and fluid on 26.1 (a record; numbered by identity, C2ME's flags came out different).
+      final java.util.HashMap<Object, Integer> identities = new java.util.HashMap<>();
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
       byte[] codes = new byte[0];
    }
@@ -204,8 +215,12 @@ public final class GpuNoiseFill {
          return;
       }
 
-      if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !Config.GPU_NOISE_FILL_VANILLA.get() && !com.wgaccel.c2me.AreaStep.on()) {
-         WorldgenAccelerator.LOG.info("WGA GPU noise fill: off in this world (not FreeTerraForged's; gpuNoiseFillVanilla is false)");
+      // Conquest ReTerraForged's world type: its CPU fill (its cell map, its aquifer) is slow enough for the GPU to win
+      // (user's C2ME run, Chunky 16,129 chunks: noise fill 15.7 -> 1.9 ms a chunk, 2:40 -> 2:20).
+      boolean conquest = conquestWorld(overworld);
+      if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !conquest && !Config.GPU_NOISE_FILL_VANILLA.get()
+         && !com.wgaccel.c2me.AreaStep.on()) {
+         WorldgenAccelerator.LOG.info("WGA GPU noise fill: off in this world (not FreeTerraForged's or Conquest ReTerraForged's; gpuNoiseFillVanilla is false)");
          return;
       }
 
@@ -245,14 +260,14 @@ public final class GpuNoiseFill {
          return;
       }
 
-      String name = level.dimension().location().toString();
+      String name = Mc.id(level.dimension());
       if (Config.GPU_NOISE_FILL_CPU_DIMENSIONS.get().contains(name)) {
          WorldgenAccelerator.LOG.info("WGA GPU noise fill: off in {} (gpuNoiseFillCpuDimensions)", name);
          return;
       }
 
       // On the world-loading screen's list too (0.17.2): loaded after the overworld, so after its reset.
-      com.wgaccel.gpu.GpuPrepare.Task task = com.wgaccel.gpu.GpuPrepare.begin("noise fill (" + level.dimension().location().getPath() + ")");
+      com.wgaccel.gpu.GpuPrepare.Task task = com.wgaccel.gpu.GpuPrepare.begin("noise fill (" + Mc.path(level.dimension()) + ")");
       Thread thread = new Thread(() -> {
          long start = System.nanoTime();
          try {
@@ -271,6 +286,12 @@ public final class GpuNoiseFill {
       }, "WGA GPU noise fill compile " + name);
       thread.setDaemon(true);
       thread.start();
+   }
+
+   /** Whether the overworld's noise settings are Conquest ReTerraForged's (its world type, by registry id). */
+   private static boolean conquestWorld(ServerLevel overworld) {
+      return overworld.getChunkSource().getGenerator() instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noise
+         && noise.generatorSettings().unwrapKey().map(key -> key.toString().contains("conquest-reterraforged:")).orElse(false);
    }
 
    private static Program build(ServerLevel overworld) throws Exception {
@@ -296,7 +317,7 @@ public final class GpuNoiseFill {
       String source = codegen.fillSource(step, corners, toggle, ridged, gap, barrier);
       try {
          String file = overworld.dimension() == net.minecraft.world.level.Level.OVERWORLD ? "wgaccel-noise-fill.cu"
-            : "wgaccel-noise-fill-" + overworld.dimension().location().getPath() + ".cu";
+            : "wgaccel-noise-fill-" + Mc.path(overworld.dimension()) + ".cu";
          Files.writeString(Platform.logs().resolve(file), source, StandardCharsets.UTF_8);
       } catch (Exception ignored) {
       }
@@ -306,7 +327,7 @@ public final class GpuNoiseFill {
       // The vein seeds only when there are veins: the Nether and the End use the legacy random (no seedLo / seedHi).
       long seedLo = veins ? (Long)field(oreRandom, "seedLo") : 0L;
       long seedHi = veins ? (Long)field(oreRandom, "seedHi") : 0L;
-      int aquiferKind = 1;
+      int aquiferKind = Mc.VANILLA_AQUIFER;
       for (java.lang.reflect.Field each : Aquifer.NoiseBasedAquifer.class.getDeclaredFields()) {
          if (Names.name(each).equals("c2me$packed1")) {
             aquiferKind = 2;
@@ -320,7 +341,10 @@ public final class GpuNoiseFill {
 
       BlockState[] table = {generator.generatorSettings().value().defaultBlock(), Blocks.COPPER_ORE.defaultBlockState(),
          Blocks.RAW_COPPER_BLOCK.defaultBlockState(), Blocks.GRANITE.defaultBlockState(), Blocks.DEEPSLATE_IRON_ORE.defaultBlockState(),
-         Blocks.RAW_IRON_BLOCK.defaultBlockState(), Blocks.TUFF.defaultBlockState(), AIR, Blocks.WATER.defaultBlockState(), Blocks.LAVA.defaultBlockState()};
+         Blocks.RAW_IRON_BLOCK.defaultBlockState(), Blocks.TUFF.defaultBlockState(), AIR, Blocks.WATER.defaultBlockState(), Blocks.LAVA.defaultBlockState(),
+         // 10: Conquest ReTerraForged's water sheet, its flowing water level from the column (Pending.sheets); this one stands
+         // for all of them in the heightmap tests (water: not air, does not block motion, whatever its level).
+         Blocks.WATER.defaultBlockState().setValue(net.minecraft.world.level.block.LiquidBlock.LEVEL, 1)};
       boolean[] fluid = new boolean[16];
       for (int i = 0; i < table.length; i++) {
          fluid[i] = !table[i].getFluidState().isEmpty();
@@ -413,7 +437,7 @@ public final class GpuNoiseFill {
       int cellWidth = access.wgaccel$cellWidth();
       int cellHeight = access.wgaccel$cellHeight();
       if (!(chunk instanceof ProtoChunk) || access.wgaccel$cellNoiseMinY() != minCellY || cellWidth <= 0 || 16 % cellWidth != 0 || cellCountY <= 0
-         || (p.aquiferKind == 0) == noise.aquifer() instanceof Aquifer.NoiseBasedAquifer) {
+         || (p.aquiferKind == 0) == (ConquestAquifer.vanilla(noise.aquifer()) != null)) {
          SKIP_OTHER.increment();
          return null;
       }
@@ -439,9 +463,14 @@ public final class GpuNoiseFill {
          return null;
       }
 
+      Scratch scratchInUse = null;
       try {
          long start = System.nanoTime();
-         Scratch scratch = SCRATCH.get();
+         Scratch own = SCRATCH.get();
+         // A prepare inside another on this thread (see Scratch.busy) gets scratch of its own.
+         Scratch scratch = own.busy ? new Scratch() : own;
+         scratch.busy = true;
+         scratchInUse = scratch;
          FillGpu.Job job = scratch.job;
          if (!inputs(p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), minCellY, cellCountY, cellWidth, cellHeight, job, scratch)) {
             SKIP_OTHER.increment();
@@ -474,6 +503,7 @@ public final class GpuNoiseFill {
          Pending pending = new Pending(chunk, minCellY, cellCountY, cellWidth, cellHeight, codes, check, gpuStart - start, end - gpuStart);
          pending.program = p;
          pending.debug = debug;
+         pending.sheets = sheets(job);
          PREP_NANOS.add(pending.prepNanos);
          GPU_NANOS.add(pending.gpuNanos);
          if (check && !snapshot(pending)) {
@@ -487,6 +517,10 @@ public final class GpuNoiseFill {
          com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off (chunks fill on the CPU from now on): {}", failure.toString());
          return null;
       } finally {
+         if (scratchInUse != null) {
+            scratchInUse.busy = false;
+         }
+
          com.wgaccel.gpu.GpuQueue.release(place);
       }
    }
@@ -528,6 +562,7 @@ public final class GpuNoiseFill {
 
          job.cellsUsed = 0;
          java.util.Arrays.fill(job.grid, 0);
+         job.skipAbove = Integer.MAX_VALUE;
       } else if (!aquifer(noise.aquifer(), job, scratch, chunkX, chunkZ, minY, minY + cellCountY * cellHeight - 1)) {
          return false;
       }
@@ -541,7 +576,7 @@ public final class GpuNoiseFill {
       job.seedLo = p.seedLo;
       job.seedHi = p.seedHi;
       job.veins = p.veins;
-      job.aquifer = p.aquiferKind;
+      job.aquifer = p.aquiferKind | (job.conquest ? 8 : 0);
       return true;
    }
 
@@ -617,7 +652,7 @@ public final class GpuNoiseFill {
 
          NoiseChunkAccessor access = (NoiseChunkAccessor)noise;
          if (access.wgaccel$blender() != Blender.empty() || !DensityTap.hasStructures(access.wgaccel$beardifier())
-            || ModTerrain.shapes(access.wgaccel$beardifier()) || !(noise.aquifer() instanceof Aquifer.NoiseBasedAquifer)) {
+            || ModTerrain.shapes(access.wgaccel$beardifier()) || ConquestAquifer.vanilla(noise.aquifer()) == null) {
             return;
          }
 
@@ -632,7 +667,7 @@ public final class GpuNoiseFill {
 
          Scratch scratch = new Scratch();
          if (inputs(p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), minCellY, cellCountY, cellWidth, cellHeight, scratch.job, scratch)) {
-            look.submitPrepared(chunk.getPos().toLong(), scratch.job);
+            look.submitPrepared(Mc.key(chunk.getPos()), scratch.job);
          }
       } catch (Throwable ignored) {
          // The noise step fills it as before.
@@ -734,7 +769,7 @@ public final class GpuNoiseFill {
       }
 
       void notice(net.minecraft.world.level.ChunkPos pos, boolean structured) {
-         long self = pos.toLong();
+         long self = Mc.key(pos);
          if (com.wgaccel.c2me.AreaStep.on()) {
             // The 4 x 4 area step queues the chunks itself (only its areas' chunks wait in line); here only the chunks
             // with structure terrain are marked, so the area job leaves them to their noise step.
@@ -763,11 +798,11 @@ public final class GpuNoiseFill {
 
          // S5: the chunk's whole aligned 4 x 4 area at once, so the launches are bigger (a mate whose noise step comes
          // with another cell range, structures or blending simply does not use its result).
-         int ax = pos.x & ~3;
-         int az = pos.z & ~3;
+         int ax = Mc.x(pos) & ~3;
+         int az = Mc.z(pos) & ~3;
          for (int dx = 0; dx < 4; dx++) {
             for (int dz = 0; dz < 4; dz++) {
-               if (this.noticeOne(net.minecraft.world.level.ChunkPos.asLong(ax + dx, az + dz)) && (ax + dx != pos.x || az + dz != pos.z)) {
+               if (this.noticeOne(Mc.key(ax + dx, az + dz)) && (ax + dx != Mc.x(pos) || az + dz != Mc.z(pos))) {
                   this.areaMates.increment();
                }
             }
@@ -786,7 +821,7 @@ public final class GpuNoiseFill {
 
       void drop(net.minecraft.world.level.ChunkPos pos) {
          // A QUEUED chunk now DONE: its maker skips it when it sees this.
-         if (this.done(pos.toLong()) instanceof Result) {
+         if (this.done(Mc.key(pos)) instanceof Result) {
             this.readyCount.decrementAndGet();
          }
       }
@@ -819,7 +854,7 @@ public final class GpuNoiseFill {
 
       /** As take; with realOnly (a structure chunk) only a result made from the real chunk is used. */
       Pending take(ChunkAccess chunk, int minCellY, int cellCountY, int cellWidth, int cellHeight, boolean realOnly) {
-         long waitKey = chunk.getPos().toLong();
+         long waitKey = Mc.key(chunk.getPos());
          if (this.states.get(waitKey) == QUEUED) {
             // Still queued or on the card: to the front and a short wait for it, as the biome step does (0.9.91, vanilla
             // and CPU-bound: 3,275 chunks not ready in time and 4,071 more while the GPU was busy filled on the CPU at
@@ -837,7 +872,7 @@ public final class GpuNoiseFill {
             }
          }
 
-         long key = chunk.getPos().toLong();
+         long key = Mc.key(chunk.getPos());
          Object state = this.done(key);
          if (!(state instanceof Result result)) {
             if (state == QUEUED) {
@@ -884,6 +919,7 @@ public final class GpuNoiseFill {
          pending.fromAhead = true;
          pending.debug = debug;
          pending.real = result.real;
+         pending.sheets = sheets(result.job);
          pending.program = this.p;
          if (check && !snapshot(pending)) {
             SKIP_OTHER.increment();
@@ -972,7 +1008,7 @@ public final class GpuNoiseFill {
 
                try {
                   FillGpu.Job prepared = this.prepared.remove(key);
-                  FillGpu.Job job = prepared != null ? prepared : standIn(this.p, new net.minecraft.world.level.ChunkPos(key), Integer.MIN_VALUE, new Scratch());
+                  FillGpu.Job job = prepared != null ? prepared : standIn(this.p, Mc.chunk(key), Integer.MIN_VALUE, new Scratch());
                   if (job == null) {
                      this.states.remove(key, QUEUED);
                      this.skipped.increment();
@@ -986,7 +1022,7 @@ public final class GpuNoiseFill {
                   this.states.remove(key, QUEUED);
                   this.skipped.increment();
                   if (this.failures.incrementAndGet() <= 8) {
-                     WorldgenAccelerator.LOG.warn("WGA GPU look-ahead: chunk {}'s stand-in failed: {}", new net.minecraft.world.level.ChunkPos(key), failure.toString());
+                     WorldgenAccelerator.LOG.warn("WGA GPU look-ahead: chunk {}'s stand-in failed: {}", Mc.chunk(key), failure.toString());
                   }
                }
             }
@@ -1074,12 +1110,9 @@ public final class GpuNoiseFill {
     * when the aquifer has something the GPU does not know. The job is this thread's own (reused).
     */
    private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch) throws ReflectiveOperationException {
-      net.minecraft.world.level.chunk.ProtoChunk proto = new net.minecraft.world.level.chunk.ProtoChunk(pos, net.minecraft.world.level.chunk.UpgradeData.EMPTY,
-         p.level, p.level.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.BIOME), null);
+      net.minecraft.world.level.chunk.ProtoChunk proto = Mc.emptyChunk(pos, p.level, p.level.registryAccess());
       net.minecraft.world.level.levelgen.NoiseGeneratorSettings settings = p.generator.generatorSettings().value();
-      NoiseChunk noise = NoiseChunk.forChunk(proto, p.random, new net.minecraft.world.level.levelgen.Beardifier(
-         new it.unimi.dsi.fastutil.objects.ObjectArrayList<net.minecraft.world.level.levelgen.Beardifier.Rigid>().iterator(),
-         new it.unimi.dsi.fastutil.objects.ObjectArrayList<net.minecraft.world.level.levelgen.structure.pools.JigsawJunction>().iterator()), settings,
+      NoiseChunk noise = NoiseChunk.forChunk(proto, p.random, Mc.noStructures(), settings,
          p.fluidPicker.get(), Blender.empty());
       tileStage(noise, true);
       try {
@@ -1247,7 +1280,7 @@ public final class GpuNoiseFill {
          }
       }
 
-      if (!Arrays.equals(a.grid, b.grid) || a.cellsUsed != b.cellsUsed) {
+      if (!Arrays.equals(a.grid, b.grid) || a.cellsUsed != b.cellsUsed || a.skipAbove != b.skipAbove) {
          return "aquifer grid: real " + Arrays.toString(a.grid) + " (" + a.cellsUsed + " cells), stand-in " + Arrays.toString(b.grid) + " (" + b.cellsUsed + ")";
       }
 
@@ -1322,7 +1355,7 @@ public final class GpuNoiseFill {
             out.writeInt(value);
          }
 
-         for (int value : job.lava) {
+         for (int value : Arrays.copyOf(job.lava, 256)) {
             out.writeInt(value);
          }
 
@@ -1388,6 +1421,29 @@ public final class GpuNoiseFill {
     * False when a fluid type is not plain air, water or lava.
     */
    private static boolean aquifer(Aquifer aquifer, FillGpu.Job job, Scratch scratch, int chunkX, int chunkZ, int minY, int maxY) {
+      job.conquest = false;
+      if (ConquestAquifer.wraps(aquifer)) {
+         // Conquest ReTerraForged's wrapper: its five numbers per column (the kernel's bands), then the vanilla aquifer it wraps.
+         if (!ConquestAquifer.columns(aquifer, chunkX, chunkZ, job.lava)) {
+            return false;
+         }
+
+         job.conquest = true;
+         aquifer = ConquestAquifer.vanilla(aquifer);
+      }
+
+      if (!(aquifer instanceof Aquifer.NoiseBasedAquifer)) {
+         // Another mod's own aquifer: the GPU knows vanilla's (C2ME's rewrite keeps its class) and Conquest ReTerraForged's
+         // wrapper around it only, so every chunk of this world fills on the CPU; the fill goes off rather than prepare chunks for nothing.
+         if (!failed) {
+            failed = true;
+            com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: the world's aquifer ({}) has no GPU version; chunks fill on the CPU",
+               Names.className(aquifer.getClass()));
+         }
+
+         return false;
+      }
+
       NoiseBasedAquiferAccessor a = (NoiseBasedAquiferAccessor)aquifer;
       if (!picks(a.wgaccel$picker(), job, chunkX, chunkZ)) {
          return false;
@@ -1431,7 +1487,7 @@ public final class GpuNoiseFill {
                job.loc[index * 3] = BlockPos.getX(packed);
                job.loc[index * 3 + 1] = BlockPos.getY(packed);
                job.loc[index * 3 + 2] = BlockPos.getZ(packed);
-               Aquifer.FluidStatus status = a.wgaccel$status(packed);
+               Aquifer.FluidStatus status = Mc.aquiferStatus((Aquifer.NoiseBasedAquifer)(Object)a, ((y - minGridY) * sizeZ + gz) * sizeX + gx, packed);
                FluidStatusAccessor fluid = (FluidStatusAccessor)(Object)status;
                int type = fluidCode(fluid.wgaccel$type());
                if (type < 0) {
@@ -1457,6 +1513,7 @@ public final class GpuNoiseFill {
       job.grid[3] = sizeX;
       job.grid[4] = layers;
       job.grid[5] = sizeZ;
+      job.skipAbove = Mc.skipSamplingAbove((Aquifer.NoiseBasedAquifer)(Object)a);
       job.cellsUsed = cells;
       return true;
    }
@@ -1538,7 +1595,7 @@ public final class GpuNoiseFill {
                         int lz = kz * cellWidth + iz;
                         int code = codes[(ly * 16 + lz) * 16 + lx];
                         int c = code & 15;
-                        BlockState state = table[c];
+                        BlockState state = c == SHEET ? sheet(pending, lx, lz, y) : table[c];
                         if (state == AIR) {
                            continue;
                         }
@@ -1598,17 +1655,11 @@ public final class GpuNoiseFill {
          return NO_BEARD;
       }
 
-      com.wgaccel.mixin.access.BeardifierAccessor access = (com.wgaccel.mixin.access.BeardifierAccessor)beardifier;
-      it.unimi.dsi.fastutil.objects.ObjectListIterator<net.minecraft.world.level.levelgen.Beardifier.Rigid> pieces = access.wgaccel$pieceIterator();
-      it.unimi.dsi.fastutil.objects.ObjectListIterator<net.minecraft.world.level.levelgen.structure.pools.JigsawJunction> junctions = access.wgaccel$junctionIterator();
-      pieces.back(Integer.MAX_VALUE);
-      junctions.back(Integer.MAX_VALUE);
       it.unimi.dsi.fastutil.ints.IntArrayList out = new it.unimi.dsi.fastutil.ints.IntArrayList();
       out.add(0);
       out.add(0);
       int pieceCount = 0;
-      while (pieces.hasNext()) {
-         net.minecraft.world.level.levelgen.Beardifier.Rigid piece = pieces.next();
+      for (net.minecraft.world.level.levelgen.Beardifier.Rigid piece : Mc.pieces((net.minecraft.world.level.levelgen.Beardifier)beardifier)) {
          net.minecraft.world.level.levelgen.structure.BoundingBox box = piece.box();
          out.add(box.minX());
          out.add(box.minY());
@@ -1627,17 +1678,14 @@ public final class GpuNoiseFill {
          pieceCount++;
       }
 
-      pieces.back(Integer.MAX_VALUE);
       int junctionCount = 0;
-      while (junctions.hasNext()) {
-         net.minecraft.world.level.levelgen.structure.pools.JigsawJunction junction = junctions.next();
+      for (net.minecraft.world.level.levelgen.structure.pools.JigsawJunction junction : Mc.junctions((net.minecraft.world.level.levelgen.Beardifier)beardifier)) {
          out.add(junction.getSourceX());
          out.add(junction.getSourceGroundY());
          out.add(junction.getSourceZ());
          junctionCount++;
       }
 
-      junctions.back(Integer.MAX_VALUE);
       if (pieceCount == 0 && junctionCount == 0) {
          return NO_BEARD;
       }
@@ -1672,7 +1720,7 @@ public final class GpuNoiseFill {
             same = (codes[i] & 15) == c;
          }
 
-         if (same && table[c] == AIR) {
+         if (same && table[c] == AIR || same && c == SHEET) {
             continue;
          }
 
@@ -1681,7 +1729,9 @@ public final class GpuNoiseFill {
             // works the heightmaps and fluid marks out from them).
             BlockState[] blocks = new BlockState[4096];
             for (int i = 0; i < 4096; i++) {
-               blocks[i] = table[codes[from + i] & 15];
+               int c2 = codes[from + i] & 15;
+               // The kernel's order: y, then z, then x.
+               blocks[i] = c2 == SHEET ? sheet(pending, i & 15, i >> 4 & 15, minY + (i >> 8)) : table[c2];
             }
 
             net.minecraft.world.level.chunk.PalettedContainer<BlockState> states = SectionBuilder.build(blocks);
@@ -1706,6 +1756,38 @@ public final class GpuNoiseFill {
       return uniform;
    }
 
+   /** The fill's code of Conquest's water sheets (table[10] stands for them). */
+   private static final int SHEET = 10;
+   /** Conquest's aquifer's flowing water: its d[] (level 8 - k for 1 to 7, the source at 8) and its falling sheet top (level 8). */
+   private static final BlockState[] SHEET_STATES = new BlockState[9];
+   private static final BlockState SHEET_FALLING = Blocks.WATER.defaultBlockState().setValue(net.minecraft.world.level.block.LiquidBlock.LEVEL, 8);
+
+   static {
+      for (int k = 1; k < 8; k++) {
+         SHEET_STATES[k] = Blocks.WATER.defaultBlockState().setValue(net.minecraft.world.level.block.LiquidBlock.LEVEL, 8 - k);
+      }
+
+      SHEET_STATES[8] = Blocks.WATER.defaultBlockState();
+   }
+
+   /** A sheet block's state as Conquest's aquifer gives it: falling water up to the sheet's top, else its level's water. */
+   private static BlockState sheet(Pending pending, int lx, int lz, int y) {
+      int column = lx * 16 + lz;
+      int level = pending.sheets[column];
+      return y <= pending.sheets[256 + column] ? SHEET_FALLING : SHEET_STATES[level];
+   }
+
+   /** The job's sheet levels and tops (its numbers 4 and 5), copied: the job is the thread's own and reused. */
+   private static int[] sheets(FillGpu.Job job) {
+      if (job == null || !job.conquest) {
+         return null;
+      }
+
+      int[] sheets = new int[512];
+      System.arraycopy(job.lava, 256 + 3 * 256, sheets, 0, 512);
+      return sheets;
+   }
+
    private static int lowSection(Pending pending) {
       return pending.chunk.getSectionIndex(pending.minCellY * pending.cellHeight);
    }
@@ -1728,7 +1810,7 @@ public final class GpuNoiseFill {
          }
 
          pending.sections[i] = new LevelChunkSection(
-            new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, AIR, PalettedContainer.Strategy.SECTION_STATES), real[i].getBiomes());
+            Mc.blockStates(AIR), real[i].getBiomes());
       }
 
       pending.oceanFloor = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG).getRawData().clone();
@@ -1934,8 +2016,8 @@ public final class GpuNoiseFill {
     * different palettes in memory but pack the same when their blocks are the same.
     */
    private static boolean samePacked(LevelChunkSection a, LevelChunkSection b) {
-      var pa = a.getStates().pack(net.minecraft.world.level.block.Block.BLOCK_STATE_REGISTRY, net.minecraft.world.level.chunk.PalettedContainer.Strategy.SECTION_STATES);
-      var pb = b.getStates().pack(net.minecraft.world.level.block.Block.BLOCK_STATE_REGISTRY, net.minecraft.world.level.chunk.PalettedContainer.Strategy.SECTION_STATES);
+      var pa = Mc.pack(a.getStates());
+      var pb = Mc.pack(b.getStates());
       if (!pa.paletteEntries().equals(pb.paletteEntries())) {
          return false;
       }

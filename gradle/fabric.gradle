@@ -1,0 +1,136 @@
+// Fabric's jar for one Minecraft version: fabric/src (the entry point and platform calls) and the version's common project.
+apply plugin: 'com.gradleup.shadow'
+
+architectury {
+    platformSetupLoomIde()
+    fabric()
+}
+
+sourceSets.main {
+    java.srcDir rootProject.file('fabric/src/main/java')
+    resources.srcDir rootProject.file('fabric/src/main/resources')
+}
+
+loom {
+    accessWidenerPath = project(sibling('common')).loom.accessWidenerPath
+}
+
+configurations {
+    common
+    shadowCommon
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentFabric.extendsFrom common
+    shade
+    implementation.extendsFrom shade
+}
+
+repositories {
+    // ModMenu (optional in the game: its Config button for the settings screen).
+    maven { url 'https://maven.terraformersmc.com/releases/' }
+}
+
+dependencies {
+    if (loomRemap) {
+        modImplementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
+        modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+        modCompileOnly("com.terraformersmc:modmenu:${modmenu_version}") { transitive = false }
+        common(project(path: sibling('common'), configuration: 'namedElements')) { transitive = false }
+    } else {
+        implementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
+        implementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+        compileOnly("com.terraformersmc:modmenu:${modmenu_version}") { transitive = false }
+        common(project(path: sibling('common'))) { transitive = false }
+    }
+    shadowCommon(project(path: sibling('common'), configuration: 'transformProductionFabric')) { transitive = false }
+    rootProject.lwjglShaded(lwjgl_shaded).each { shade(it) { transitive = false } }
+}
+
+processResources {
+    def properties = [version: version, minecraft_version: minecraft_version, java_version: java_version, mixin_java: mixin_java]
+    inputs.properties properties
+    filesMatching(['fabric.mod.json', '*.mixins.json']) {
+        expand properties
+    }
+}
+
+shadow {
+    addShadowVariantIntoJavaComponent = false
+}
+
+def shaded = configurations.shade
+
+if (loomRemap) {
+    shadowJar {
+        exclude 'architectury.common.json'
+        configurations = [project.configurations.shadowCommon]
+        archiveClassifier = 'dev-shadow'
+    }
+
+    remapJar {
+        injectAccessWidener = true
+        input.set shadowJar.archiveFile
+        dependsOn shadowJar
+        archiveClassifier = null
+        // Fabric runs Minecraft with intermediary names: the table back to Mojang's for the mod's reflection (platform/Names).
+        def tiny = project.provider { loom.mappingConfiguration.tinyMappings.toFile() }
+        inputs.file tiny
+        doLast {
+            rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files, ['wgaccel-names.tsv.gz': rootProject.namesTable(tiny.get().toPath())])
+        }
+    }
+
+    jar {
+        archiveClassifier = 'dev'
+    }
+
+    ext.finalJar = tasks.named('remapJar')
+
+} else {
+    // Nothing to remap: the jar (the access widener named in fabric.mod.json) and the common project's classes are the
+    // finished jar, with Mojang's names as the game has them (no names table).
+    loom {
+        injectAccessWidener(tasks.named('jar'))
+    }
+
+    jar {
+        archiveClassifier = 'dev'
+    }
+
+    shadowJar {
+        exclude 'architectury.common.json'
+        dependsOn jar
+        mainSpec.sourcePaths.clear()
+        from(zipTree(jar.archiveFile))
+        configurations = [project.configurations.shadowCommon]
+        archiveClassifier = null
+        doLast {
+            rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files)
+        }
+    }
+
+    ext.finalJar = tasks.named('shadowJar')
+}
+
+// The jar as players get it, in Fabric's production server (on 1.21.1 intermediary names, platform/Names' table in use):
+// `gradlew.bat :1.21.1:fabric:prodServer`, run folder versions/1.21.1/fabric/run-prod.
+// (A shared script does not see Loom's classes by name: the task type comes from Loom's own class loader.)
+def serverRun = loom.getClass().classLoader.loadClass('net.fabricmc.loom.task.prod.ServerProductionRunTask')
+tasks.register('prodServer', serverRun) {
+    group = 'fabric'
+    loaderVersion = fabric_loader_version
+    minecraftVersion = minecraft_version
+    // Only the finished jar (Loom adds the dev jar, without the shaded LWJGL modules, by default).
+    mods.setFrom(finalJar)
+    mods.from(configurations.detachedConfiguration(dependencies.create("net.fabricmc.fabric-api:fabric-api:${fabric_api_version}")).setTransitive(false))
+    runDir = file('run-prod')
+    // -PprodMods=<folder>: other mods' jars to run with (the ones a report names).
+    if (project.hasProperty('prodMods')) {
+        mods.from(fileTree(project.property('prodMods')) { include '*.jar' })
+    }
+    // -PprodLwjgl: LWJGL on the server's classpath, as a server set up for the GPU parts has it (the GPU code runs).
+    if (project.hasProperty('prodLwjgl')) {
+        getClasspath().from(configurations.detachedConfiguration(
+            dependencies.create("org.lwjgl:lwjgl:${lwjgl_version}"), dependencies.create("org.lwjgl:lwjgl:${lwjgl_version}:natives-windows")).setTransitive(false))
+    }
+}

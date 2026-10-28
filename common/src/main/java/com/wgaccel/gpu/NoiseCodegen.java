@@ -515,9 +515,7 @@ public final class NoiseCodegen {
       }
 
       for (RecordComponent component : components) {
-         Method accessor = component.getAccessor();
-         accessor.setAccessible(true);
-         values.put(Names.name(component), accessor.invoke(record));
+         values.put(Names.name(component), Names.value(component, record));
       }
 
       return values;

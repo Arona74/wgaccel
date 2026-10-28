@@ -3,11 +3,10 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.ftf.FtfGround;
-import com.wgaccel.mixin.access.BeardifierAccessor;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Platform;
 import com.wgaccel.stats.Stage;
 import com.wgaccel.stats.Stats;
-import it.unimi.dsi.fastutil.objects.ObjectListIterator;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.world.level.ChunkPos;
@@ -121,7 +120,7 @@ public final class FillToGround {
       if (!world.trusted) {
          // On probation: the whole height filled, the cut it would have had compared with the chunk's highest block.
          if (PROBATION.size() < 4096) {
-            PROBATION.put(chunk.getPos().toLong(), cells);
+            PROBATION.put(Mc.key(chunk.getPos()), cells);
          }
 
          return full;
@@ -181,7 +180,7 @@ public final class FillToGround {
     */
    public static void check(ChunkPos pos, int cellsFilled, int fullCells, int cellsNeeded, boolean prefilled) {
       World current = world;
-      Integer predicted = PROBATION.remove(pos.toLong());
+      Integer predicted = PROBATION.remove(Mc.key(pos));
       if (prefilled) {
          PREFILLED.increment();
          return;
@@ -219,24 +218,16 @@ public final class FillToGround {
          return Integer.MIN_VALUE;
       }
 
-      BeardifierAccessor access = (BeardifierAccessor)beardifier;
       int top = Integer.MIN_VALUE;
-      ObjectListIterator<Beardifier.Rigid> pieces = access.wgaccel$pieceIterator();
-      while (pieces.hasNext()) {
-         Beardifier.Rigid piece = pieces.next();
+      for (Beardifier.Rigid piece : Mc.pieces((Beardifier)beardifier)) {
          if (piece.terrainAdjustment() != TerrainAdjustment.NONE) {
             top = Math.max(top, piece.box().maxY() + STRUCTURE_MARGIN);
          }
       }
 
-      pieces.back(Integer.MAX_VALUE);
-      ObjectListIterator<JigsawJunction> junctions = access.wgaccel$junctionIterator();
-      while (junctions.hasNext()) {
-         JigsawJunction junction = junctions.next();
+      for (JigsawJunction junction : Mc.junctions((Beardifier)beardifier)) {
          top = Math.max(top, junction.getSourceGroundY() + Math.abs(junction.getDeltaY()) + STRUCTURE_MARGIN);
       }
-
-      junctions.back(Integer.MAX_VALUE);
       return top;
    }
 }

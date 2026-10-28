@@ -3,6 +3,7 @@ package com.wgaccel.gen;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gpu.SurfaceCodegen;
 import com.wgaccel.mixin.access.SurfaceContextAccessor;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -123,8 +124,8 @@ public final class SurfaceTap {
          current.tap.failed = true;
       }
 
-      current.tap.chunkX = chunk.getPos().x;
-      current.tap.chunkZ = chunk.getPos().z;
+      current.tap.chunkX = Mc.x(chunk.getPos());
+      current.tap.chunkZ = Mc.z(chunk.getPos());
       Arrays.fill(current.tap.strataCount, -1);
       try {
          quarts(current.tap, chunk, biomeManager);
@@ -154,8 +155,8 @@ public final class SurfaceTap {
       getter.setAccessible(true);
       int gx = (chunk.getPos().getMinBlockX() >> 2) - 1;
       int gz = (chunk.getPos().getMinBlockZ() >> 2) - 1;
-      int gy = chunk.getMinBuildHeight() >> 2;
-      int sy = ((chunk.getMaxBuildHeight() - 1) >> 2) - gy + 1;
+      int gy = Mc.minY(chunk) >> 2;
+      int sy = ((Mc.maxY(chunk) - 1) >> 2) - gy + 1;
       tap.grid[0] = gx;
       tap.grid[1] = gy;
       tap.grid[2] = gz;
@@ -248,10 +249,12 @@ public final class SurfaceTap {
       tap.calls[at + 5] = c.wgaccel$water();
       tap.calls[at + 6] = c.wgaccel$depth();
       tap.calls[at + 7] = biomes.getId(biome.value());
-      tap.calls[at + 8] = biome.value().coldEnoughToSnow(current.pos.set(x, y, z)) ? 1 : 0;
+      tap.calls[at + 8] = Mc.coldEnoughToSnow(biome.value(), current.pos.set(x, y, z), c) ? 1 : 0;
       tap.calls[at + 9] = test(current.steep) ? 1 : 0;
       tap.calls[at + 10] = c.wgaccel$minSurface();
-      tap.calls[at + 11] = column;
+      // The column, with the codegen's column conditions' bits above its 8 bits (the check kernel splits them).
+      com.wgaccel.gpu.ColumnConditions columns = codegen.columns();
+      tap.calls[at + 11] = columns == null ? column : column | columns.flags(x, z) << 8;
       tap.calls[at + 12] = slope(current.chunk, x & 15, z & 15);
       tap.secondary[column] = c.wgaccel$secondary();
       tap.results[tap.count] = state == null ? -1 : codegen.state(state);
@@ -280,7 +283,7 @@ public final class SurfaceTap {
    private static void before(Current current) {
       Tap tap = current.tap;
       net.minecraft.world.level.chunk.ChunkAccess chunk = current.chunk;
-      tap.minY = chunk.getMinBuildHeight();
+      tap.minY = Mc.minY(chunk);
       tap.height = chunk.getHeight();
       tap.before = new BlockState[256 * tap.height];
       tap.kinds = new byte[256 * tap.height];
@@ -309,8 +312,14 @@ public final class SurfaceTap {
       for (int t = 0; t < 256; t++) {
          int x = minX + t / 16;
          int z = minZ + t % 16;
-         tap.minBase[t] = net.minecraft.util.Mth.floor(net.minecraft.util.Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3));
+         tap.minBase[t] = columnBase(net.minecraft.util.Mth.floor(net.minecraft.util.Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3)), x, z);
       }
+   }
+
+   /** The column's minBase with the codegen's column conditions' bits (as GpuSurface.columnBase for the production code). */
+   private static int columnBase(int base, int x, int z) {
+      com.wgaccel.gpu.ColumnConditions columns = codegen.columns();
+      return columns == null ? base : base & 65535 | columns.flags(x, z) << 16;
    }
 
    public static void end() {

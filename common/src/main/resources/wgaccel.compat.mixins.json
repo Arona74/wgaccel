@@ -2,7 +2,7 @@
   "required": false,
   "minVersion": "0.8",
   "package": "com.wgaccel.mixin.compat",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "VanillaBackportRulesOnceMixin",
     "OreVeinTestMixin",

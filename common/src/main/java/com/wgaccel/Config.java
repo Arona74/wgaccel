@@ -20,6 +20,9 @@ public final class Config {
    public static final Setting<Boolean> GPU_CARVER_BIOMES;
    public static final Setting<Boolean> FAST_ORES;
    public static final Setting<Boolean> FAST_LAYER_PLACEMENT;
+   public static final Setting<Boolean> FAST_JIGSAW;
+   public static final Setting<Boolean> FAST_CONQUEST_LANDFORMS;
+   public static final Setting<Boolean> FAST_REGION_CHUNKS;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
    public static final Setting<Boolean> GPU_IMPROVEMENTS;
@@ -210,6 +213,27 @@ public final class Config {
             "layers once per layer in it: 30 of their 37 ms a chunk). The same noise values. And their target test answered",
             "from the block they just read instead of reading it again through the level (every 256th compared).")
          .define("fastLayerPlacement", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_JIGSAW = Setting.of(builder
+         .comment("Gain: Conquest ReTerraForged 0.1.0's walled town, the same 3 attempts: 8.47 -> 7.02 s (1.2x).",
+            "Jigsaw structures (villages, outposts, trial chambers, modded towns) ask every candidate piece for its jigsaw",
+            "blocks in all four rotations, again for every jigsaw they try to attach to; each time the template's jigsaw blocks",
+            "were rotated anew. Here they are rotated once per piece and rotation and copied; the copy is shuffled and sorted",
+            "with the structure's random as before: the same pieces. Every 256th list is compared with a newly made one.")
+         .define("fastJigsaw", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_CONQUEST_LANDFORMS = Setting.of(builder
+         .comment("Gain: Conquest of Arborea's tree_forest 5.28 -> 3.17 ms a call (1.7x, two 300 s runs; Conquest ReTerraForged, 26.1.2).",
+            "Conquest ReTerraForged's landform answers (a column's landform and height, which Conquest of Arborea's trees ask",
+            "for column after column, 90% of the time a column asked before) remembered per column: the same answers. Every",
+            "256th kept answer is compared with Conquest's own.")
+         .define("fastConquestLandforms", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_REGION_CHUNKS = Setting.of(builder
+         .comment("Gain: Lithos 1.0.0 (26.1.2) strata 4.92 -> 3.64 ms a call, ground_cover 1.91 -> 1.58; all features ~5% (two 300 s runs, noisy).",
+            "Features read and write every block through their world-generation region, which looks the block's chunk up",
+            "again each time (its distance, allowed status and holder). Here each region keeps the chunks it has handed out:",
+            "the same chunks, as they are finished before the region's step and do not change during it. Every 256th kept",
+            "chunk is compared with the region's own answer. A neighbour that has reached the spawn step is asked for again",
+            "each time (it may be finished and swapped for its full chunk). C2ME run: 6 billion kept chunks, identical.")
+         .define("fastRegionChunks", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",
@@ -380,7 +404,7 @@ public final class Config {
          .comment("Measured: vanilla r2000 2:15 without the mod, 2:29 with the GPU fill (slower, so off).",
             "The GPU noise fill in worlds that are not FreeTerraForged's (vanilla and others). Off by default: in vanilla, C2ME's",
             "compiled CPU fill is already fast and the GPU fill made the overworld slower on the test PC (radius 2000: 2:15",
-            "without this mod, 2:29 with the GPU fill). FreeTerraForged worlds always use it (gpuNoiseFill).")
+            "without this mod, 2:29 with the GPU fill). FreeTerraForged and Conquest ReTerraForged worlds always use it (gpuNoiseFill).")
          .define("gpuNoiseFillVanilla", false), false, false).under(GPU_IMPROVEMENTS, false);
       GPU_BIOMES_VANILLA = Setting.of(builder
          .comment("Measured: vanilla r2000 2:13 with, 1:58 without (slower, so off).",

@@ -1,6 +1,6 @@
 package com.wgaccel.gpu;
 
-import static org.lwjgl.cuda.CU.*;
+import static com.wgaccel.gpu.cuda.CU.*;
 
 import java.nio.Buffer;
 import java.nio.ByteBuffer;

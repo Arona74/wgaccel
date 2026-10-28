@@ -1,0 +1,102 @@
+// NeoForge's jar for one Minecraft version: neoforge/src (the entry point and platform calls) and the version's common project.
+apply plugin: 'com.gradleup.shadow'
+
+architectury {
+    platformSetupLoomIde()
+    neoForge()
+}
+
+sourceSets.main {
+    java.srcDir rootProject.file('neoforge/src/main/java')
+    resources.srcDir rootProject.file('neoforge/src/main/resources')
+}
+
+loom {
+    accessWidenerPath = project(sibling('common')).loom.accessWidenerPath
+}
+
+configurations {
+    common
+    shadowCommon
+    compileClasspath.extendsFrom common
+    runtimeClasspath.extendsFrom common
+    developmentNeoForge.extendsFrom common
+    shade
+    implementation.extendsFrom shade
+}
+
+repositories {
+    maven { url 'https://maven.neoforged.net/releases/' }
+}
+
+dependencies {
+    neoForge "net.neoforged:neoforge:${neo_version}"
+    if (loomRemap) {
+        common(project(path: sibling('common'), configuration: 'namedElements')) { transitive = false }
+    } else {
+        common(project(path: sibling('common'))) { transitive = false }
+    }
+    shadowCommon(project(path: sibling('common'), configuration: 'transformProductionNeoForge')) { transitive = false }
+    rootProject.lwjglShaded(lwjgl_shaded).each { shade(it) { transitive = false } }
+}
+
+// The version the game shows (neoforge.mods.toml) is mod_version from gradle.properties, as the jar's name is: written by
+// hand there it stayed at 0.5.6 while the jar went on to 0.11.5.
+processResources {
+    def properties = [mod_version: version, minecraft_version: minecraft_version, neo_range: neo_range]
+    inputs.properties properties
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand properties
+    }
+}
+
+shadow {
+    addShadowVariantIntoJavaComponent = false
+}
+
+jar {
+    archiveClassifier = 'dev'
+}
+
+def shaded = configurations.shade
+
+if (loomRemap) {
+    shadowJar {
+        exclude 'fabric.mod.json', 'architectury.common.json'
+        configurations = [project.configurations.shadowCommon]
+        archiveClassifier = 'dev-shadow'
+    }
+
+    remapJar {
+        atAccessWideners.add('wgaccel.accesswidener')
+        input.set shadowJar.archiveFile
+        dependsOn shadowJar
+        archiveClassifier = null
+        doLast {
+            rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files)
+        }
+    }
+
+    ext.finalJar = tasks.named('remapJar')
+} else {
+    // Nothing to remap: the access widener becomes the jar's access transformer.
+    loom {
+        neoForge {
+            convertAccessWideners(tasks.named('shadowJar', Jar), 'wgaccel.accesswidener')
+        }
+    }
+
+    shadowJar {
+        exclude 'fabric.mod.json', 'architectury.common.json'
+        dependsOn jar
+        mainSpec.sourcePaths.clear()
+        from(zipTree(jar.archiveFile))
+        configurations = [project.configurations.shadowCommon]
+        archiveClassifier = null
+        doLast {
+            rootProject.relocateLwjgl(archiveFile.get().asFile, shaded.files)
+        }
+    }
+
+    ext.finalJar = tasks.named('shadowJar')
+}

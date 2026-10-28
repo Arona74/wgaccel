@@ -1,5 +1,6 @@
 package com.wgaccel.gpu;
 
+import com.wgaccel.gpu.cuda.CU;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -8,7 +9,6 @@ import java.nio.FloatBuffer;
 import java.nio.LongBuffer;
 import java.nio.ShortBuffer;
 import org.lwjgl.PointerBuffer;
-import org.lwjgl.cuda.CU;
 import org.lwjgl.system.MemoryUtil;
 
 /**

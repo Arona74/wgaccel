@@ -17,6 +17,7 @@
   },
   "mixins": [
     "wgaccel.mixins.json",
+    "wgaccel.mc.mixins.json",
     "wgaccel.ftf.mixins.json",
     "wgaccel.check.mixins.json",
     "wgaccel.c2me.mixins.json",
@@ -26,8 +27,8 @@
   "depends": {
     "fabricloader": ">=0.16.0",
     "fabric-api": "*",
-    "minecraft": "1.21.1",
-    "java": ">=21"
+    "minecraft": "${minecraft_version}",
+    "java": ">=${java_version}"
   },
   "suggests": {
     "freeterraforged": "*",

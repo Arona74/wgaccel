@@ -1,5 +1,6 @@
 package com.wgaccel.gpu;
 
+import com.wgaccel.gpu.cuda.HipCalls;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -205,7 +206,7 @@ public final class Hip {
 
    public static int hipModuleLaunchKernel(long function, int gridX, int gridY, int gridZ, int blockX, int blockY, int blockZ, int sharedBytes, long stream,
          PointerBuffer params, long extra) {
-      return JNI.callPPPPI(function, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedBytes, stream, MemoryUtil.memAddressSafe(params), extra,
+      return HipCalls.launchKernel(function, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedBytes, stream, MemoryUtil.memAddressSafe(params), extra,
          Runtime.hipModuleLaunchKernel);
    }
 

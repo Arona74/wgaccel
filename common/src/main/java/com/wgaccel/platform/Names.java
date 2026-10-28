@@ -129,6 +129,22 @@ public final class Names {
       return REMAPPED ? memberName(component.getDeclaringRecord(), component.getName()) : component.getName();
    }
 
+   /**
+    * A record component's value in record: by its accessor, or by its field when an obfuscator has removed the accessor
+    * (Conquest ReTerraForged's records: getAccessor() is null; the field keeps the component's name).
+    */
+   public static Object value(RecordComponent component, Object record) throws ReflectiveOperationException {
+      java.lang.reflect.Method accessor = component.getAccessor();
+      if (accessor != null) {
+         accessor.setAccessible(true);
+         return accessor.invoke(record);
+      }
+
+      java.lang.reflect.Field field = component.getDeclaringRecord().getDeclaredField(component.getName());
+      field.setAccessible(true);
+      return field.get(record);
+   }
+
    /** A stack frame's "Class.method" with Mojang's names (the class's simple name, nested ones with their outer). */
    public static String frame(String className, String method) {
       String name = translate(className);

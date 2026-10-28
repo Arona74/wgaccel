@@ -56,7 +56,7 @@ public final class BiomePlanInventory {
          StringBuilder out = new StringBuilder("The overworld's biome plan (Worldgen Accelerator, GPU step G5.1). #N marks an object; \"again\" a shared one.\n");
          out.append("\nclimate sampler (").append(Names.className(sampler.getClass())).append("):\n");
          for (RecordComponent component : Climate.Sampler.class.getRecordComponents()) {
-            Object value = component.getAccessor().invoke(sampler);
+            Object value = Names.value(component, sampler);
             out.append("  ").append(Names.name(component)).append(": ").append(value instanceof DensityFunction ? describeFunction(value) : String.valueOf(value)).append('\n');
          }
 
@@ -221,10 +221,8 @@ public final class BiomePlanInventory {
 
       if (node.getClass().isRecord()) {
          for (RecordComponent component : node.getClass().getRecordComponents()) {
-            Method accessor = component.getAccessor();
-            accessor.setAccessible(true);
             out.append(indent).append("  .").append(Names.name(component)).append(":\n");
-            dump(accessor.invoke(node), depth + 2, out, ids, kinds);
+            dump(Names.value(component, node), depth + 2, out, ids, kinds);
          }
 
          return;

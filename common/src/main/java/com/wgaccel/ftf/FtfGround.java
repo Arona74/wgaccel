@@ -1,5 +1,6 @@
 package com.wgaccel.ftf;
 
+import com.wgaccel.platform.Mc;
 import etcodehome.freeterraforged.world.worldgen.FTFRandomState;
 import etcodehome.freeterraforged.world.worldgen.GeneratorContext;
 import etcodehome.freeterraforged.world.worldgen.densityfunction.tile.Tile;
@@ -35,12 +36,12 @@ public final class FtfGround {
       }
 
       float max = Float.NEGATIVE_INFINITY;
-      try (TileCache.Lease lease = context.cache.acquireAtChunk(pos.x, pos.z)) {
+      try (TileCache.Lease lease = context.cache.acquireAtChunk(Mc.x(pos), Mc.z(pos))) {
          if (lease == null) {
             return UNKNOWN;
          }
 
-         Tile.Chunk chunk = lease.tile().getChunkReader(pos.x, pos.z);
+         Tile.Chunk chunk = lease.tile().getChunkReader(Mc.x(pos), Mc.z(pos));
          for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                max = Math.max(max, chunk.getCell(x, z).height);

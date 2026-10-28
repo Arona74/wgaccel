@@ -1,34 +1,5 @@
-architectury {
-    common('neoforge', 'fabric')
-    // No @ExpectPlatform here (platform/Platform finds the loader's class itself): no injected helper class.
-    injectInjectables = false
-}
-
-loom {
-    // Minecraft's private fields and methods the mod reads, made public at build time (Fabric reads this file as it
-    // is; NeoForge's jar gets it as an access transformer).
-    accessWidenerPath = file('src/main/resources/wgaccel.accesswidener')
-}
-
-dependencies {
-    // Mixin and MixinExtras at compile time (both loaders bring their own in the game).
-    modImplementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
-    // @Nullable (NeoForge brought it; vanilla Minecraft does not).
-    compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
-    // Copied into each loader jar (see relocateLwjgl in the root build.gradle). LWJGL's core comes with the game.
-    rootProject.lwjglShaded.each { implementation(it) { transitive = false } }
-    // Optional at run time: FreeTerraForged's tiles are read for the ground height (copy its jar into libs/ to build).
-    // The same classes on NeoForge and Fabric (its common module).
-    compileOnly rootProject.files(project.findProperty('ftfJar') ?: 'libs/freeterraforged-1.0.0010.jar')
-    // FreeTerraForged's deleteTiles builds (1.0.0013, now 1.0.0014) after it, for the classes 1.0.0010 does not have
-    // (cell.filter.FilterGrid for the erosion filter on its chunk grids); the ones both have resolve to 1.0.0010's above.
-    compileOnly rootProject.files(project.findProperty('ftf13Jar') ?: 'libs/freeterraforged-1.0.0014.jar')
-    // Optional at run time: C2ME's chunk system (the 4x4 area step's status and dependency hooks). Copied from the C2ME
-    // jar's META-INF/jars into libs/c2me/ (base-all for flowsched, rewrites-chunk-system, rxjava) to build.
-    compileOnly fileTree(dir: rootProject.file('libs/c2me'), include: '*.jar')
-    // Optional at run time: No Man's Land's ore veins and noise fields (mixin/compat; copy its jar into libs/ to build).
-    compileOnly rootProject.files('libs/nomansland-1.6.2.jar')
-}
+// The offline checks and benches (common/src/cudacheck: outside the game), on Minecraft 1.21.1's classes, its LWJGL
+// 3.3.3 and FreeTerraForged 1.21.1: applied by versions/1.21.1/common/build.gradle.
 
 // The game instance's logs folder, where the mod saves the sources and chunks the offline checks read: -Plogs=<folder>,
 // or logs=<folder> in the user's own ~/.gradle/gradle.properties.
@@ -53,6 +24,7 @@ repositories {
 
 sourceSets {
     cudacheck {
+        java.srcDir rootProject.file('common/src/cudacheck/java')
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
     }

@@ -1,8 +1,8 @@
 package com.wgaccel.gen;
 
 import com.wgaccel.WorldgenAccelerator;
-import com.wgaccel.mixin.access.BeardifierAccessor;
 import com.wgaccel.mixin.access.NoiseChunkAccessor;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import java.util.List;
 import java.util.function.Consumer;
@@ -288,8 +288,6 @@ public final class DensityTap {
          return false;
       }
 
-      BeardifierAccessor access = (BeardifierAccessor)beardifier;
-      return access.wgaccel$pieceIterator().hasNext() || access.wgaccel$pieceIterator().hasPrevious() || access.wgaccel$junctionIterator().hasNext()
-         || access.wgaccel$junctionIterator().hasPrevious();
+      return !Mc.pieces((Beardifier)beardifier).isEmpty() || !Mc.junctions((Beardifier)beardifier).isEmpty();
    }
 }

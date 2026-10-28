@@ -21,7 +21,7 @@ public abstract class LevelLoadingScreenMixin extends Screen {
       // The whole time the screen is up (0.17.2), not only while GPU programs are being made; nothing when the mod is
       // off (C2ME's OpenCL module).
       if (!com.wgaccel.Conflicts.openCl()) {
-         com.wgaccel.client.LoadingPanel.render(graphics, this.font, this.width, this.height);
+         com.wgaccel.client.LoadingPanel.render(new com.wgaccel.client.Canvas(graphics), this.font, this.width, this.height);
       }
    }
 }

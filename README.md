@@ -1,11 +1,13 @@
 # Worldgen Accelerator
 
-Faster world generation for Minecraft 1.21.1 (NeoForge and Fabric), built first for **FreeTerraForged**. The world comes out the
-same, block for block: every speed-up is checked against Minecraft's and FreeTerraForged's own results while you
-play, and a part whose answer differs turns itself off and the game carries on with the normal code.
+Faster world generation for Minecraft 1.21.1 and 26.1.2 (NeoForge and Fabric), built first for **FreeTerraForged**
+(1.21.1) and, since 0.60.0, **Conquest ReTerraForged** (Fabric 26.1.2). The world comes out the same, block for block:
+every speed-up is checked against Minecraft's and the terrain mod's own results while you play, and a part whose
+answer differs turns itself off and the game carries on with the normal code.
 
 On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster** (radius 1000: 2:23 -> 0:46), and
-**4.3x faster** on a PC with an AMD Radeon RX 9070 XT (4:20 -> 1:00).
+**4.3x faster** on a PC with an AMD Radeon RX 9070 XT (4:20 -> 1:00). See
+[Conquest ReTerraForged](#conquest-reterraforged-fabric-2612) for that mod.
 
 > [!WARNING]
 > **This mod is AI-generated.** All of its code, these instructions and its config descriptions were written by
@@ -21,6 +23,9 @@ On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster**
 > there: the one measured was slower than its laptop's CPU. Without a GPU OpenCL can use, the mod still runs with its CPU
 > improvements. When you join a world, a chat line names the GPU and the API in use (`gpuTestedWarning = false` turns it
 > off).
+>
+> On Minecraft 26.1.2 the GPU parts run through OpenCL only: CUDA and HIP aren't available there yet (the game's
+> LWJGL 3.4 has no CUDA module), and a CUDA or HIP choice falls back to OpenCL.
 
 > [!IMPORTANT]
 > **Not together with C2ME's OpenCL module** (`c2me-opts-accel-opencl`). Both move world generation to the graphics
@@ -32,6 +37,7 @@ On the test PC it made Chunky pregeneration with FreeTerraForged **3.1x faster**
 - [What it does](#what-it-does)
 - [What runs on the CPU and what on the GPU](#what-runs-on-the-cpu-and-what-on-the-gpu)
 - [Measured gains](#measured-gains)
+- [Conquest ReTerraForged (Fabric 26.1.2)](#conquest-reterraforged-fabric-2612)
 - [Supported versions and mods](#supported-versions-and-mods)
 - [Dimensions](#dimensions)
 - [Installation (client)](#installation-client)
@@ -73,11 +79,12 @@ threads).
 | --- | --- | --- |
 | FreeTerraForged's terrain tiles (1.0.0010) | the tile noise (terrain populators), the erosion filter | a bigger tile cache (`tileCacheTiles`) |
 | FreeTerraForged's chunk cells (1.0.0013 "deleteTiles") | | made once per chunk instead of three times (`ftfSharedChunkCells`; earlier 1.0.0013 builds only, it turns itself off on later ones) |
-| Biomes | climate sampling, the biome table search, FreeTerraForged's biome decoration (cave biomes, rivers) | faster biome choice: FreeTerraForged's repeated look-ups reused (`fasterBiomeChoice`) |
-| 3D terrain (noise fill) | density, aquifers, ore veins, structure terrain (Beardifier) | fill only up to the ground (`fillToGround`) |
-| Surface | the surface rules (grass, sand, snow, FreeTerraForged's strata) | direct block reads (`fastSurfaceReads`) |
+| Biomes | climate sampling, the biome table search, FreeTerraForged's biome decoration (cave biomes, rivers); off when another mod changes Minecraft's climate sampling (Conquest of Arborea does) | faster biome choice: FreeTerraForged's repeated look-ups reused (`fasterBiomeChoice`) |
+| 3D terrain (noise fill) | density, aquifers (Conquest ReTerraForged's too), ore veins, structure terrain (Beardifier) | fill only up to the ground (`fillToGround`) |
+| Surface | the surface rules (grass, sand, snow, FreeTerraForged's strata, Conquest ReTerraForged's beach and sea) | direct block reads (`fastSurfaceReads`) |
+| Structures | | jigsaw connection points cached per template (`fastJigsaw`) |
 | Carvers | | biomes read from the chunk (`carverBiomesFromChunk`) |
-| Features | | ores without repeated chunk look-ups (`fastOres`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`) |
+| Features | | ores without repeated chunk look-ups (`fastOres`), neighbour chunks kept per region (`fastRegionChunks`), Conquest ReTerraForged's landform answers remembered (`fastConquestLandforms`), FreeTerraForged's placement scopes (`ftfFastPlacementScopes`) |
 | Pregeneration | | more chunks in flight for Chunky (`chunkyMaxWorkingCount`) |
 
 ## Measured gains
@@ -144,16 +151,47 @@ each measured once, so the times are rough:
 
 Even a laptop's integrated graphics almost doubled the speed of the CPU improvements alone. Every check was identical.
 
+## Conquest ReTerraForged (Fabric 26.1.2)
+
+Conquest ReTerraForged 0.1.0 with the Conquest Reforged mods (Conquest of Arborea, Lithos, Conquest of the Birds,
+ArdaGrass). Its world type turns the GPU noise fill on by itself (`gpuNoiseFillVanilla` is not needed); the GPU
+surface handles its beach and sea conditions. The GPU biomes stay off: Conquest of Arborea replaces Minecraft's
+temperature and humidity with its own climate, which the GPU's climate does not follow.
+
+**Measured** on the AMD desktop above (Ryzen 7 7800X3D, RX 9070 XT through OpenCL), Windows 11, Fabric 26.1.2, Java 25, 8 GB heap,
+C2ME 0.4.0-alpha.0.65 with 12 threads, ScalableLux. Chunky radius 1000 (16,129 chunks), a new world each time:
+
+| Setup | Time | Noise fill per chunk |
+| --- | --- | --- |
+| CPU improvements and GPU surface, noise fill on the CPU (2 runs) | 2:38, 2:40 | 15.7-17.2 ms |
+| + GPU noise fill | **2:20** | **1.9 ms** |
+
+The new CPU improvements, measured per part:
+
+| Part | Before | After |
+| --- | --- | --- |
+| Conquest of Arborea's `tree_forest` (`fastConquestLandforms`) | 46 ms per chunk | 8.5-14 ms per chunk |
+| Lithos's `strata` (`fastRegionChunks`) | 4.92 ms per call | 3.64 ms per call (test server) |
+| Conquest's walled town search, the same 3 attempts (`fastJigsaw`) | 8.47 s | 7.02 s |
+
+Every check in these runs was identical. A run without the mod has not been measured. Most of the time left is the
+features of other mods (Lithos, Conquest of Arborea, the deep dark's sculk, about 68% of the work per chunk), which
+run on the CPU as they are. Conquest's walled towns never start in 0.1.0 (the town's datapack names jigsaw pools
+that don't exist; reported to its developers), and their search still takes most of the structure time.
+
 ## Supported versions and mods
 
 | | Version | Notes |
 | --- | --- | --- |
-| Minecraft | 1.21.1 | |
-| NeoForge | 21.1.x (tested 21.1.249 to 21.1.264) | `wgaccel-neoforge-<version>.jar` |
-| Fabric | Fabric Loader 0.16 or later with Fabric API (tested Loader 0.19.5, Fabric API 0.116.17) | `wgaccel-fabric-<version>.jar`; since 0.50.0, the same mod and checks as on NeoForge (tested with FreeTerraForged 1.0.0014's Fabric build and C2ME 0.4.0-alpha.0.30, area step too). ModMenu (optional) gives it a Config button |
-| FreeTerraForged | **1.0.0014 from the `1.21.1_unstable` branch** (24 Oct 2026, with the `deleteTiles` work merged); 1.0.0013 and 1.0.0010 | 1.0.0014 (24 Oct build) checked; its earlier 23 Oct build and 1.0.0013 work too. 1.0.0010 (tiles) gets the GPU tile parts; 1.0.0013 and later have no tiles. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
-| C2ME | 0.4.0-alpha.0.123 (recommended) | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
-| C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off |
+| Minecraft | 1.21.1 and 26.1.2 | one jar per loader and Minecraft version: `wgaccel-<loader>-<version>+mc<Minecraft version>.jar` |
+| NeoForge (1.21.1) | 21.1.x (tested 21.1.249 to 21.1.264) | `wgaccel-neoforge-<version>+mc1.21.1.jar` |
+| NeoForge (26.1.2) | 26.1.x (built against 26.1.2.124) | `wgaccel-neoforge-<version>+mc26.1.2.jar`; tested in game |
+| Fabric (1.21.1) | Fabric Loader 0.16 or later with Fabric API (tested Loader 0.19.5, Fabric API 0.116.17) | `wgaccel-fabric-<version>+mc1.21.1.jar`; since 0.50.0, the same mod and checks as on NeoForge (tested with FreeTerraForged 1.0.0014's Fabric build and C2ME 0.4.0-alpha.0.30, area step too). ModMenu (optional) gives it a Config button |
+| Fabric (26.1.2) | Fabric Loader 0.20.1 or later with Fabric API (tested Fabric API 0.155.3) | `wgaccel-fabric-<version>+mc26.1.2.jar`; tested with Conquest ReTerraForged and in vanilla worlds, with and without C2ME |
+| FreeTerraForged | **1.0.0014 from the `1.21.1_unstable` branch** (24 Oct 2026, with the `deleteTiles` work merged); 1.0.0013 and 1.0.0010 | Minecraft 1.21.1 only. 1.0.0014 (24 Oct build) checked; its earlier 23 Oct build and 1.0.0013 work too. 1.0.0010 (tiles) gets the GPU tile parts; 1.0.0013 and later have no tiles. When FreeTerraForged fixes one of these slow paths itself, the mod's fix turns itself off. |
+| Conquest ReTerraForged | 0.1.0 (Fabric 26.1.2) with Conquest Reforged, Conquest of Arborea, Lithos, Conquest of the Birds, ArdaGrass | works, exact; GPU noise fill and surface, CPU improvements for its trees and Lithos (see [above](#conquest-reterraforged-fabric-2612)); GPU biomes off (Conquest of Arborea's climate) |
+| C2ME | 0.4.0-alpha.0.123 on 1.21.1 (recommended), 0.4.0-alpha.0.65 on 26.1.2 | 19 threads on the test PC; the 4 x 4 area step (`gpuAreaStep`) needs it |
+| C2ME OpenCL module | | **not together**: Worldgen Accelerator turns itself off. On Fabric 1.21.1 the module also crashes FreeTerraForged worlds on its own (it can't compile FreeTerraForged's terrain); keep the main C2ME jar only |
 | Lithium | 0.15.4 | works, recommended |
 | ScalableLux | 0.3.0-alpha.0.8 | works, recommended (faster lighting) |
 | Chunky | 1.4.23 | works; the mod raises its chunks in flight (`chunkyMaxWorkingCount`) |
@@ -186,11 +224,12 @@ settings. If one doesn't, the checks turn the affected part off and the log says
 
 ## Installation (client)
 
-1. Install NeoForge 21.1.x, or Fabric Loader with Fabric API, for Minecraft 1.21.1, then FreeTerraForged (and C2ME,
-   Lithium and ScalableLux if you like). On Fabric, ModMenu is optional: it adds the mod's settings button to the mods
-   list.
-2. Put the jar for your loader into the instance's `mods` folder: `wgaccel-neoforge-<version>.jar` or
-   `wgaccel-fabric-<version>.jar`. That's all for the CPU improvements.
+1. Install NeoForge, or Fabric Loader with Fabric API, for Minecraft 1.21.1 or 26.1.2, then the terrain mod
+   (FreeTerraForged on 1.21.1, Conquest ReTerraForged on Fabric 26.1.2) and C2ME, Lithium and ScalableLux if you like.
+   On Fabric, ModMenu is optional: it adds the mod's settings button to the mods list.
+2. Put the jar for your loader and Minecraft version into the instance's `mods` folder, for example
+   `wgaccel-neoforge-<version>+mc1.21.1.jar` or `wgaccel-fabric-<version>+mc26.1.2.jar`. That's all for the CPU
+   improvements.
 3. **For the GPU parts:** update your GPU's driver (NVIDIA, AMD Adrenalin or Intel). That's all: the mod builds its
    GPU programs with the driver's own OpenCL compiler.
 4. Start the game and open a world. The log (`logs/latest.log`) should show `WGA GPU backend: OpenCL`,
@@ -304,7 +343,8 @@ chosen, `gpuBackend` in the config), and LWJGL, which a client has and a server 
 1. Put the mod's jar (and FreeTerraForged, C2ME, ...) into the server's `mods` folder (on Fabric, Fabric API too).
 2. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` from a client's `libraries/org/lwjgl/lwjgl/3.3.3/`
    to the server's `libraries/org/lwjgl/lwjgl/3.3.3/` (on Linux, the `natives-linux` jar instead; both are also on
-   Maven Central, `org.lwjgl:lwjgl:3.3.3`).
+   Maven Central, `org.lwjgl:lwjgl:3.3.3`). Minecraft 26.1.2 uses LWJGL **3.4.1**: the same steps with `3.4.1` in
+   every name and path below.
 3. Add both jars to the server's Java class path:
    - **NeoForge:** open `libraries/net/neoforged/neoforge/<version>/win_args.txt` (keep a copy first: reinstalling
      NeoForge rewrites it) and add them to the end of the `-DlegacyClassPath=` list, separated by `;`:
@@ -345,7 +385,7 @@ off it: on a 16-thread CPU it ran 7 workers, busy only about 60% of the time, wi
 PC). About three quarters of your CPU threads is a good start; the log's
 `WGA hint` line suggests a number when C2ME is on its default.
 
-**Java:** Java 21 (Minecraft 1.21.1's own) works. The radius 1000 measurements above were made on Java 25 (the AMD
+**Java:** Minecraft 26.1.2 needs Java 25. On 1.21.1, Java 21 (its own) works. The radius 1000 measurements above were made on Java 25 (the AMD
 laptop's on Java 21); the difference between Java 21 and 25 for this mod **has not been measured**.
 
 ## Config
@@ -357,8 +397,8 @@ say how much they gained on the test PC.
 | --- | --- |
 | top | `preset`: `AUTO` (default: `CLIENT` in the game, `SERVER` on a dedicated server), `CLIENT`, `SERVER` (the measured best for each), or `CUSTOM` (every setting as written in the file) |
 | `[general]` | `chunkyMaxWorkingCount` (Chunky's chunks in flight; 0 = automatic from the heap and the world's height), `memoryReport` (off; logs what holds the memory, for a bug report), `debugInfoLevel` (`VERBOSE` every log line, for a bug report; `NORMAL`, the default, each kind of line the first time and every 10th time after; `SILENT` warnings and errors only; also on the settings screen's Config tab), `overrides` (the improvements switched in the settings screen, as `key=value`; they win over the preset) |
-| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastBlockPredicates` (off: it was slower) |
-| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches, `gpuAreaStep` |
+| `[cpu]` | **`cpuImprovements`** (all CPU improvements on or off), then each one: `fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastOres`, `fastSurfaceReads`, `carverBiomesFromChunk`, `ftfFastPlacementScopes`, `ftfSharedChunkCells`, `fastChunkCompression`, `fastJigsaw`, `fastRegionChunks`, `fastConquestLandforms` (26.1.2), `fastBlockPredicates` (off: it was slower) |
+| `[gpu]` | **`gpuImprovements`** (all GPU improvements on or off: off, the card is never touched), `gpuTestedWarning` (the chat line naming the GPU and API in use), `gpuBackend` and `gpuDevice` (which GPU: AUTO and -1 = automatic; set by the settings screen's Config tab), then each GPU step: `gpuTileNoise`, `gpuErosionFilter`, `gpuCliffRelaxation`, `gpuNoiseFill`, `gpuLookAhead`, `gpuStructures`, `gpuBiomes`, `gpuBiomesAhead`, `gpuBiomeDecoration`, `gpuSurface`, `gpuSurfaceAhead`, the dimension and vanilla switches (`gpuNoiseFillVanilla` is not needed in Conquest ReTerraForged worlds), `gpuAreaStep` |
 | `[gpu.tuning]` | how GPU work is queued and batched (queue limits, batch sizes, threads, priorities). The defaults are the measured best. Also two checking tools: `gpuFillCheckEvery` (64; 1 compares every GPU chunk with the normal fill, slow) and `gpuFillDebugChunks` (chunks always compared and saved for a bug report). |
 
 The GPU steps take `OFF`, `CHECK` (the GPU and the CPU both do the work and every result is compared: slower, for
@@ -374,16 +414,26 @@ the generation threads while chunks generate and logs where their time goes: by 
 
 ## Building from source
 
-Put a FreeTerraForged 1.0.0010 jar into `libs/` as `libs/freeterraforged-1.0.0010.jar` (or pass `-PftfJar=<path>`),
-and into `libs/c2me/` the jars inside the C2ME jar's `META-INF/jars/` that the build compiles against:
-`c2me-neoforge-base-<version>-all.jar`, `c2me-neoforge-rewrites-chunk-system-<version>.jar`, `rxjava-*.jar` and
-`reactive-streams-*.jar`. Then run `gradlew build`; the mod is `build/libs/wgaccel-neoforge-<version>.jar`.
+The build needs a Java 25 JDK (26.1.2 is compiled for Java 25, 1.21.1 for Java 21). Into `libs/` go the jars it
+compiles against:
 
-The sources are in `common/` (the whole mod, with Mojang's names), `neoforge/` and `fabric/` (each loader's entry point
-and its jar), built with Architectury's Gradle plugins (build time only); the Fabric jar is
-`build/libs/wgaccel-fabric-<version>.jar`. `gradlew :fabric:prodServer` runs it in Fabric's production server.
+- FreeTerraForged 1.0.0010 as `libs/freeterraforged-1.0.0010.jar` (or `-PftfJar=<path>`) and 1.0.0014 as
+  `libs/freeterraforged-1.0.0014.jar` (or `-Pftf13Jar=<path>`); both versions compile against them;
+- No Man's Land as `libs/nomansland-1.6.2.jar`;
+- C2ME's inner jars (from the C2ME jar's `META-INF/jars/`): `base-<version>-all`, `rewrites-chunk-system-<version>`,
+  `rxjava-*` and `reactive-streams-*`, into `libs/c2me/` for 1.21.1 and `libs/c2me-26.1.2/` for 26.1.2.
 
-The offline GPU checks (`gradlew cudaCompileCheck` and the other `cuda*` tasks) need the CUDA Toolkit, and some read
+Then `gradlew build` makes all four jars in `build/libs/` (`wgaccel-<loader>-<version>+mc<Minecraft version>.jar`);
+`gradlew -Pmc=26.1.2 build` builds one Minecraft version.
+
+The shared sources are in `common/` (the whole mod, with Mojang's names), `neoforge/` and `fabric/` (each loader's
+entry point). What differs between Minecraft versions is in `versions/<mc>/` (`platform/Mc`, version-specific mixins
+in `wgaccel.mc.mixins.json`, the client screens, the CUDA facade), with each version's settings in
+`versions/<mc>/gradle.properties`. Built with Architectury's Gradle plugins (build time only).
+`gradlew -Pmc=<mc> :<mc>:fabric:prodServer` runs the Fabric jar in Fabric's production server; `-PprodMods=<folder>`
+adds other mods' jars and `-PprodLwjgl` puts LWJGL on its class path, so the GPU parts run.
+
+The offline GPU checks (`gradlew :1.21.1:common:cudaCompileCheck` and the other `cuda*` tasks, 1.21.1 only) need the CUDA Toolkit, and some read
 files the mod saves into the game's logs folder: pass `-Plogs=<instance>/logs`. On an AMD card, `gradlew hipCheck`
 is the self-test (plus the fixed kernels compiled with hipRTC), and the `cuda*` checks run through HIP with
 `-PgpuBackend=hip`; they need the HIP SDK.

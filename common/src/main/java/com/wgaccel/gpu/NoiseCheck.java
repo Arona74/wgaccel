@@ -308,9 +308,7 @@ public final class NoiseCheck {
    static Map<String, Object> components(Object record) throws ReflectiveOperationException {
       Map<String, Object> values = new HashMap<>();
       for (RecordComponent component : record.getClass().getRecordComponents()) {
-         Method accessor = component.getAccessor();
-         accessor.setAccessible(true);
-         values.put(Names.name(component), accessor.invoke(record));
+         values.put(Names.name(component), Names.value(component, record));
       }
 
       return values;

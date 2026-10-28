@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "com.wgaccel.mixin.ftf",
   "plugin": "com.wgaccel.mixin.ftf.FtfMixinPlugin",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "TileGeneratorMixin",
     "WorldFiltersMixin",

@@ -3,6 +3,7 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gpu.BiomeGpu;
+import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -174,7 +175,7 @@ public final class BiomesAhead {
       }
 
       if (look != null && level == look.level && policySampler != null && GpuBiomes.ready()) {
-         look.noticeOne(pos.toLong());
+         look.noticeOne(Mc.key(pos));
       }
    }
 
@@ -189,19 +190,19 @@ public final class BiomesAhead {
       }
 
       if (Config.GPU_BIOMES_AHEAD_AT_REFERENCES.get() && policySampler != null && GpuBiomes.ready()) {
-         look.noticeOne(pos.toLong());
+         look.noticeOne(Mc.key(pos));
       }
 
-      if (look.states.get(pos.toLong()) == QUEUED) {
-         look.soon.add(pos.toLong());
+      if (look.states.get(Mc.key(pos)) == QUEUED) {
+         look.soon.add(Mc.key(pos));
       }
 
       if (Config.GPU_AREA_BATCHES.get() && policySampler != null && GpuBiomes.ready()) {
-         int ax = pos.x & ~3;
-         int az = pos.z & ~3;
+         int ax = Mc.x(pos) & ~3;
+         int az = Mc.z(pos) & ~3;
          for (int dx = 0; dx < 4; dx++) {
             for (int dz = 0; dz < 4; dz++) {
-               look.noticeOne(ChunkPos.asLong(ax + dx, az + dz));
+               look.noticeOne(Mc.key(ax + dx, az + dz));
             }
          }
       }
@@ -216,7 +217,7 @@ public final class BiomesAhead {
 
    /** The chunk's ready result, or null (not noticed, not made yet, or failed): then the chunk is the CPU's. */
    Result take(ChunkPos pos) {
-      long key = pos.toLong();
+      long key = Mc.key(pos);
       if (this.states.get(key) == QUEUED) {
          // Not made yet: to the front, and a short wait for it (the CPU's biome step costs ~20 ms; 0.9.45's run sent
          // 3,239 chunks there). Past the wait it is the CPU's: the maker skips it, as it is DONE then.
@@ -324,12 +325,10 @@ public final class BiomesAhead {
                   jobsPool.add(new BiomeGpu.Job());
                }
 
-               ChunkPos pos = new ChunkPos(key);
+               ChunkPos pos = Mc.chunk(key);
                try {
-                  ProtoChunk proto = new ProtoChunk(pos, UpgradeData.EMPTY, this.level, this.level.registryAccess().registryOrThrow(Registries.BIOME), null);
-                  NoiseChunk noise = NoiseChunk.forChunk(proto, p.random(), new Beardifier(
-                     new it.unimi.dsi.fastutil.objects.ObjectArrayList<Beardifier.Rigid>().iterator(),
-                     new it.unimi.dsi.fastutil.objects.ObjectArrayList<net.minecraft.world.level.levelgen.structure.pools.JigsawJunction>().iterator()), settings,
+                  ProtoChunk proto = Mc.emptyChunk(pos, this.level, this.level.registryAccess());
+                  NoiseChunk noise = NoiseChunk.forChunk(proto, p.random(), Mc.noStructures(), settings,
                      this.fluidPicker.get(), Blender.empty());
                   BiomeInputs inputs = inputsPool.get(slot);
                   BiomeGpu.Job job = jobsPool.get(slot);
@@ -353,8 +352,8 @@ public final class BiomesAhead {
                      decorating = false;
                   }
 
-                  int quartY = proto.getMinBuildHeight() >> 2;
-                  int quartHeight = (proto.getMaxBuildHeight() >> 2) - quartY;
+                  int quartY = Mc.minY(proto) >> 2;
+                  int quartHeight = (Mc.maxY(proto) >> 2) - quartY;
                   GpuBiomes.job(job, inputs, pos.getMinBlockX() >> 2, quartY, pos.getMinBlockZ() >> 2, quartHeight);
                   if (!jobs.isEmpty() && (job.count != jobs.get(0).count || job.cells.length != jobs.get(0).cells.length)) {
                      throw new IllegalStateException("a chunk of another height");

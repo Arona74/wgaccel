@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import net.minecraft.ChatFormatting;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
@@ -30,7 +29,7 @@ import net.minecraft.util.FormattedCharSequence;
  * </ul>
  * A tab's content scrolls between the tabs and the bottom buttons.
  */
-public final class WgaScreen extends Screen {
+public final class WgaScreen extends CanvasScreen {
    private static final int WHITE = 0xFFFFFFFF;
    private static final int GREY = 0xFFA0A0A0;
    private static final int DARK = 0xFF707070;
@@ -717,31 +716,29 @@ public final class WgaScreen extends Screen {
 
    /** The usual background, darkened further so the text reads well over the world or the panorama. */
    @Override
-   public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-      super.renderBackground(graphics, mouseX, mouseY, partialTick);
-      graphics.fill(0, 0, this.width, this.height, 0xB0000000);
+   protected void drawBackground(Canvas canvas) {
+      canvas.fill(0, 0, this.width, this.height, 0xB0000000);
    }
 
    @Override
-   public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-      super.render(graphics, mouseX, mouseY, partialTick);
-      graphics.drawCenteredString(this.font, this.title, this.width / 2, 8, WHITE);
-      graphics.enableScissor(0, TOP, this.width, this.bottom());
+   protected void draw(Canvas canvas, int mouseX, int mouseY, float partialTick) {
+      canvas.centeredText(this.font, this.title, this.width / 2, 8, WHITE);
+      canvas.scissor(0, TOP, this.width, this.bottom());
       for (Text text : this.texts) {
          int y = TOP + text.y() - this.scroll;
          if (y + 10 > TOP && y < this.bottom()) {
-            graphics.drawString(this.font, text.line(), text.x(), y, text.color());
+            canvas.text(this.font, text.line(), text.x(), y, text.color());
          }
       }
 
-      graphics.disableScissor();
+      canvas.endScissor();
       int visible = this.visible();
       if (this.contentHeight > visible && visible > 0) {
          // A scroll bar at the right edge.
          int bar = Math.max(16, visible * visible / this.contentHeight);
          int at = TOP + (visible - bar) * this.scroll / Math.max(1, this.contentHeight - visible);
-         graphics.fill(this.width - 6, TOP, this.width - 2, this.bottom(), 0x40FFFFFF);
-         graphics.fill(this.width - 6, at, this.width - 2, at + bar, 0xC0FFFFFF);
+         canvas.fill(this.width - 6, TOP, this.width - 2, this.bottom(), 0x40FFFFFF);
+         canvas.fill(this.width - 6, at, this.width - 2, at + bar, 0xC0FFFFFF);
       }
    }
 

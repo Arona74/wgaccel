@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "com.wgaccel.mixin.check",
   "plugin": "com.wgaccel.mixin.check.CheckMixinPlugin",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "AquiferTapMixin",
     "NoiseChunkStateTapMixin"

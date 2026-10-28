@@ -160,9 +160,8 @@ public final class SurfaceProbe {
 
       if (type.isRecord()) {
          for (RecordComponent component : type.getRecordComponents()) {
-            component.getAccessor().setAccessible(true);
             out.append(indent).append("  ").append(Names.name(component)).append(":\n");
-            dump(component.getAccessor().invoke(node), depth + 2, out, kinds, ids);
+            dump(Names.value(component, node), depth + 2, out, kinds, ids);
          }
 
          return;

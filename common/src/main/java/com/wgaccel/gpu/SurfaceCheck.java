@@ -3,6 +3,7 @@ package com.wgaccel.gpu;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.gen.SurfaceTap;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Platform;
 import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
@@ -228,7 +229,7 @@ public final class SurfaceCheck {
       }
 
       private static int id(Registry<Biome> biomes, net.minecraft.resources.ResourceKey<Biome> key) {
-         Biome biome = biomes.get(key);
+         Biome biome = Mc.value(biomes, key);
          return biome == null ? -100 : biomes.getId(biome);
       }
 
@@ -458,7 +459,7 @@ public final class SurfaceCheck {
                }
             }
 
-            double game = tap.secondary[tap.calls[at + 11]];
+            double game = tap.secondary[tap.calls[at + 11] & 255];
             double gpuValue = sec.get(i);
             if (Double.doubleToRawLongBits(game) != Double.doubleToRawLongBits(gpuValue)) {
                chunkDiffer[4]++;

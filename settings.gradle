@@ -13,5 +13,17 @@ plugins {
 
 rootProject.name = 'wgaccel'
 
-// common: the whole mod (Mojang's names); neoforge, fabric: each loader's entry point and platform calls, and its jar.
-include 'common', 'neoforge', 'fabric'
+// One build per Minecraft version, from the same sources: common/, neoforge/ and fabric/ hold the code every version
+// shares; versions/<mc>/{common,neoforge,fabric} are that version's projects, each adding its own src/ (the calls and
+// mixins that differ between versions) to the shared one, and making that version's jars. -Pmc=26.1.2 sets up one
+// version only (faster when working on it).
+def minecraftVersions = ['1.21.1', '26.1.2']
+def only = providers.gradleProperty('mc').orNull
+minecraftVersions.findAll { only == null || it == only }.each { mc ->
+    include ":$mc"
+    project(":$mc").projectDir = file("versions/$mc")
+    ['common', 'neoforge', 'fabric'].each { part ->
+        include ":$mc:$part"
+        project(":$mc:$part").projectDir = file("versions/$mc/$part")
+    }
+}

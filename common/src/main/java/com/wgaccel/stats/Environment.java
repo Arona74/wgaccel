@@ -2,6 +2,7 @@ package com.wgaccel.stats;
 
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import java.io.IOException;
@@ -78,7 +79,7 @@ public final class Environment {
       }
 
       log(String.format(Locale.ROOT, "WGA overworld: %s, build height y %d to %d%s; seed %d",
-         Names.simpleName(generator.getClass()), overworld.getMinBuildHeight(), overworld.getMaxBuildHeight(), noise, overworld.getSeed()));
+         Names.simpleName(generator.getClass()), Mc.minY(overworld), Mc.maxY(overworld), noise, overworld.getSeed()));
    }
 
    private static String version() {

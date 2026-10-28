@@ -8,43 +8,15 @@ buildscript {
     }
 }
 
-// Built with Architectury's Gradle plugins (build time only: neither jar needs Architectury in the game). common/ is
-// compiled once with Mojang's names; neoforge/ and fabric/ each make their loader's jar from it.
+// Built with Architectury's Gradle plugins (build time only: neither jar needs Architectury in the game). Each Minecraft
+// version (versions/<mc>, see settings.gradle) has a common project, compiled once with Mojang's names, and a neoforge
+// and a fabric project that each make their loader's jar from it. Their build logic is shared (gradle/common.gradle,
+// gradle/neoforge.gradle, gradle/fabric.gradle); what differs per version is in versions/<mc>/gradle.properties.
+// Minecraft 26.1 and later is not obfuscated: no mappings, nothing remapped (Loom's no-remap plugin, the same jar).
 plugins {
-    id 'architectury-plugin' version '3.4.164'
-    id 'dev.architectury.loom' version '1.11.458' apply false
-}
-
-architectury {
-    minecraft = minecraft_version
-}
-
-subprojects {
-    apply plugin: 'java'
-    apply plugin: 'architectury-plugin'
-    apply plugin: 'dev.architectury.loom'
-
-    version = mod_version
-    group = mod_group_id
-    base {
-        archivesName = project.name == 'common' ? mod_id : "${mod_id}-${project.name}"
-    }
-
-    loom {
-        silentMojangMappingsLicense()
-    }
-
-    dependencies {
-        minecraft "com.mojang:minecraft:${minecraft_version}"
-        mappings loom.officialMojangMappings()
-    }
-
-    java.toolchain.languageVersion = JavaLanguageVersion.of(21)
-
-    tasks.withType(JavaCompile).configureEach {
-        options.encoding = 'UTF-8'
-        options.release = 21
-    }
+    id 'architectury-plugin' version '3.5.170' apply false
+    id 'dev.architectury.loom' version '1.17.493' apply false
+    id 'com.gradleup.shadow' version '9.2.2' apply false
 }
 
 // The LWJGL CUDA and OpenCL modules (Java only: the libraries are the driver's), copied into each loader jar without
@@ -53,7 +25,10 @@ subprojects {
 // classes are moved to com.wgaccel.shaded.lwjgl, and the mod's own classes made to use them there: another mod with its
 // own copy of org.lwjgl.opencl (RoadWeaver 2.3.2) made two modules export the same package and the game did not start.
 // LWJGL's core (org.lwjgl.system), which they call, stays the game's.
-ext.lwjglShaded = ['org.lwjgl:lwjgl-cuda:3.3.3', 'org.lwjgl:lwjgl-opencl:3.3.3']
+// Per version (versions/<mc>/gradle.properties lwjgl_shaded), at the game's own LWJGL version, which they call into:
+// CUDA and OpenCL 3.3.3 for 1.21.1; OpenCL 3.4.1 only for 26.1.2 (LWJGL 3.4 has no CUDA module, and 3.3's needs JNI
+// methods 3.4's core no longer has: there the mod calls the CUDA driver itself, gpu/cuda in versions/26.1.2).
+ext.lwjglShaded = { String modules -> modules.split(',')*.trim() }
 def relocations = ['org/lwjgl/opencl/': 'com/wgaccel/shaded/lwjgl/opencl/', 'org/lwjgl/cuda/': 'com/wgaccel/shaded/lwjgl/cuda/']
 
 /**
@@ -183,12 +158,74 @@ ext.namesTable = { java.nio.file.Path tiny ->
     return bytes.toByteArray()
 }
 
-// `gradlew.bat build` also copies both loader jars to build/libs here, where the jars of earlier versions are.
-tasks.register('collectJars', Copy) {
-    dependsOn ':neoforge:remapJar', ':fabric:remapJar'
-    from(project(':neoforge').tasks.named('remapJar'))
-    from(project(':fabric').tasks.named('remapJar'))
-    into layout.buildDirectory.dir('libs')
+// After the helpers above, which the shared scripts call.
+subprojects {
+    // versions/<mc> itself only holds its version's properties (gradle.properties) for the three below it.
+    if (parent == rootProject) {
+        return
+    }
+
+    apply plugin: 'java'
+    apply plugin: 'architectury-plugin'
+    ext.loomRemap = loom_remap.toBoolean()
+    apply plugin: loomRemap ? 'dev.architectury.loom' : 'dev.architectury.loom-no-remap'
+    // The version's other projects (":1.21.1:common" and so on).
+    ext.sibling = { String part -> "${parent.path}:${part}" }
+
+    architectury {
+        minecraft = minecraft_version
+    }
+
+    version = "${mod_version}+mc${minecraft_version}"
+    group = mod_group_id
+    base {
+        archivesName = project.name == 'common' ? mod_id : "${mod_id}-${project.name}"
+    }
+
+    if (loomRemap) {
+        loom {
+            silentMojangMappingsLicense()
+            // The mixin annotation processor and its refmap, as the 1.21.1 jars always had (Loom 1.17 would otherwise
+            // remap the annotations in place, and a name without a descriptor would no longer stand for one method).
+            mixin {
+                useLegacyMixinAp = true
+                // Named as before the versions/ projects (wgaccel-common-refmap.json, not wgaccel-1.21.1_common-...).
+                defaultRefmapName = "${base.archivesName.get()}-${project.name}-refmap.json"
+            }
+        }
+    }
+
+    dependencies {
+        minecraft "com.mojang:minecraft:${minecraft_version}"
+        if (loomRemap) {
+            mappings loom.officialMojangMappings()
+        }
+    }
+
+    java.toolchain.languageVersion = JavaLanguageVersion.of(java_version as int)
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.release = java_version as int
+    }
+
+    apply from: rootProject.file("gradle/${project.name}.gradle")
+}
+
+// `gradlew.bat build` also copies every version's loader jars to build/libs here, where the jars of earlier versions are.
+// Each loader project's finished jar is its finalJar (gradle/fabric.gradle, gradle/neoforge.gradle).
+def loaderJars = { subprojects.findAll { it.name in ['neoforge', 'fabric'] }.collect { it.finalJar } }
+// A plain copy, not a Copy task: build/libs is not this task's output, so Gradle never clears it (as a Copy task with no
+// history it did, when Gradle 9.5.1 started a new history, and the jars of earlier versions went with it).
+tasks.register('collectJars') {
+    dependsOn loaderJars
+    def libs = layout.buildDirectory.dir('libs')
+    doLast {
+        project.copy {
+            from loaderJars()
+            into libs
+        }
+    }
 }
 
 apply plugin: 'base'

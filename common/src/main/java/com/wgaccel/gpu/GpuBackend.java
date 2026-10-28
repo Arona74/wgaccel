@@ -1,5 +1,7 @@
 package com.wgaccel.gpu;
 
+import com.wgaccel.gpu.cuda.CU;
+import com.wgaccel.gpu.cuda.HipCalls;
 import java.util.Locale;
 
 /**
@@ -33,6 +35,17 @@ public final class GpuBackend {
    }
 
    private static String choose() {
+      String chosen = asked();
+      // CUDA and HIP are not on every Minecraft version yet (gpu/cuda in versions/<mc>): OpenCL there instead.
+      if (chosen.equals("cuda") && !CU.PRESENT || chosen.equals("hip") && !HipCalls.PRESENT) {
+         reason += "; " + chosen.toUpperCase(Locale.ROOT) + " is not available on this Minecraft version yet, OpenCL instead";
+         return "opencl";
+      }
+
+      return chosen;
+   }
+
+   private static String asked() {
       String asked = System.getProperty("wgaccel.gpuBackend");
       if (asked != null) {
          reason = "-Dwgaccel.gpuBackend=" + asked;
@@ -45,7 +58,7 @@ public final class GpuBackend {
          return configured.toLowerCase(Locale.ROOT);
       }
 
-      if (Hip.linuxAutomatic()) {
+      if (HipCalls.PRESENT && Hip.linuxAutomatic()) {
          reason = "automatic: HIP, ROCm's runtime with hipRTC " + Hip.hiprtcState + " (Linux: faster than ROCm's OpenCL)";
          return "hip";
       }

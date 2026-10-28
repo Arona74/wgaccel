@@ -3,6 +3,7 @@ package com.wgaccel.client;
 import com.wgaccel.Config;
 import com.wgaccel.gpu.GpuDevice;
 import com.wgaccel.gpu.GpuInventory;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import java.util.ArrayList;
@@ -58,7 +59,7 @@ final class SystemReport {
       rows.add(new String[] {"Software", null});
       rows.add(new String[] {"OS", System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")"});
       rows.add(new String[] {"Java", System.getProperty("java.version") + ", " + System.getProperty("java.vm.name") + " (" + System.getProperty("java.vendor") + ")"});
-      rows.add(new String[] {"Minecraft", net.minecraft.SharedConstants.getCurrentVersion().getName()});
+      rows.add(new String[] {"Minecraft", Mc.version()});
       rows.add(new String[] {"Mod Loader", Platform.get().describeLoader()});
       rows.add(new String[] {"Worldgen Accelerator", or(version(com.wgaccel.WorldgenAccelerator.MOD_ID), "?")});
       rows.add(new String[] {"FreeTerraForged", or(version("freeterraforged"), "not installed")});

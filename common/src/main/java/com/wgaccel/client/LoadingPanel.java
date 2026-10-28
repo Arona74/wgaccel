@@ -11,7 +11,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 
 /**
@@ -40,15 +39,15 @@ public final class LoadingPanel {
    private LoadingPanel() {
    }
 
-   public static void render(GuiGraphics graphics, Font font, int width, int height) {
-      top(graphics, font, width);
+   public static void render(Canvas canvas, Font font, int width, int height) {
+      top(canvas, font, width);
       int y = 44;
-      left(graphics, font, width, y);
-      right(graphics, font, width, y);
+      left(canvas, font, width, y);
+      right(canvas, font, width, y);
    }
 
    /** The title and the programs' bar, centred at the top. */
-   private static void top(GuiGraphics graphics, Font font, int width) {
+   private static void top(Canvas canvas, Font font, int width) {
       List<GpuPrepare.Line> lines = GpuPrepare.lines();
       int done = 0;
       for (GpuPrepare.Line line : lines) {
@@ -62,7 +61,7 @@ public final class LoadingPanel {
          : String.format(Locale.ROOT, "Worldgen Accelerator: preparing the GPU  %d / %d", done, lines.size());
       int centre = width / 2;
       int y = 10;
-      graphics.drawCenteredString(font, title, centre, y, WHITE);
+      canvas.centeredText(font, title, centre, y, WHITE);
       if (!gpuOn()) {
          return;
       }
@@ -70,15 +69,15 @@ public final class LoadingPanel {
       int barWidth = Math.min(240, width - 32);
       int left = centre - barWidth / 2;
       int top = y + 14;
-      graphics.fill(left - 1, top - 1, left + barWidth + 1, top + 6, 0xFF808080);
-      graphics.fill(left, top, left + barWidth, top + 5, 0xFF202020);
+      canvas.fill(left - 1, top - 1, left + barWidth + 1, top + 6, 0xFF808080);
+      canvas.fill(left, top, left + barWidth, top + 5, 0xFF202020);
       // Programs give no progress while they compile: the finished share, plus a sweep so the bar visibly moves.
       float progress = lines.isEmpty() ? 0.0f : GpuPrepare.progress();
       int filled = (int)(barWidth * progress);
-      graphics.fill(left, top, left + filled, top + 5, 0xFF3FAF5F);
+      canvas.fill(left, top, left + filled, top + 5, 0xFF3FAF5F);
       if (GpuPrepare.active()) {
          long sweep = (System.nanoTime() - GpuPrepare.startedNanos()) / 20_000_000L % Math.max(1, barWidth - filled);
-         graphics.fill(left + filled + (int)sweep, top, Math.min(left + barWidth, left + filled + (int)sweep + 12), top + 5, 0xFF7FD79F);
+         canvas.fill(left + filled + (int)sweep, top, Math.min(left + barWidth, left + filled + (int)sweep + 12), top + 5, 0xFF7FD79F);
       }
    }
 
@@ -86,8 +85,8 @@ public final class LoadingPanel {
     * The hardware and the mods that set the speed, from the left edge. A value wider than the room left of the middle
     * (vanilla's chunk map and percentage) goes on under itself (the CPU's name at GUI scale 3 on a small screen, 0.17.2).
     */
-   private static void left(GuiGraphics graphics, Font font, int width, int y) {
-      graphics.drawString(font, "Hardware", MARGIN, y, HEADER);
+   private static void left(Canvas canvas, Font font, int width, int y) {
+      canvas.text(font, "Hardware", MARGIN, y, HEADER);
       y += LINE + 2;
       // The values right of the widest label ("Loader").
       int room = Math.max(60, width / 2 - MIDDLE - MARGIN - 40);
@@ -100,9 +99,9 @@ public final class LoadingPanel {
          }
 
          first = false;
-         graphics.drawString(font, row[0], MARGIN, y, GREY);
+         canvas.text(font, row[0], MARGIN, y, GREY);
          for (net.minecraft.util.FormattedCharSequence part : font.split(net.minecraft.network.chat.Component.literal(row[1]), room)) {
-            graphics.drawString(font, part, MARGIN + 40, y, WHITE);
+            canvas.text(font, part, MARGIN + 40, y, WHITE);
             y += LINE;
          }
       }
@@ -163,7 +162,7 @@ public final class LoadingPanel {
    }
 
    /** The GPU programs as a checklist, its longest line ending at the right edge. */
-   private static void right(GuiGraphics graphics, Font font, int width, int y) {
+   private static void right(Canvas canvas, Font font, int width, int y) {
       List<String> texts = new ArrayList<>();
       List<Integer> colours = new ArrayList<>();
       if (!gpuOn()) {
@@ -200,18 +199,18 @@ public final class LoadingPanel {
       }
 
       int x = width - MARGIN - columnWidth;
-      graphics.drawString(font, header, x, y, HEADER);
+      canvas.text(font, header, x, y, HEADER);
       y += LINE + 2;
       for (int i = 0; i < texts.size(); i++) {
-         graphics.drawString(font, texts.get(i), x, y, colours.get(i));
+         canvas.text(font, texts.get(i), x, y, colours.get(i));
          y += LINE;
       }
 
       y += LINE;
-      graphics.drawString(font, settingsHeader, x, y, HEADER);
+      canvas.text(font, settingsHeader, x, y, HEADER);
       y += LINE + 2;
       for (Component text : settings) {
-         graphics.drawString(font, text, x, y, WHITE);
+         canvas.text(font, text, x, y, WHITE);
          y += LINE;
       }
    }

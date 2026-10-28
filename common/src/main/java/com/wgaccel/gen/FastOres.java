@@ -2,6 +2,7 @@ package com.wgaccel.gen;
 
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
+import com.wgaccel.platform.Mc;
 import java.util.Locale;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.core.SectionPos;
@@ -53,7 +54,7 @@ public final class FastOres {
       }
 
       ChunkAccess get(int chunkX, int chunkZ) {
-         long key = net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ);
+         long key = Mc.key(chunkX, chunkZ);
          for (int i = 0; i < this.size; i++) {
             if (this.keys[i] == key) {
                return this.chunks[i];
@@ -89,7 +90,7 @@ public final class FastOres {
       LevelHeightAccessor key = level instanceof WorldGenRegion region ? region.getLevel() : level;
       Range range = lastRange;
       if (range == null || range.level() != key) {
-         range = new Range(key, level.getMinBuildHeight(), level.getMaxBuildHeight(), level.getMinSection(), level.getSectionsCount());
+         range = new Range(key, Mc.minY(level), Mc.maxY(level), Mc.minSection(level), level.getSectionsCount());
          lastRange = range;
       }
 

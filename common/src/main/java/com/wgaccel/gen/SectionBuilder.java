@@ -1,6 +1,7 @@
 package com.wgaccel.gen;
 
 import com.wgaccel.platform.LoaderHooks;
+import com.wgaccel.platform.Mc;
 import io.netty.buffer.Unpooled;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -32,11 +33,16 @@ public final class SectionBuilder {
     * A new section of these states and biomes with its block counts as setBlockState would have counted them, block by
     * block: non-empty blocks, randomly ticking blocks among them, and every fluid as a ticking fluid. The section's own
     * recount (its constructor's) counts fluid blocks twice as non-empty and only randomly ticking fluids, so a section
-    * made at once would otherwise differ from one written block by block (the blocks are the same either way).
+    * made at once would otherwise differ from one written block by block (the blocks are the same either way). On
+    * versions whose recount matches writing ({@link Mc#SECTION_RECOUNT_EXACT}: 26.1.2) the section's own counts stay.
     */
    public static net.minecraft.world.level.chunk.LevelChunkSection section(PalettedContainer<BlockState> states,
       net.minecraft.world.level.chunk.PalettedContainerRO<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>> biomes, BlockState[] blocks) {
       net.minecraft.world.level.chunk.LevelChunkSection section = new net.minecraft.world.level.chunk.LevelChunkSection(states, biomes);
+      if (Mc.SECTION_RECOUNT_EXACT) {
+         return section;
+      }
+
       int nonEmpty = 0;
       int ticking = 0;
       int fluids = 0;
@@ -62,7 +68,11 @@ public final class SectionBuilder {
    public static net.minecraft.world.level.chunk.LevelChunkSection uniform(BlockState state,
       net.minecraft.world.level.chunk.PalettedContainerRO<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>> biomes) {
       net.minecraft.world.level.chunk.LevelChunkSection section = new net.minecraft.world.level.chunk.LevelChunkSection(
-         new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, state, PalettedContainer.Strategy.SECTION_STATES), biomes);
+         Mc.blockStates(state), biomes);
+      if (Mc.SECTION_RECOUNT_EXACT) {
+         return section;
+      }
+
       boolean nonEmpty = !LoaderHooks.get().isEmpty(state);
       setCounts(section, nonEmpty ? 4096 : 0, nonEmpty && state.isRandomlyTicking() ? 4096 : 0, state.getFluidState().isEmpty() ? 0 : 4096);
       return section;
@@ -116,7 +126,7 @@ public final class SectionBuilder {
       }
 
       if (size == 1) {
-         return new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, palette[0], PalettedContainer.Strategy.SECTION_STATES);
+         return Mc.blockStates(palette[0]);
       }
 
       // SECTION_STATES: 2 to 16 entries are a linear palette with 4 bits per block, 17 to 256 a hash-map palette with 5
@@ -135,8 +145,8 @@ public final class SectionBuilder {
          buffer.writeVarInt(Block.BLOCK_STATE_REGISTRY.getId(palette[i]));
       }
 
-      buffer.writeLongArray(data);
-      PalettedContainer<BlockState> states = new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, AIR, PalettedContainer.Strategy.SECTION_STATES);
+      Mc.writeStateData(buffer, data);
+      PalettedContainer<BlockState> states = Mc.blockStates(AIR);
       states.read(buffer);
       buffer.release();
       // The first 64 sections, then every 256th, read back block by block: any difference turns this off for good.

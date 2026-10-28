@@ -9,6 +9,7 @@ import com.wgaccel.gpu.StrataGpu;
 import com.wgaccel.gpu.SurfaceCodegen;
 import com.wgaccel.gpu.SurfaceGpu;
 import com.wgaccel.gpu.SurfaceInputs;
+import com.wgaccel.platform.Mc;
 import com.wgaccel.platform.Names;
 import com.wgaccel.platform.Platform;
 import java.lang.reflect.Constructor;
@@ -126,6 +127,18 @@ public final class GpuSurface {
    private GpuSurface() {
    }
 
+   /** The program's column conditions (ColumnConditions), null when its tree has none. */
+   private static volatile com.wgaccel.gpu.ColumnConditions columns;
+
+   /**
+    * A column's minBase as the kernels take it: the preliminary surface base, with the column conditions' bits above its
+    * low 16 bits when the tree has any (the kernels read the base back as a signed 16-bit value).
+    */
+   public static int columnBase(int base, int x, int z) {
+      com.wgaccel.gpu.ColumnConditions conditions = columns;
+      return conditions == null ? base : base & 65535 | conditions.flags(x, z) << 16;
+   }
+
    static Program program() {
       return failed ? null : program;
    }
@@ -143,6 +156,7 @@ public final class GpuSurface {
       program = null;
       failed = false;
       writeCheckOff = false;
+      columns = null;
       if (Config.GPU_SURFACE.get() == Config.GpuFilterMode.OFF || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
          return;
       }
@@ -227,7 +241,7 @@ public final class GpuSurface {
          throw new IllegalStateException("the overworld uses the legacy random source");
       }
 
-      Registry<Biome> biomes = overworld.registryAccess().registryOrThrow(Registries.BIOME);
+      Registry<Biome> biomes = Mc.registry(overworld.registryAccess(), Registries.BIOME);
       WorldGenerationContext context = new WorldGenerationContext(generator, overworld);
       long zoomSeed = BiomeManager.obfuscateSeed(overworld.getSeed());
       SurfaceCodegen codegen = new SurfaceCodegen(random, context, biomes, system);
@@ -240,6 +254,21 @@ public final class GpuSurface {
       }
 
       codegen.generate(rules);
+      columns = codegen.columns();
+      if (columns != null && Config.FAST_CONQUEST_LANDFORMS.get()) {
+         // Conquest ReTerraForged's landform function (its api keeps its name): one cell per column for the column conditions.
+         try {
+            @SuppressWarnings("unchecked")
+            java.util.function.Function<Object, Object> api = (java.util.function.Function<Object, Object>)Names.forName("conquest.reterraforged.api.ConquestLandforms")
+               .getDeclaredConstructor().newInstance();
+            if (api.apply(overworld) instanceof java.util.function.IntBinaryOperator function) {
+               columns.useLandforms(function);
+               WorldgenAccelerator.LOG.info("WGA GPU surface: Conquest ReTerraForged's beach and sea conditions from its landform function (every 256th column compared with the conditions)");
+            }
+         } catch (ReflectiveOperationException | LinkageError | ClassCastException missing) {
+            // Not Conquest: the conditions themselves are asked.
+         }
+      }
       SurfaceInputs inputs = new SurfaceInputs(system, biomes, zoomSeed);
       String strataSource;
       int strataMax;
@@ -278,7 +307,7 @@ public final class GpuSurface {
       // came out another stone: 5 of 240 checked chunks, 24 Oct 2026).
       StringBuilder extra = new StringBuilder();
       for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
-         int id = id(biomes, net.minecraft.resources.ResourceKey.create(Registries.BIOME, net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("natures_spirit", name)));
+         int id = id(biomes, Mc.key(Registries.BIOME, "natures_spirit", name));
          if (id >= 0) {
             extra.append(" || columnBiome == ").append(id);
          }
@@ -320,7 +349,7 @@ public final class GpuSurface {
    }
 
    private static int id(Registry<Biome> biomes, net.minecraft.resources.ResourceKey<Biome> key) {
-      Biome biome = biomes.get(key);
+      Biome biome = Mc.value(biomes, key);
       return biome == null ? -100 : biomes.getId(biome);
    }
 
@@ -364,9 +393,7 @@ public final class GpuSurface {
 
       if (node.getClass().isRecord()) {
          for (RecordComponent component : node.getClass().getRecordComponents()) {
-            Method accessor = component.getAccessor();
-            accessor.setAccessible(true);
-            walk(accessor.invoke(node), seen, found);
+            walk(Names.value(component, node), seen, found);
          }
       }
    }
@@ -418,7 +445,7 @@ public final class GpuSurface {
       }
 
       LevelHeightAccessor accessor = chunk.getHeightAccessorForGeneration();
-      if (accessor.getMinBuildHeight() != chunk.getMinBuildHeight() || accessor.getHeight() != chunk.getHeight()) {
+      if (Mc.minY(accessor) != Mc.minY(chunk) || accessor.getHeight() != chunk.getHeight()) {
          other(chunk, "an upgrading chunk's height");
          return;
       }
@@ -639,7 +666,7 @@ public final class GpuSurface {
    private static boolean inputs(Current current, Program p, boolean check) throws ReflectiveOperationException {
       SurfaceGpu.Job job = current.job;
       ChunkAccess chunk = current.chunk;
-      int minY = chunk.getMinBuildHeight();
+      int minY = Mc.minY(chunk);
       int fullHeight = chunk.getHeight();
       int minX = chunk.getPos().getMinBlockX();
       int minZ = chunk.getPos().getMinBlockZ();
@@ -804,7 +831,7 @@ public final class GpuSurface {
       for (int t = 0; t < 256; t++) {
          int x = minX + t / 16;
          int z = minZ + t % 16;
-         job.minBase[t] = Mth.floor(Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3));
+         job.minBase[t] = columnBase(Mth.floor(Mth.lerp2((double)((float)(x & 15) / 16.0F), (double)((float)(z & 15) / 16.0F), c0, c1, c2, c3)), x, z);
       }
 
       // The noise biomes BiomeManager.getBiome can reach from the blocks worked on (y clamped by the chunk, so only as
@@ -828,7 +855,7 @@ public final class GpuSurface {
       int gx = (minX >> 2) - 1;
       int gz = (minZ >> 2) - 1;
       int gy = minY >> 2;
-      int fullQuarts = ((chunk.getMaxBuildHeight() - 1) >> 2) - gy + 1;
+      int fullQuarts = ((Mc.maxY(chunk) - 1) >> 2) - gy + 1;
       int sy = Math.max(1, Math.min(fullQuarts, (((minY + height - 1 - 2) >> 2) + 1) - gy + 1));
       job.grid[0] = gx;
       job.grid[1] = gy;
@@ -940,7 +967,7 @@ public final class GpuSurface {
                }
 
                if (maps == null) {
-                  chunk.setBlockState(pos.setY(y), state, false);
+                  Mc.setBlock(chunk, pos.setY(y), state);
                } else {
                   int sectionAt = (y - minY) >> 4;
                   LevelChunkSection section = sections[lowSection + sectionAt];
@@ -1022,7 +1049,7 @@ public final class GpuSurface {
     * updates end up: a counted block above the height raises it, the top block no longer counted scans down).
     */
    private static void mapsAfter(ChunkAccess chunk, Heightmap[] maps, int[] changedTop) {
-      int min = chunk.getMinBuildHeight();
+      int min = Mc.minY(chunk);
       for (Heightmap map : maps) {
          java.util.function.Predicate<BlockState> counted = ((com.wgaccel.mixin.access.HeightmapAccessor)map).wgaccel$opaque();
          for (int t = 0; t < 256; t++) {
@@ -1059,7 +1086,7 @@ public final class GpuSurface {
          return;
       }
 
-      int min = chunk.getMinBuildHeight();
+      int min = Mc.minY(chunk);
       int top = chunk.getHighestSectionPosition() + 15;
       for (Heightmap map : maps) {
          java.util.function.Predicate<BlockState> counted = ((com.wgaccel.mixin.access.HeightmapAccessor)map).wgaccel$opaque();
@@ -1181,7 +1208,7 @@ public final class GpuSurface {
 
    /** The heightmaps ProtoChunk.setBlockState would update now, or null to write through setBlockState itself. */
    private static Heightmap[] heightmaps(ChunkAccess chunk) {
-      if (!(chunk instanceof net.minecraft.world.level.chunk.ProtoChunk) || chunk.getMinBuildHeight() % 16 != 0
+      if (!(chunk instanceof net.minecraft.world.level.chunk.ProtoChunk) || Mc.minY(chunk) % 16 != 0
          || chunk.getPersistedStatus().isOrAfter(net.minecraft.world.level.chunk.status.ChunkStatus.INITIALIZE_LIGHT)) {
          return null;
       }
@@ -1210,7 +1237,7 @@ public final class GpuSurface {
          return original;
       }
 
-      return loopStart ? chunk.getMinBuildHeight() - 2 : current.job.heights[(lx & 15) * 16 + (lz & 15)];
+      return loopStart ? Mc.minY(chunk) - 2 : current.job.heights[(lx & 15) * 16 + (lz & 15)];
    }
 
    /** Whether this thread's chunk was written from the GPU (vanilla's loop is skipped: its heights are answered by {@link #height}). */
@@ -1354,8 +1381,7 @@ public final class GpuSurface {
       int high = chunk.getSectionIndex(minY + height - 1);
       BlockState air = Blocks.AIR.defaultBlockState();
       for (int i = low; i <= high; i++) {
-         LevelChunkSection copy = new LevelChunkSection(new net.minecraft.world.level.chunk.PalettedContainer<>(net.minecraft.world.level.block.Block.BLOCK_STATE_REGISTRY,
-            air, net.minecraft.world.level.chunk.PalettedContainer.Strategy.SECTION_STATES), real[i].getBiomes());
+         LevelChunkSection copy = new LevelChunkSection(Mc.blockStates(air), real[i].getBiomes());
          int sectionMinY = chunk.getSectionYFromSectionIndex(i) << 4;
          for (int b = 0; b < 4096; b++) {
             int lx = b & 15;

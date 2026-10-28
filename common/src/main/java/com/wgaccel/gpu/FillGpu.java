@@ -16,6 +16,9 @@ import org.lwjgl.system.MemoryUtil;
  * no Minecraft classes, so the standalone check can run it.
  */
 public final class FillGpu {
+   /** Job.lava's length: the lava levels, then Conquest's aquifer's five numbers, 256 each. */
+   public static final int LAVA_INTS = 6 * 256;
+
    /** One chunk's inputs, as {@code DensityTap} works them out on the CPU. */
    public static final class Job {
       public double[] cells;
@@ -28,11 +31,19 @@ public final class FillGpu {
       public long seedLo;
       public long seedHi;
       public boolean veins;
-      /** 0 the disabled aquifer, 1 vanilla's, 2 C2ME's. */
+      /** 0 the disabled aquifer, 1 vanilla 1.21.1's, 2 C2ME's, 3 vanilla 26.1's. */
       public int aquifer;
       /** minGridX, minGridY, minGridZ, sizeX, sizeY, sizeZ of the cells in loc and status. */
       public final int[] grid = new int[6];
-      public final int[] lava = new int[256];
+      /** The aquifer's skipSamplingAboveY (26.1: above it the global fluid, unsampled; Integer.MAX_VALUE before), in the ints at 6. */
+      public int skipAbove = Integer.MAX_VALUE;
+      /**
+       * Per column (lx * 16 + lz) the lava level, then from 256 on Conquest ReTerraForged's aquifer's five numbers per
+       * column (ConquestAquifer.columns; used when aquifer has bit 8).
+       */
+      public final int[] lava = new int[LAVA_INTS];
+      /** Whether lava has Conquest ReTerraForged's aquifer numbers (its wrapper around the vanilla aquifer). */
+      public boolean conquest;
       public int[] loc = new int[3];
       /** Per cell: level, type code, identity number. */
       public int[] status = new int[3];
@@ -386,7 +397,7 @@ public final class FillGpu {
       int per = nx * nx * (job.cellCountY + 1);
       int blocks = 256 * job.cellCountY * job.cellHeight;
       int cellsCount = Math.max(1, job.cells.length);
-      int locOffset = 8 + 256;
+      int locOffset = 8 + LAVA_INTS;
       int statusOffset = locOffset + 3 * job.cellsUsed;
       int beardOffset = statusOffset + 3 * job.cellsUsed;
       int intsCount = beardOffset + job.beard.length;
@@ -394,6 +405,7 @@ public final class FillGpu {
       MemoryUtil.memDoubleBuffer(lane.cellsHost, cellsCount).put(0, job.cells, 0, job.cells.length);
       IntBuffer ints = MemoryUtil.memIntBuffer(lane.intsHost, intsCount);
       ints.put(0, job.grid);
+      ints.put(6, job.skipAbove);
       ints.put(8, job.lava);
       ints.put(locOffset, job.loc, 0, 3 * job.cellsUsed);
       ints.put(statusOffset, job.status, 0, 3 * job.cellsUsed);
@@ -539,7 +551,7 @@ public final class FillGpu {
          cellsAt[i] = cellsTotal;
          cellsTotal += Math.max(1, job.cells.length);
          intsAt[i] = intsTotal;
-         intsTotal += 8 + 256 + 6L * job.cellsUsed + job.beard.length;
+         intsTotal += 8 + LAVA_INTS + 6L * job.cellsUsed + job.beard.length;
          cornersAt[i] = cornersTotal;
          cornersTotal += Math.max(1L, (long)this.interpolators * pers[i] + this.cornerColumnDoubles(job.cellWidth));
          codesAt[i] = codesTotal;
@@ -559,18 +571,19 @@ public final class FillGpu {
          cellsHost.put((int)cellsAt[i], job.cells, 0, job.cells.length);
          int ints = (int)intsAt[i];
          intsHost.put(ints, job.grid);
+         intsHost.put(ints + 6, job.skipAbove);
          intsHost.put(ints + 8, job.lava);
-         intsHost.put(ints + 8 + 256, job.loc, 0, 3 * job.cellsUsed);
-         intsHost.put(ints + 8 + 256 + 3 * job.cellsUsed, job.status, 0, 3 * job.cellsUsed);
-         intsHost.put(ints + 8 + 256 + 6 * job.cellsUsed, job.beard);
+         intsHost.put(ints + 8 + LAVA_INTS, job.loc, 0, 3 * job.cellsUsed);
+         intsHost.put(ints + 8 + LAVA_INTS + 3 * job.cellsUsed, job.status, 0, 3 * job.cellsUsed);
+         intsHost.put(ints + 8 + LAVA_INTS + 6 * job.cellsUsed, job.beard);
          int p = i * PARAMS;
          long intsDevice = lane.intsDevice + 4L * ints;
          params.put(p, lane.cellsDevice + 8L * cellsAt[i]);
          params.put(p + 1, lane.cornersDevice + 8L * cornersAt[i]);
          params.put(p + 2, lane.batchColumnsDevice + 8L * columnsPer * i);
          params.put(p + 3, intsDevice);
-         params.put(p + 4, intsDevice + 4L * (8 + 256));
-         params.put(p + 5, intsDevice + 4L * (8 + 256 + 3 * job.cellsUsed));
+         params.put(p + 4, intsDevice + 4L * (8 + LAVA_INTS));
+         params.put(p + 5, intsDevice + 4L * (8 + LAVA_INTS + 3 * job.cellsUsed));
          params.put(p + 6, intsDevice + 4L * 8);
          params.put(p + 7, lane.codesDevice + codesAt[i]);
          params.put(p + 8, job.seedLo);
@@ -586,7 +599,7 @@ public final class FillGpu {
          params.put(p + 18, job.sea);
          params.put(p + 19, job.seaType);
          params.put(p + 20, job.aquifer);
-         params.put(p + 21, intsDevice + 4L * (8 + 256 + 6 * job.cellsUsed));
+         params.put(p + 21, intsDevice + 4L * (8 + LAVA_INTS + 6 * job.cellsUsed));
       }
 
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.cellsDevice, lane.cellsHost, 8L * cellsTotal, lane.stream), "copy in");

@@ -3,17 +3,15 @@
   "minVersion": "0.8",
   "package": "com.wgaccel.mixin",
   "plugin": "com.wgaccel.mixin.MainMixinPlugin",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "ChunkStatusTasksMixin",
     "RegionFileVersionMixin",
     "NoiseBasedChunkGeneratorMixin",
     "MultiNoiseBiomeSourceMixin",
     "SurfaceColumnMixin",
-    "ChunkSerializerMixin",
     "RegionFileStorageMixin",
     "PlacedFeatureMixin",
-    "ChunkGeneratorMixin",
     "StructureStartMixin",
     "LevelChunkMixin",
     "NoiseChunkMixin",
@@ -24,9 +22,9 @@
     "ProtoChunkMarkTraceMixin",
     "WorldGenRegionReadsMixin",
     "BlockPredicateFilterMixin",
-    "RuleBasedBlockStateProviderMixin",
     "BulkSectionAccessMixin",
-    "access.BeardifierAccessor",
+    "StructureTemplateMixin",
+    "WorldGenRegionChunksMixin",
     "access.StateTestingPredicateAccessor",
     "access.HeightmapAccessor",
     "access.NoiseChunkAccessor",
@@ -44,7 +42,6 @@
     "defaultRequire": 1
   },
   "client": [
-    "client.LevelLoadingScreenMixin",
     "client.OptionsScreenMixin"
   ]
 }

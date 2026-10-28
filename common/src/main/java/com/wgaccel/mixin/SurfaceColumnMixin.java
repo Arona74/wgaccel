@@ -2,6 +2,7 @@ package com.wgaccel.mixin;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.wgaccel.platform.Mc;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -45,9 +46,9 @@ public abstract class SurfaceColumnMixin {
       if (this.wgaccel$chunk != chunk) {
          this.wgaccel$chunk = chunk;
          this.wgaccel$sections = chunk.getSections();
-         this.wgaccel$minY = chunk.getMinBuildHeight();
-         this.wgaccel$maxY = chunk.getMaxBuildHeight();
-         this.wgaccel$minSection = chunk.getMinSection();
+         this.wgaccel$minY = Mc.minY(chunk);
+         this.wgaccel$maxY = Mc.maxY(chunk);
+         this.wgaccel$minSection = Mc.minSection(chunk);
       }
 
       int y = pos.getY();

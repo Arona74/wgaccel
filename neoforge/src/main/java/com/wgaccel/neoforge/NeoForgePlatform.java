@@ -3,7 +3,6 @@ package com.wgaccel.neoforge;
 import com.wgaccel.platform.Platform;
 import java.nio.file.Path;
 import net.neoforged.fml.ModList;
-import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.fml.loading.LoadingModList;
 import net.neoforged.neoforgespi.language.IModInfo;
@@ -54,7 +53,7 @@ public final class NeoForgePlatform implements Platform {
 
    @Override
    public boolean isDedicatedServer() {
-      return FMLEnvironment.dist.isDedicatedServer();
+      return NeoMc.dist().isDedicatedServer();
    }
 
    @Override

@@ -1,8 +1,9 @@
 package com.wgaccel.gpu;
 
-import static org.lwjgl.cuda.CU.*;
-import static org.lwjgl.cuda.NVRTC.*;
+import static com.wgaccel.gpu.cuda.CU.*;
+import static com.wgaccel.gpu.cuda.NVRTC.*;
 
+import com.wgaccel.gpu.cuda.NVRTC;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -11,7 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.lwjgl.PointerBuffer;
-import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
@@ -144,9 +144,9 @@ public final class GpuSelfTest {
    private static int[] supportedArchitectures() {
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer count = stack.mallocInt(1);
-         if (org.lwjgl.cuda.NVRTC.nvrtcGetNumSupportedArchs(count) == NVRTC_SUCCESS && count.get(0) > 0) {
+         if (NVRTC.nvrtcGetNumSupportedArchs(count) == NVRTC_SUCCESS && count.get(0) > 0) {
             IntBuffer archs = stack.mallocInt(count.get(0));
-            if (org.lwjgl.cuda.NVRTC.nvrtcGetSupportedArchs(archs) == NVRTC_SUCCESS) {
+            if (NVRTC.nvrtcGetSupportedArchs(archs) == NVRTC_SUCCESS) {
                int[] out = new int[count.get(0)];
                archs.get(0, out);
                return out;
@@ -201,7 +201,7 @@ public final class GpuSelfTest {
       String explicit = System.getProperty("wgaccel.nvrtc");
       if (explicit != null) {
          preloadBuiltins(new File(explicit));
-         Configuration.CUDA_NVRTC_LIBRARY_NAME.set(explicit);
+         NVRTC.libraryName(explicit);
          nvrtcState = explicit + " (-Dwgaccel.nvrtc)";
          return;
       }
@@ -251,7 +251,7 @@ public final class GpuSelfTest {
             // The newest when several are side by side (nvrtc64_120_0.dll, nvrtc64_130_0.dll).
             java.util.Arrays.sort(candidates, java.util.Comparator.comparing(File::getName).reversed());
             preloadBuiltins(candidates[0]);
-            Configuration.CUDA_NVRTC_LIBRARY_NAME.set(candidates[0].getAbsolutePath());
+            NVRTC.libraryName(candidates[0].getAbsolutePath());
             nvrtcState = candidates[0].getAbsolutePath();
             return;
          }
@@ -283,7 +283,7 @@ public final class GpuSelfTest {
       // folder only, where CUDA 13 has none: without it NVRTC failed to load even with its own path given (the newest
       // when several are side by side).
       java.util.Arrays.sort(beside, java.util.Comparator.comparing(File::getName).reversed());
-      Configuration.CUDA_NVRTC_BUILTINS_LIBRARY_NAME.set(beside[0].getAbsolutePath());
+      NVRTC.builtinsLibraryName(beside[0].getAbsolutePath());
       for (File library : beside) {
          try {
             BUILTINS.add(org.lwjgl.system.Library.loadNative(GpuSelfTest.class, "org.lwjgl", library.getAbsolutePath()));
@@ -535,7 +535,7 @@ public final class GpuSelfTest {
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer major = stack.mallocInt(1);
          IntBuffer minor = stack.mallocInt(1);
-         org.lwjgl.cuda.NVRTC.nvrtcVersion(major, minor);
+         NVRTC.nvrtcVersion(major, minor);
          return major.get(0) + "." + minor.get(0);
       }
    }
@@ -573,9 +573,9 @@ public final class GpuSelfTest {
 
             PointerBuffer size = stack.mallocPointer(1);
             if (exact[0].startsWith("--gpu-architecture=sm_")) {
-               checkNvrtc(org.lwjgl.cuda.NVRTC.nvrtcGetCUBINSize(program.get(0), size), "nvrtcGetCUBINSize");
+               checkNvrtc(NVRTC.nvrtcGetCUBINSize(program.get(0), size), "nvrtcGetCUBINSize");
                ByteBuffer cubin = MemoryUtil.memAlloc((int)size.get(0));
-               checkNvrtc(org.lwjgl.cuda.NVRTC.nvrtcGetCUBIN(program.get(0), cubin), "nvrtcGetCUBIN");
+               checkNvrtc(NVRTC.nvrtcGetCUBIN(program.get(0), cubin), "nvrtcGetCUBIN");
                return cubin;
             }
 

@@ -1,13 +1,10 @@
 package com.wgaccel.client;
 
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
 
 /**
  * The button with the mod's logo (logo.png simplified, 20 x 20) in Options that opens the settings screen; a white outline
@@ -15,8 +12,8 @@ import net.minecraft.resources.ResourceLocation;
  * drawn (every mod's buttons made by then) it moves under another mod's small button found there (Distant Horizons') and
  * takes its size.
  */
-public final class LogoButton extends Button {
-   private static final ResourceLocation ICON = ResourceLocation.fromNamespaceAndPath("wgaccel", "textures/gui/wga_button.png");
+public final class LogoButton extends CanvasButton {
+   private static final Canvas.Texture ICON = new Canvas.Texture("wgaccel", "textures/gui/wga_button.png");
    private final Screen parent;
    private int row;
    private int sliderLeft;
@@ -54,15 +51,15 @@ public final class LogoButton extends Button {
    }
 
    @Override
-   protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+   protected void draw(Canvas canvas, int mouseX, int mouseY, float partialTick) {
       if (!this.aligned) {
          this.align();
       }
 
       // The 20 x 20 icon drawn at the button's size (the button it lines up with may be smaller).
-      graphics.blit(ICON, this.getX(), this.getY(), this.width, this.height, 0.0F, 0.0F, 20, 20, 20, 20);
+      canvas.texture(ICON, this.getX(), this.getY(), this.width, this.height, 20, 20);
       if (this.isHoveredOrFocused()) {
-         graphics.renderOutline(this.getX(), this.getY(), this.width, this.height, 0xFFFFFFFF);
+         canvas.outline(this.getX(), this.getY(), this.width, this.height, 0xFFFFFFFF);
       }
    }
 }

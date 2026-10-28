@@ -1,0 +1,22 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin",
+  "plugin": "com.wgaccel.mixin.MainMixinPlugin",
+  "compatibilityLevel": "${mixin_java}",
+  "mixins": [
+    "access.BeardifierAccessor",
+    "access.AquiferStatusInvoker",
+    "ChunkGeneratorMixin",
+    "ChunkEntitiesMixin",
+    "ChunkSerializerMixin",
+    "RuleBasedBlockStateProviderMixin",
+    "SinglePoolElementMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "client": [
+    "client.LevelLoadingScreenMixin"
+  ]
+}

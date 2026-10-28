@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "com.wgaccel.mixin.c2me",
   "plugin": "com.wgaccel.mixin.c2me.C2meMixinPlugin",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "NewStatusHookMixin",
     "VanillaDelegateMixin"

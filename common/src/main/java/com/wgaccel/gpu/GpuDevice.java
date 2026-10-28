@@ -1,10 +1,10 @@
 package com.wgaccel.gpu;
 
+import com.wgaccel.gpu.cuda.CU;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import org.lwjgl.cuda.CU;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
