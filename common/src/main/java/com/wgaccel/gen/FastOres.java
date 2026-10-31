@@ -133,10 +133,33 @@ public final class FastOres {
       Range range = lastRange;
       if (range == null || range.level() != key) {
          range = new Range(key, Mc.minY(level), Mc.maxY(level), Mc.minSection(level), level.getSectionsCount());
+         check(range, level);
          lastRange = range;
       }
 
       return range;
+   }
+
+   /**
+    * A new range against the level's own answers at every height from below to above it (the redirects that use it
+    * compare no single calls: they are asked for every block of every ore).
+    */
+   private static void check(Range range, LevelHeightAccessor level) {
+      int differences = 0;
+      for (int y = range.minY() - 16; y < range.maxY() + 16; y++) {
+         boolean outside = y < range.minY() || y >= range.maxY();
+         differences += outside != level.isOutsideBuildHeight(y) ? 1 : 0;
+         differences += SectionPos.blockToSectionCoord(y) - range.minSection() != level.getSectionIndex(y) ? 1 : 0;
+      }
+
+      differences += range.sections() != level.getSectionsCount() ? 1 : 0;
+      CHECKED.increment();
+      if (differences != 0) {
+         DIFFERENT.increment();
+         disabled = true;
+         WorldgenAccelerator.LOG.warn("WGA fast ores: the height range read for {} ({} to {}, sections from {}, {} of them) gives {} answers unlike the level's; off",
+            level, range.minY(), range.maxY(), range.minSection(), range.sections(), differences);
+      }
    }
 
    /** LevelHeightAccessor.isOutsideBuildHeight(y). */

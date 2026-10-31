@@ -1574,7 +1574,7 @@ public final class GpuNoiseFill {
       Heightmap surface = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
       write(pending, chunk.getSections(), ocean, surface, chunk.getPostProcessing());
       // The surface's kept codes are the overworld's only (keyed by chunk position).
-      if (pending.program == program) try {
+      if (pending.program == program && SurfaceAhead.wantsCodes()) try {
          NoiseChunk noise = ((com.wgaccel.mixin.access.ChunkAccessAccessor)chunk).wgaccel$noiseChunk();
          String origin = (pending.fromAhead ? "the look-ahead" : "the noise step") + (noise != null
             && DensityTap.hasStructures(((NoiseChunkAccessor)noise).wgaccel$beardifier()) ? ", with structure terrain" : ", no structure terrain");

@@ -13,6 +13,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.feature.OreFeature;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Redirect;
 
 /** S8 ores: the same answers as the game's calls, without a chunk lookup per column or a height range per block ({@link FastOres}). */
 @Mixin(OreFeature.class)
@@ -57,13 +58,9 @@ public abstract class OreFeatureMixin {
       return original.call(level, type, x, z);
    }
 
-   @WrapOperation(method = "doPlace", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/WorldGenLevel;isOutsideBuildHeight(I)Z"))
-   private boolean wgaccel$outside(WorldGenLevel level, int y, Operation<Boolean> original) {
-      if (FastOres.on()) {
-         boolean outside = FastOres.outside(level, y);
-         return FastOres.sample() ? FastOres.verify(outside ? 1 : 0, original.call(level, y) ? 1 : 0) != 0 : outside;
-      }
-
-      return original.call(level, y);
+   /** Asked for every block of an ore: a redirect (a @WrapOperation made an Operation per call: 44% of doPlace, 31 Oct 2026). */
+   @Redirect(method = "doPlace", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/WorldGenLevel;isOutsideBuildHeight(I)Z"))
+   private boolean wgaccel$outside(WorldGenLevel level, int y) {
+      return FastOres.on() ? FastOres.outside(level, y) : level.isOutsideBuildHeight(y);
    }
 }

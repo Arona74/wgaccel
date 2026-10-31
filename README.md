@@ -146,6 +146,7 @@ GPU check was identical.
 | Noise fill step with the GPU fill (`fastSurfaceLevels`: aquifers' rough heights shared by the chunks) | 2.7-2.8 ms per chunk | 1.66 ms per chunk (GPU look-ahead inputs 0.97 -> 0.26 ms) |
 | Features step (`fastOres`: ores above the ground) | 3.75 ms per chunk | 3.35 ms per chunk (`ore_iron_upper` 0.20 -> 0.12 ms, `ore_coal_upper` 0.10 -> 0.05 ms a call) |
 | Biome step (`fastClimateSearch`, 0.61.1; runs alternated, on 4 and off 3) | 2.12-2.33 ms per chunk, r2000 1:17, 1:17, 1:21 | 1.40-1.47 ms per chunk, r2000 1:13, 1:13, 1:15, 1:17 |
+| Ores (`fastOres`, 0.61.2: its per-block range answers through redirects; a @WrapOperation made an object per block) | 0.20-0.21 ms a call (`ore_tuff`, `ore_granite_lower`) | 0.17-0.18 ms a call |
 | Radius 2000 | 1:23, 1:23 (0.60.0's jar: 1:25, 1:28, 1:25) | 1:17-1:21 |
 
 **AMD desktop (0.16.1, HIP):** AMD Ryzen 7 7800X3D (8 cores, 16 threads), AMD Radeon RX 9070 XT 16 GB, Windows 11,

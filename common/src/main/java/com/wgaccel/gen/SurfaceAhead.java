@@ -141,6 +141,17 @@ public final class SurfaceAhead {
       return enabled;
    }
 
+   private static final java.util.concurrent.atomic.AtomicInteger CODES_TURN = new java.util.concurrent.atomic.AtomicInteger();
+
+   /**
+    * Whether this filled chunk's codes are kept ({@link #filled}): for the surface made ahead and the kinds taken from
+    * the codes, every chunk; with both off (the defaults), every 16th, for the surface's codes check only (keeping all of
+    * them was a 98 KB copy per chunk and a 1,024-chunk map: 1.6% of the CPU in vanilla 26.1.2, 31 Oct 2026).
+    */
+   public static boolean wantsCodes() {
+      return enabled || Config.GPU_SURFACE_KINDS_FROM_CODES.get() || (CODES_TURN.getAndIncrement() & 15) == 0;
+   }
+
    /** At the end of an overworld chunk's biome step: its final quart biomes (as the region gives them to its neighbours' surfaces). */
    public static void biomesDone(ChunkAccess chunk, net.minecraft.world.level.levelgen.RandomState random) {
       GpuSurface.Program p = GpuSurface.program();
