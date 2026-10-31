@@ -11,6 +11,7 @@
     "ChunkEntitiesMixin",
     "SerializableChunkDataMixin",
     "RuleBasedStateProviderMixin",
+    "NoiseChunkLevelsMixin",
     "SinglePoolElementMixin",
     "compat.ConquestLandformsMixin",
     "compat.LithosNoiseMixin",

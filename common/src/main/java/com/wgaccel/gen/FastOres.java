@@ -9,6 +9,8 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.ImposterProtoChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
@@ -72,6 +74,46 @@ public final class FastOres {
    /** WorldGenRegion.getHeight(type, x, z) from the call's chunks. */
    public static int height(Chunks chunks, Heightmap.Types type, int x, int z) {
       return chunks.get(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)).getHeight(type, x & 15, z & 15) + 1;
+   }
+
+   /**
+    * Whether no column of an ore's box (x0..x1, z0..z1) can be as high as y, from the highest ground of each chunk the box
+    * touches: OreFeature.place then tries every column in vain (ores above the ground: up to 27 x 27 height reads, 3.5%
+    * of the CPU in the 28 Oct 2026 vanilla profile). The OCEAN_FLOOR_WG heights do not change from the carvers step on
+    * (block writes then update only the final heightmaps), so a chunk's highest one is worked out once; a chunk not yet
+    * that far, or not a proto chunk of its own (a finished chunk's), gives no answer.
+    */
+   public static boolean belowAll(Chunks chunks, int x0, int x1, int z0, int z1, int y) {
+      for (int cx = SectionPos.blockToSectionCoord(x0); cx <= SectionPos.blockToSectionCoord(x1); cx++) {
+         for (int cz = SectionPos.blockToSectionCoord(z0); cz <= SectionPos.blockToSectionCoord(z1); cz++) {
+            // WorldGenRegion.getHeight is the chunk's height + 1; vanilla places the ore where y <= that.
+            if (y <= floorMax(chunks.get(cx, cz)) + 1) {
+               return false;
+            }
+         }
+      }
+
+      return true;
+   }
+
+   private static int floorMax(ChunkAccess chunk) {
+      if (!(chunk instanceof FloorMax kept) || chunk instanceof ImposterProtoChunk || !chunk.getPersistedStatus().isOrAfter(ChunkStatus.CARVERS)) {
+         return Integer.MAX_VALUE - 1;
+      }
+
+      int max = kept.wgaccel$floorMax();
+      if (max == Integer.MIN_VALUE) {
+         max = Integer.MIN_VALUE + 1;
+         for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+               max = Math.max(max, chunk.getHeight(Heightmap.Types.OCEAN_FLOOR_WG, x, z));
+            }
+         }
+
+         kept.wgaccel$floorMax(max);
+      }
+
+      return max;
    }
 
    /** A level's build range and section range (the same for every thread). */

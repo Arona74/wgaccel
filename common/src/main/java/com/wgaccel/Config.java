@@ -25,6 +25,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_REGION_CHUNKS;
    public static final Setting<Boolean> FAST_REGION_HEIGHTS;
    public static final Setting<Boolean> FAST_ARBOREA_CELLS;
+   public static final Setting<Boolean> FAST_SURFACE_LEVELS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -204,6 +205,8 @@ public final class Config {
          .comment("Gain: ores were 7.5% of the CPU; vanilla r2000 1:27 -> 1:22 after its 0.9.91 fix.",
             "Ores (and other features' section access) without a chunk lookup per column of an ore's box or the level's height",
             "range asked per block: the same answers from a cached chunk and the range read once (ores were 7.5% of the CPU).",
+            "Ores above the ground skip their search for a column high enough when no chunk their box touches has ground that",
+            "high (each chunk's highest ground worked out once: features 3.75 -> 3.35 ms per chunk in vanilla 26.1.2).",
             "Every 256th answer is compared with the game's call; a difference turns it off. The same world. Since 0.9.67.")
          .define("fastOres", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_LAYER_PLACEMENT = Setting.of(builder
@@ -250,6 +253,12 @@ public final class Config {
             "out again; the same answers, as they depend on the seed and the cell alone. Every 256th kept cell is compared with",
             "Arborea's own.")
          .define("fastArboreaCells", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_SURFACE_LEVELS = Setting.of(builder
+         .comment("Minecraft 26.1.2: the preliminary surface levels (the terrain's rough height every 4 blocks, which aquifers ask for",
+            "around their cells, past the chunk's edges) shared by the chunks of a world instead of worked out again by every chunk",
+            "around a column (8% of the CPU in vanilla). Chunks blended with old terrain keep their own. Every 256th kept level is",
+            "compared with the chunk's own.")
+         .define("fastSurfaceLevels", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

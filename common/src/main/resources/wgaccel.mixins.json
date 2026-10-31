@@ -20,6 +20,7 @@
     "OreFeatureMixin",
     "CountOnEveryLayerMixin",
     "ProtoChunkMarkTraceMixin",
+    "ProtoChunkFloorMixin",
     "WorldGenRegionReadsMixin",
     "BlockPredicateFilterMixin",
     "BulkSectionAccessMixin",
