@@ -164,6 +164,33 @@ public final class GpuNoiseFill {
    /** C2.5: the other dimensions' programs (the Nether's, the End's...), by their RandomState; no look-ahead there. */
    private static final Map<RandomState, Program> OTHERS = java.util.Collections.synchronizedMap(new IdentityHashMap<>());
    private static volatile boolean failed;
+   private static final AtomicInteger BAD_LAUNCHES = new AtomicInteger();
+   private static final int BAD_LAUNCHES_ALLOWED = 3;
+
+   /**
+    * Whether this failure is a launch with impossible codes ({@link FillGpu.BadCodes}) to be dropped: its chunks fill
+    * on the CPU and the GPU fill stays on, unless it keeps happening (then false: the caller turns it off).
+    */
+   private static boolean badLaunch(Throwable failure, String what) {
+      Throwable bad = failure;
+      while (bad != null && !(bad instanceof FillGpu.BadCodes)) {
+         bad = bad.getCause();
+      }
+
+      if (bad == null) {
+         return false;
+      }
+
+      int count = BAD_LAUNCHES.incrementAndGet();
+      if (count > BAD_LAUNCHES_ALLOWED) {
+         return false;
+      }
+
+      WorldgenAccelerator.LOG.warn("WGA GPU noise fill: a launch came back with impossible codes ({}; for {}); its chunks fill on the CPU ({} of {} allowed before the GPU fill turns off)",
+         bad.getMessage(), what, count, BAD_LAUNCHES_ALLOWED);
+      return true;
+   }
+
    private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
    private static final AtomicInteger ELIGIBLE = new AtomicInteger();
    private static final LongAdder WRITTEN = new LongAdder();
@@ -356,6 +383,7 @@ public final class GpuNoiseFill {
       java.lang.reflect.Field kernel = Names.declaredField(net.minecraft.world.level.levelgen.Beardifier.class, "BEARD_KERNEL");
       kernel.setAccessible(true);
       gpu.setBeardKernel((float[])kernel.get(null));
+      gpu.setMaxCode(table.length - 1);
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
          "WGA GPU noise fill: final density with %d interpolators, %d CellSampler inputs and %d subtrees worked out once per column, CUDA source %,d KB",
          corners.size(), codegen.cellSamplers().size(), codegen.columnFunctions().size(), source.length() / 1024));
@@ -513,6 +541,10 @@ public final class GpuNoiseFill {
 
          return pending;
       } catch (Throwable failure) {
+         if (badLaunch(failure, chunk.getPos().toString())) {
+            return null;
+         }
+
          failed = true;
          com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off (chunks fill on the CPU from now on): {}", failure.toString());
          return null;
@@ -1036,6 +1068,16 @@ public final class GpuNoiseFill {
             try {
                this.p.gpu.fillBatch(jobs, codes);
             } catch (Throwable failure) {
+               if (badLaunch(failure, "the look-ahead's " + made.size() + " chunks")) {
+                  // None of the launch's codes are kept: those chunks fill the usual way at their noise step.
+                  for (Long key : made) {
+                     this.realKeys.remove(key);
+                     this.states.remove(key, QUEUED);
+                  }
+
+                  continue;
+               }
+
                com.wgaccel.WgaChat.warnOff("WGA GPU look-ahead off: {}", failure.toString());
                ahead = null;
                this.stop();

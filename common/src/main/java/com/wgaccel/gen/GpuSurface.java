@@ -536,6 +536,34 @@ public final class GpuSurface {
       return text.toString();
    }
 
+   private static final java.util.concurrent.atomic.AtomicInteger BAD_OUTS = new java.util.concurrent.atomic.AtomicInteger();
+
+   /**
+    * Whether the GPU's blocks for this chunk hold a block number past the table (impossible from the kernel; seen once,
+    * 31 Oct 2026, in the same second as a noise fill launch with impossible codes): nothing is written, the chunk gets
+    * its surface on the CPU. After three such chunks the GPU surface turns off.
+    */
+   private static boolean badOut(Current current, Program p, String from) {
+      short[] out = current.out;
+      int n = 256 * current.job.height;
+      int size = p.table.length;
+      for (int i = 0; i < n; i++) {
+         if (out[i] >= size) {
+            int count = BAD_OUTS.incrementAndGet();
+            WorldgenAccelerator.LOG.warn("WGA GPU surface: chunk {}'s blocks from {} hold block {} at {} (the table has {}); its surface is made on the CPU{}",
+               current.chunk.getPos(), from, out[i], i, size, count > 3 ? "; the GPU surface turns off" : "");
+            if (count > 3) {
+               failed = true;
+            }
+
+            SKIP_SPECIAL.increment();
+            return true;
+         }
+      }
+
+      return false;
+   }
+
    public static void rulesMade() {
       Current current = CURRENT.get();
       if (!current.active) {
@@ -592,6 +620,10 @@ public final class GpuSurface {
             System.arraycopy(ahead.job.heights, 0, job.heights, 0, 256);
             System.arraycopy(ahead.job.minBase, 0, job.minBase, 0, 256);
             current.out = ahead.out;
+            if (badOut(current, p, "made ahead")) {
+               return;
+            }
+
             write(current, p, current.chunk.getSections(), heightmaps(current.chunk), null, true);
             WRITE_NANOS.add(System.nanoTime() - writeStart);
             WRITTEN.increment();
@@ -644,6 +676,10 @@ public final class GpuSurface {
          if (check) {
             current.checkReady = true;
                TRACED.add(current.chunk);
+            return;
+         }
+
+         if (badOut(current, p, "its batch")) {
             return;
          }
 

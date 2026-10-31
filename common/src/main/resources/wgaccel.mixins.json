@@ -21,6 +21,7 @@
     "CountOnEveryLayerMixin",
     "ProtoChunkMarkTraceMixin",
     "ProtoChunkFloorMixin",
+    "ClimateParameterListMixin",
     "WorldGenRegionReadsMixin",
     "BlockPredicateFilterMixin",
     "BulkSectionAccessMixin",

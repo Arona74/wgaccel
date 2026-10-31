@@ -19,6 +19,38 @@ public final class FillGpu {
    /** Job.lava's length: the lava levels, then Conquest's aquifer's five numbers, 256 each. */
    public static final int LAVA_INTS = 6 * 256;
 
+   /**
+    * A launch whose codes the kernels cannot have written (a code past the block table): none of its chunks' codes are
+    * used. Seen once (31 Oct 2026, RX 9070 XT, OpenCL, vanilla 26.1.2 r2000: a look-ahead launch's chunks and a surface
+    * batch in the same second, no OpenCL error); those chunks then failed their noise step.
+    */
+   public static final class BadCodes extends RuntimeException {
+      public BadCodes(String message) {
+         super(message);
+      }
+   }
+
+   /** The highest code the block table has (the check of the codes that come back). */
+   private volatile int maxCode = 15;
+
+   public void setMaxCode(int maxCode) {
+      this.maxCode = maxCode;
+   }
+
+   private void checkCodes(byte[] codes, int blocks, String which) {
+      int max = this.maxCode;
+      if (max >= 15) {
+         return;
+      }
+
+      for (int i = 0; i < blocks; i++) {
+         if ((codes[i] & 15) > max) {
+            throw new BadCodes(String.format(java.util.Locale.ROOT, "%s: code %d at block %d of %d (the table has 0 to %d)", which, codes[i] & 15, i, blocks,
+               max));
+         }
+      }
+   }
+
    /** One chunk's inputs, as {@code DensityTap} works them out on the CPU. */
    public static final class Job {
       public double[] cells;
@@ -517,6 +549,7 @@ public final class FillGpu {
       }
       ByteBuffer out = MemoryUtil.memByteBuffer(lane.codesHost, blocks);
       out.get(0, codes, 0, blocks);
+      this.checkCodes(codes, blocks, "a chunk's launch");
    }
 
    /**
@@ -680,6 +713,10 @@ public final class FillGpu {
       ByteBuffer out = MemoryUtil.memByteBuffer(lane.codesHost, (int)codesTotal);
       for (int i = 0; i < n; i++) {
          out.get((int)codesAt[i], codes.get(i), 0, blockCounts[i]);
+      }
+
+      for (int i = 0; i < n; i++) {
+         this.checkCodes(codes.get(i), blockCounts[i], "chunk " + (i + 1) + " of a launch of " + n);
       }
    }
 }
