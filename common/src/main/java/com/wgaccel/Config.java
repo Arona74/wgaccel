@@ -28,6 +28,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_SURFACE_LEVELS;
    public static final Setting<Boolean> FAST_CLIMATE_SEARCH;
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
+   public static final Setting<Boolean> FAST_CHUNK_PACK;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -271,6 +272,11 @@ public final class Config {
             "are worked out once per column when the world's density functions prove they depend on x and z only (vanilla's do: 4% of",
             "the CPU in vanilla 26.1.2). Every 64th kept value is compared with the function's own.")
          .define("fastClimateColumns", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_CHUNK_PACK = Setting.of(builder
+         .comment("Minecraft 26.1.2: saving a chunk numbers each section's blocks anew for its palette; each old number is now asked once",
+            "instead of at every change along the section (pack was 3.3% of the CPU in vanilla 26.1.2). The same palette and numbers;",
+            "every 256th section is checked against the palette's own answers.")
+         .define("fastChunkPack", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",
