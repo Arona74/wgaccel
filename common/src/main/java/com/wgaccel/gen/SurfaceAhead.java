@@ -61,9 +61,21 @@ public final class SurfaceAhead {
    private static final ConcurrentLinkedQueue<Long> CODES_ORDER = new ConcurrentLinkedQueue<>();
    static final LongAdder FROM_CODES = new LongAdder();
 
-   /** The chunk's fill codes (removed), or null. */
+   /**
+    * The chunk's fill codes (removed), or null. Kept on the proto chunk itself: a shared map's remove, asked for every
+    * chunk's surface, was 1.4-2.5% of the CPU (31 Oct 2026 profiles, vanilla 26.1.2 and FreeTerraForged).
+    */
    static Codes takeCodes(ChunkAccess chunk) {
-      return CODES.remove(Mc.key(chunk.getPos()));
+      if (chunk instanceof ChunkCodes kept) {
+         Object codes = kept.wgaccel$codes();
+         if (codes != null) {
+            kept.wgaccel$codes(null);
+         }
+
+         return (Codes)codes;
+      }
+
+      return CODES.isEmpty() ? null : CODES.remove(Mc.key(chunk.getPos()));
    }
 
    /** The block kinds of the surface's job (air 0, fluid 1, the default block 2, other 3) from the fill's codes. */
@@ -221,7 +233,10 @@ public final class SurfaceAhead {
 
       // Kept for the surface step's inputs (the usual way too): the codes say every block's kind without reading it back.
       long codesKey = Mc.key(chunk.getPos());
-      if (CODES.put(codesKey, new Codes(codes, fillTable, minCellY * cellHeight, cellCountY * cellHeight, origin)) == null) {
+      Codes made = new Codes(codes, fillTable, minCellY * cellHeight, cellCountY * cellHeight, origin);
+      if (chunk instanceof ChunkCodes kept) {
+         kept.wgaccel$codes(made);
+      } else if (CODES.put(codesKey, made) == null) {
          CODES_ORDER.add(codesKey);
          while (CODES.size() > CODES_BUDGET) {
             Long old = CODES_ORDER.poll();
