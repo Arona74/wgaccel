@@ -1228,6 +1228,46 @@ public final class DensityCodegen {
       return result;
    }
 
+   /**
+    * Whether a function's value at a block depends on its x and z only, wherever it is asked (stricter than the GPU's
+    * columnOnly: a FlatCache counts only when what it wraps does, since outside its chunk's grid it works that out at the
+    * real y). A noise's y of {@code y * 0.0} is -0.0 below 0, but the noise adds its own offset to y first, so both zeros
+    * give the same value. Anything not known (another mod's kinds included) counts as depending on y.
+    */
+   public static boolean heightFree(Object node) {
+      try {
+         return heightFree(node, new java.util.IdentityHashMap<>());
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return false;
+      }
+   }
+
+   private static boolean heightFree(Object node, Map<Object, Boolean> known) throws ReflectiveOperationException {
+      Object actual = unwrap(node);
+      Boolean was = known.get(actual);
+      if (was != null) {
+         return was;
+      }
+
+      // A cycle counts as depending on y until worked out.
+      known.put(actual, false);
+      Map<String, Object> f = fields(actual);
+      boolean result = switch (kind(actual)) {
+         case "Constant", "CellSampler", "BlendAlpha", "BlendOffset" -> true;
+         case "Noise" -> (Double)f.get("yScale") == 0.0;
+         case "ShiftA", "ShiftB" -> true;
+         case "ShiftedNoise" -> (Double)f.get("yScale") == 0.0 && heightFree(f.get("shiftX"), known) && heightFree(f.get("shiftY"), known)
+            && heightFree(f.get("shiftZ"), known);
+         case "Ap2" -> heightFree(f.get("argument1"), known) && heightFree(f.get("argument2"), known);
+         case "MulOrAdd", "Mapped", "Clamp" -> heightFree(f.get("input"), known);
+         case "RangeChoice" -> heightFree(f.get("input"), known) && heightFree(f.get("whenInRange"), known) && heightFree(f.get("whenOutOfRange"), known);
+         case "Marker" -> !((Enum<?>)f.get("type")).name().equals("Interpolated") && heightFree(f.get("wrapped"), known);
+         default -> false;
+      };
+      known.put(actual, result);
+      return result;
+   }
+
    /** Whether a FlatCache marker is anywhere below node (through holders, splines and lists). */
    private static boolean hasFlatCache(Object node, Set<Object> seen) throws ReflectiveOperationException {
       node = unwrap(node);

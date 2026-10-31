@@ -18,6 +18,8 @@ import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /** Plan item B1: a chunk's noise chunk is made only as tall as its terrain needs ({@link FillToGround}). */
 @Mixin(NoiseChunk.class)
@@ -38,5 +40,12 @@ public abstract class NoiseChunkMixin {
          Aquifer.FluidPicker picker, Operation<Aquifer> original) {
       int[] range = FillToGround.aquiferRange(minY, height);
       return original.call(noise, pos, router, random, range[0], range[1], picker);
+   }
+
+   /** The chunk's climate sampler, noted for its per-column temperature and humidity ({@link com.wgaccel.gen.ClimateColumns}). */
+   @Inject(method = "cachedClimateSampler", at = @At("RETURN"))
+   private void wgaccel$sampler(NoiseRouter router, java.util.List<net.minecraft.world.level.biome.Climate.ParameterPoint> spawnTarget,
+         CallbackInfoReturnable<net.minecraft.world.level.biome.Climate.Sampler> info) {
+      com.wgaccel.gen.ClimateColumns.made(info.getReturnValue(), router);
    }
 }

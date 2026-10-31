@@ -80,6 +80,8 @@ final class Improvements {
          "Conquest of Arborea (26.1.2): each forest cell its trees look up worked out once instead of for every column around it.", null),
       new Improvement(Config.FAST_CLIMATE_SEARCH, "Fast climate search",
          "Biome tables searched on a flat copy of their search tree: the same biomes, about twice as fast.", null),
+      new Improvement(Config.FAST_CLIMATE_COLUMNS, "Fast climate columns",
+         "A chunk's temperature and humidity worked out once per column instead of at every height, where they cannot change.", null),
       new Improvement(Config.FAST_SURFACE_LEVELS, "Fast surface levels",
          "Minecraft 26.1.2: the terrain's rough height, which aquifers ask for around each chunk, worked out once per column instead of by every chunk around it.", null),
       new Improvement(Config.FAST_REGION_CHUNKS, "Fast region chunks",

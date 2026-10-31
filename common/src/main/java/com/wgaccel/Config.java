@@ -27,6 +27,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_ARBOREA_CELLS;
    public static final Setting<Boolean> FAST_SURFACE_LEVELS;
    public static final Setting<Boolean> FAST_CLIMATE_SEARCH;
+   public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -265,6 +266,11 @@ public final class Config {
             "own search tree, in vanilla's order and from vanilla's last answer, so ties come out the same (the tree search was 10% of",
             "the CPU in vanilla 26.1.2). Every 256th answer is compared with vanilla's search.")
          .define("fastClimateSearch", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_CLIMATE_COLUMNS = Setting.of(builder
+         .comment("A chunk's biome fill works out the climate at every quart of the chunk (16 columns of 96); temperature and humidity",
+            "are worked out once per column when the world's density functions prove they depend on x and z only (vanilla's do: 4% of",
+            "the CPU in vanilla 26.1.2). Every 64th kept value is compared with the function's own.")
+         .define("fastClimateColumns", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

@@ -22,6 +22,7 @@
     "ProtoChunkMarkTraceMixin",
     "ProtoChunkFloorMixin",
     "ClimateParameterListMixin",
+    "ClimateSamplerMixin",
     "WorldGenRegionReadsMixin",
     "BlockPredicateFilterMixin",
     "BulkSectionAccessMixin",
