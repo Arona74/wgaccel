@@ -1053,7 +1053,11 @@ public final class GpuNoiseFill {
                } catch (Throwable failure) {
                   this.states.remove(key, QUEUED);
                   this.skipped.increment();
-                  if (this.failures.incrementAndGet() <= 8) {
+                  int failed = this.failures.incrementAndGet();
+                  if (failed == 1) {
+                     // The first with its stack (a message alone could not say where: a user's 2,288-tall world, 1 Nov 2026).
+                     WorldgenAccelerator.LOG.warn("WGA GPU look-ahead: chunk {}'s stand-in failed", Mc.chunk(key), failure);
+                  } else if (failed <= 8) {
                      WorldgenAccelerator.LOG.warn("WGA GPU look-ahead: chunk {}'s stand-in failed: {}", Mc.chunk(key), failure.toString());
                   }
                }
@@ -1535,6 +1539,23 @@ public final class GpuNoiseFill {
                job.loc[index * 3] = BlockPos.getX(packed);
                job.loc[index * 3 + 1] = BlockPos.getY(packed);
                job.loc[index * 3 + 2] = BlockPos.getZ(packed);
+               if (BlockPos.getY(packed) < y * 12 || BlockPos.getY(packed) > y * 12 + 8) {
+                  // A centre past BlockPos's 12 bits of y (-2048 to 2047: a world's top aquifer layer above y 2040, a
+                  // user's FreeTerraForged world built to 2032, 1 Nov 2026) wraps to the other end, as vanilla's own
+                  // centre does: so far from every block that vanilla never asks its status (it is never among a block's
+                  // three nearest), but asking it here read the status cache at a negative index (ArrayIndexOutOfBounds,
+                  // the GPU fill off). Kept as vanilla keeps it, with the status of the cell below (never used).
+                  if (gy == 0) {
+                     return false;
+                  }
+
+                  int below = ((gy - 1) * sizeZ + gz) * sizeX + gx;
+                  job.status[index * 3] = job.status[below * 3];
+                  job.status[index * 3 + 1] = job.status[below * 3 + 1];
+                  job.status[index * 3 + 2] = job.status[below * 3 + 2];
+                  continue;
+               }
+
                Aquifer.FluidStatus status = Mc.aquiferStatus((Aquifer.NoiseBasedAquifer)(Object)a, cell, packed);
                FluidStatusAccessor fluid = (FluidStatusAccessor)(Object)status;
                int type = fluidCode(fluid.wgaccel$type());

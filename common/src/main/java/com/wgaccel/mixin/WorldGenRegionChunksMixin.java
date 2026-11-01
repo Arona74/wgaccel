@@ -4,6 +4,7 @@ import com.wgaccel.gen.RegionChunks;
 import com.wgaccel.gen.RegionExtras;
 import com.wgaccel.gen.RegionHeights;
 import com.wgaccel.platform.Mc;
+import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -12,12 +13,12 @@ import net.minecraft.world.level.chunk.status.ChunkStep;
 import net.minecraft.world.level.levelgen.Heightmap;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * The features step's region chunks kept once found ({@link RegionChunks}). The region's block reads, writes and
@@ -40,9 +41,6 @@ public abstract class WorldGenRegionChunksMixin implements RegionExtras {
    private RegionChunks.Entry[] wgaccel$chunks;
    @Unique
    private RegionHeights.Table wgaccel$heights;
-   /** While the region's own getHeight runs for a height not kept yet (or compared). */
-   @Unique
-   private boolean wgaccel$heightRead;
    @Unique
    private Object wgaccel$extra;
    /** A features region (set as the region is made): only those keep chunks and heights. */
@@ -82,9 +80,6 @@ public abstract class WorldGenRegionChunksMixin implements RegionExtras {
    @Shadow
    public abstract ChunkAccess getChunk(int x, int z, ChunkStatus status, boolean load);
 
-   @Shadow
-   public abstract int getHeight(Heightmap.Types type, int x, int z);
-
    public ChunkAccess getChunk(int x, int z, ChunkStatus status) {
       if (!this.wgaccel$features || status != ChunkStatus.EMPTY || !RegionChunks.on()) {
          return this.getChunk(x, z, status, true);
@@ -115,45 +110,40 @@ public abstract class WorldGenRegionChunksMixin implements RegionExtras {
       return RegionChunks.keep(table, x, z, this.getChunk(x, z, status, true));
    }
 
-   /** The features step's worldgen heights kept once read ({@link RegionHeights}); the region's own answer is this method again, bypassed. */
-   @Inject(method = "getHeight(Lnet/minecraft/world/level/levelgen/Heightmap$Types;II)I", at = @At("HEAD"), cancellable = true, require = 0)
-   private void wgaccel$height(Heightmap.Types type, int x, int z, CallbackInfoReturnable<Integer> cir) {
-      if (this.wgaccel$heightRead || !this.wgaccel$features || !RegionHeights.on()) {
-         return;
-      }
-
+   /**
+    * The features step's worldgen heights kept once read ({@link RegionHeights}), then the region's own answer as in
+    * Minecraft (the chunk's height + 1). An overwrite: until 0.61.7 a cancellable inject at its head, which made a
+    * CallbackInfoReturnable and boxed the height at every call (1 Nov 2026 Conquest profile: getHeight 5% of all samples,
+    * most of it that); a redirect of the chunk's height in it still looked the chunk up first (as costly). No other mod
+    * of the Conquest or FreeTerraForged packs changes this method.
+    *
+    * @author wgaccel
+    * @reason kept heights without an object per call
+    */
+   @Overwrite
+   public int getHeight(Heightmap.Types type, int x, int z) {
       RegionHeights.Table table = this.wgaccel$heights;
-      if (table == null) {
+      if (table == null && this.wgaccel$features && RegionHeights.on()) {
          ChunkPos pos = this.center.getPos();
          table = this.wgaccel$heights = RegionHeights.table(Mc.x(pos), Mc.z(pos), this.generatingStep.directDependencies().size() - 1);
       }
 
-      int[] heights = RegionHeights.heights(table, type);
-      int i = heights != null ? RegionHeights.index(table, x, z) : -1;
-      if (i < 0) {
-         return;
+      int[] heights = table == null || RegionHeights.off() ? null : RegionHeights.heights(table, type);
+      int i = heights == null ? -1 : RegionHeights.index(table, x, z);
+      int kept = i < 0 ? 0 : heights[i];
+      if (i >= 0 && RegionHeights.known(kept) && (++this.wgaccel$heightCalls & 255) != 0) {
+         return kept;
       }
 
-      int kept = heights[i];
-      if (RegionHeights.known(kept) && (++this.wgaccel$heightCalls & 255) != 0) {
-         cir.setReturnValue(kept);
-         return;
-      }
+      int real = ((WorldGenRegion)(Object)this).getChunk(SectionPos.blockToSectionCoord(x), SectionPos.blockToSectionCoord(z)).getHeight(type, x & 15, z & 15) + 1;
+      if (i >= 0) {
+         if (RegionHeights.known(kept)) {
+            return RegionHeights.verify(kept, real, type, x, z);
+         }
 
-      int real;
-      this.wgaccel$heightRead = true;
-      try {
-         real = this.getHeight(type, x, z);
-      } finally {
-         this.wgaccel$heightRead = false;
-      }
-
-      if (RegionHeights.known(kept)) {
-         real = RegionHeights.verify(kept, real, type, x, z);
-      } else {
          heights[i] = real;
       }
 
-      cir.setReturnValue(real);
+      return real;
    }
 }

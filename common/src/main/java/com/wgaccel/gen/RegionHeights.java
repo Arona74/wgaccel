@@ -46,6 +46,11 @@ public final class RegionHeights {
       }
    }
 
+   /** Turned off by a difference (a plain read: a region's table is made only while the setting is on). */
+   public static boolean off() {
+      return disabled;
+   }
+
    public static boolean on() {
       return !disabled && Config.FAST_REGION_HEIGHTS.get();
    }

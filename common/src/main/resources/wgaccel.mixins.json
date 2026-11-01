@@ -6,6 +6,7 @@
   "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "ChunkStatusTasksMixin",
+    "MultifaceSpreaderMixin",
     "RegionFileVersionMixin",
     "NoiseBasedChunkGeneratorMixin",
     "MultiNoiseBiomeSourceMixin",

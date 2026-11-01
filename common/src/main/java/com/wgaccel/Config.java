@@ -29,6 +29,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_CLIMATE_SEARCH;
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
    public static final Setting<Boolean> FAST_CHUNK_PACK;
+   public static final Setting<Boolean> FAST_MULTIFACE_SPREAD;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -279,6 +280,11 @@ public final class Config {
             "instead of at every change along the section (pack was 3.3% of the CPU in vanilla 26.1.2). The same palette and numbers;",
             "every 256th section is checked against the palette's own answers.")
          .define("fastChunkPack", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_MULTIFACE_SPREAD = Setting.of(builder
+         .comment("Sculk veins (and other many-faced blocks) spreading over all their faces with two plain loops instead of streams,",
+            "the same calls in the same order (the deep dark's sculk patches were 5% of the CPU in a Conquest profile, 40% of it the",
+            "streams). The same world.")
+         .define("fastMultifaceSpread", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

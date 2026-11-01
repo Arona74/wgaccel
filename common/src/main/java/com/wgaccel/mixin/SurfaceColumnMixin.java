@@ -1,7 +1,5 @@
 package com.wgaccel.mixin;
 
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.wgaccel.platform.Mc;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
@@ -12,6 +10,7 @@ import net.minecraft.world.level.chunk.ProtoChunk;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Redirect;
 
 /**
  * Faster CPU surface (the user's pick; vanilla's surface runs on the CPU): SurfaceSystem's block column reads every
@@ -20,6 +19,8 @@ import org.spongepowered.asm.mixin.injection.At;
  * column keeps the chunk's height range and sections from its first read and reads the section directly: the same as
  * ProtoChunk.getBlockState (void air outside the height, air in an air-only section, else the section's block). About
  * 1 in 256 reads (plain ProtoChunks only: an ImposterProtoChunk keeps its blocks elsewhere) is compared with the game's own call; a difference turns this off for good.
+ * A redirect (until 0.61.7 a @WrapOperation, an Operation object per block read); skipped if another mod redirects the
+ * same read.
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceSystem$1")
 public abstract class SurfaceColumnMixin {
@@ -36,11 +37,11 @@ public abstract class SurfaceColumnMixin {
    @Unique
    private int wgaccel$minSection;
 
-   @WrapOperation(method = "getBlock", at = @At(value = "INVOKE",
-      target = "Lnet/minecraft/world/level/chunk/ChunkAccess;getBlockState(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;"))
-   private BlockState wgaccel$fastRead(ChunkAccess chunk, BlockPos pos, Operation<BlockState> original) {
+   @Redirect(method = "getBlock", at = @At(value = "INVOKE",
+      target = "Lnet/minecraft/world/level/chunk/ChunkAccess;getBlockState(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;"), require = 0)
+   private BlockState wgaccel$fastRead(ChunkAccess chunk, BlockPos pos) {
       if (wgaccel$off || chunk.getClass() != ProtoChunk.class || !com.wgaccel.Config.FAST_SURFACE_READS.get()) {
-         return original.call(chunk, pos);
+         return chunk.getBlockState(pos);
       }
 
       if (this.wgaccel$chunk != chunk) {
@@ -61,7 +62,7 @@ public abstract class SurfaceColumnMixin {
       }
 
       if (java.util.concurrent.ThreadLocalRandom.current().nextInt(256) == 0) {
-         BlockState real = original.call(chunk, pos);
+         BlockState real = chunk.getBlockState(pos);
          if (real != state) {
             wgaccel$off = true;
             com.wgaccel.WgaChat.warnOff("WGA fast surface reads off: {} at {} read as {} instead of the game's {}", chunk.getPos(), pos, state, real);
