@@ -30,6 +30,13 @@ repositories {
     mavenCentral()
 }
 
+// The mixins compiled against Mixin 0.17.3 (Fabric Loader 0.19). Its 0.17.4 (Loader 0.20) made @Redirect's `at` an
+// array, so a jar compiled against it writes at = [@At]: Loader 0.19.3's MixinExtras 0.5.4 casts that to one @At and the
+// game stops at its start (OreFeature, a user's Conquest Reforged pack, 1 Nov 2026). One @At is read by both.
+configurations.matching { it.name == 'compileClasspath' }.configureEach {
+    resolutionStrategy.force 'net.fabricmc:sponge-mixin:0.17.3+mixin.0.8.7'
+}
+
 dependencies {
     // Mixin and MixinExtras at compile time (both loaders bring their own in the game).
     if (loomRemap) {
