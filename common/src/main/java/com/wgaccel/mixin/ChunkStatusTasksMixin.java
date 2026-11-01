@@ -25,6 +25,8 @@ public abstract class ChunkStatusTasksMixin {
    private static CompletableFuture<ChunkAccess> wgaccel$structureStarts(WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> cache, ChunkAccess chunk, Operation<CompletableFuture<ChunkAccess>> original) {
       // G5.3: its biomes can be worked out ahead from here (the biome step comes right after structure references).
       com.wgaccel.gen.BiomesAhead.noticed(context.level(), chunk.getPos());
+      // FreeTerraForged's region of it made ahead from here too.
+      com.wgaccel.ftf.FtfRegionsAhead.noticed(context.level(), chunk.getPos());
       return Stats.timeFuture(Stage.STRUCTURE_STARTS, () -> original.call(context, step, cache, chunk));
    }
 

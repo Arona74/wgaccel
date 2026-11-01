@@ -290,6 +290,10 @@ public final class Reporter {
       lines.add("WGA   noise fill per chunk (ms): " + fillParts(run));
       lines.add("WGA   surface per chunk (ms): " + surfaceParts(run));
       lines.add("WGA   main thread per full chunk (ms): " + mainThread(run));
+      if (com.wgaccel.ftf.FtfRegionPrefetch.regions() > 0L) {
+         lines.add("WGA   FreeTerraForged regions: " + com.wgaccel.ftf.FtfRegionPrefetch.regions() + " made; " + com.wgaccel.ftf.FtfRegionsAhead.summary().substring("WGA FreeTerraForged ".length()));
+      }
+
       if (runActiveSeconds > 0.0) {
          lines.add("WGA   cores by thread group: " + groups(runThreads, runActiveSeconds));
       }

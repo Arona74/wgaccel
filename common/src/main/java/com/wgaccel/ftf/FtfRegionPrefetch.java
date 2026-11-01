@@ -40,6 +40,11 @@ public final class FtfRegionPrefetch {
 
    private static volatile java.lang.reflect.Field rawField;
 
+   /** Regions started so far (each RegionFilterGrid.init, whoever made it). */
+   public static long regions() {
+      return REGIONS.sum();
+   }
+
    /** RegionFilterGrid.init(regionChunkX, regionChunkZ, context) starts: its raw chunks made in parallel first. */
    public static void before(int regionChunkX, int regionChunkZ, Object context) {
       if (off || context == null || !com.wgaccel.Config.FTF_REGION_PREFETCH.getAsBoolean()) {

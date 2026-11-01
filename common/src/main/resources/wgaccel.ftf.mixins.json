@@ -23,6 +23,7 @@
     "FtfPlacementScopesMixin",
     "ChunkCellsMixin",
     "RawChunkCacheMixin",
+    "FilteredChunkCacheMixin",
     "RawChunkBlocksMixin",
     "RiverSkipMixin",
     "FastStrataOnceMixin",

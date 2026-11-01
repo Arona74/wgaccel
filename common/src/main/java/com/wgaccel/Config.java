@@ -38,6 +38,8 @@ public final class Config {
    public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
    public static final Setting<Boolean> FTF_FAST_RIVERS;
    public static final Setting<Boolean> FTF_REGION_PREFETCH;
+   public static final Setting<Boolean> FTF_REGIONS_AHEAD;
+   public static final Setting<Integer> FTF_FILTERED_CHUNK_CACHE;
    public static final Setting<Boolean> FAST_CHUNK_COMPRESSION;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
@@ -309,6 +311,12 @@ public final class Config {
             "(r1000, 15,680 chunks) had 22,745 misses, about 6,000 of them chunks made again after being dropped (~4% of the CPU).",
             "The cells are the same either way; 0 keeps FreeTerraForged's own size.")
          .defineInRange("ftfRawChunkCache", 4096, 0, 65536), 4096, 4096).under(CPU_IMPROVEMENTS, 0);
+      FTF_FILTERED_CHUNK_CACHE = Setting.of(builder
+         .comment("FreeTerraForged 1.0.0013 and later: how many chunks' filtered cells (after its terrain filters, about 60 KB a chunk)",
+            "its FilteredChunkCache keeps. It keeps 2,048, and a chunk asked for after its drop makes its whole 4 x 4 region again:",
+            "the 1 Nov 2026 runs (1.0.0018, r1000, about 1,100 regions needed) made 1,479. The cells are the same either way; 0",
+            "keeps FreeTerraForged's own size.")
+         .defineInRange("ftfFilteredChunkCache", 4096, 0, 65536), 4096, 4096).under(CPU_IMPROVEMENTS, 0);
       FTF_FAST_RIVERS = Setting.of(builder
          .comment("FreeTerraForged's river carving without the noise of rivers too far away to touch a column: its carver samples",
             "four noises for every river of a network before finding the column out of reach (~9% of all CPU in a 1.0.0013",
@@ -320,6 +328,15 @@ public final class Config {
             "chunks made in parallel on 4 threads of our own before its one thread walks them, while every other thread wanting",
             "a chunk of the region waits for it. The same cells.")
          .define("ftfRegionPrefetch", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FTF_REGIONS_AHEAD = Setting.of(builder
+         .comment("FreeTerraForged 1.0.0013 and later: its filtered regions (4 x 4 chunks) made ahead on 3 threads of our own, from",
+            "their chunks' structure starts, each thread a different region. FreeTerraForged makes a region on the first thread",
+            "asking for one of its chunks and every other one asking waits: in the 31 Oct 2026 profile (1.0.0018, C2ME 12 workers)",
+            "the look-aheads and workers waited there ~50 s in a 35 s window. Off by default: the 1 Nov 2026 runs (r1000) halved the",
+            "biome step's wait but the time stayed the same (the GPU surface waited longer instead), with ~20% more regions made",
+            "(chunks that only get their structure starts, at the edge of what is generated, and more dropped from FreeTerraForged's",
+            "cache before their chunks came). The same cells.")
+         .define("ftfRegionsAhead", false), false, false).under(CPU_IMPROVEMENTS, false);
       FAST_CHUNK_COMPRESSION = Setting.of(builder
          .comment("Saved chunks compressed in large blocks at zlib's fastest level (1) instead of 8 bytes at a time (Minecraft writes",
             "the chunk straight into the compressor, one native call per number) at its default (6). The same deflate format, so",
