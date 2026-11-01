@@ -361,6 +361,18 @@ public final class SurfaceGpu {
       }
    }
 
+   private static final boolean HOST_TIMING = Boolean.getBoolean("wgaccel.surfaceTiming");
+
+   /** A sampled batch's part ends here: an event (CUDA), or waited for and timed from the host (at, OpenCL), or nothing. */
+   private void mark(long stream, long[] events, int k, boolean timed, long[] at) {
+      if (timed) {
+         GpuSelfTest.check(cuEventRecord(events[k], stream), "cuEventRecord");
+      } else if (at != null) {
+         GpuSelfTest.check(cuStreamSynchronize(stream), "cuStreamSynchronize");
+         at[k] = System.nanoTime();
+      }
+   }
+
    /**
     * G6b: several chunks' surfaces in one launch per kernel on this thread's batch lane, waited for. Per chunk as
     * {@link #run}: its blocks into its out array and whether it may be used (false: a column needs the CPU).
@@ -402,19 +414,20 @@ public final class SurfaceGpu {
          params.put(PARAMS * c, p);
       }
 
-      boolean timed = lane.batches++ % 16 == 0 && GpuBackend.TIMING;
+      boolean sampled = lane.batches++ % 16 == 0;
+      boolean timed = sampled && GpuBackend.TIMING;
+      // Without event timing (OpenCL), -Dwgaccel.surfaceTiming=true times the sampled batches from here, waiting after
+      // each part (slower batches, for finding the costly part only).
+      boolean hostTimed = sampled && !GpuBackend.TIMING && HOST_TIMING;
+      long[] at = hostTimed ? new long[6] : null;
       long submitted = System.nanoTime();
-      if (timed) {
-         GpuSelfTest.check(cuEventRecord(lane.events[0], lane.stream), "cuEventRecord");
-      }
+      this.mark(lane.stream, lane.events, 0, timed, at);
 
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.params, lane.paramsHost, 8L * PARAMS * chunks, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.kinds, lane.kindsHost, blocks * chunks, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.ints, lane.intsHost, 4L * (3 * 256 + 6) * chunks, lane.stream), "copy in");
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.quartsDevice, lane.quartsHost, 4L * lane.quarts * chunks, lane.stream), "copy in");
-      if (timed) {
-         GpuSelfTest.check(cuEventRecord(lane.events[1], lane.stream), "cuEventRecord");
-      }
+      this.mark(lane.stream, lane.events, 1, timed, at);
 
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer jobsArg = stack.mallocPointer(1);
@@ -426,9 +439,7 @@ public final class SurfaceGpu {
          GpuSelfTest.check(cuLaunchKernel(this.strataLayersBatch, (256 * max + layerThreads - 1) / layerThreads, chunks, 1, layerThreads, 1, 1, 0, lane.stream, jobsArg, null),
             "cuLaunchKernel strataLayersBatch");
          GpuSelfTest.check(cuLaunchKernel(this.strataFinishBatch, 256 / columnThreads, chunks, 1, columnThreads, 1, 1, 0, lane.stream, jobsArg, null), "cuLaunchKernel strataFinishBatch");
-         if (timed) {
-            GpuSelfTest.check(cuEventRecord(lane.events[2], lane.stream), "cuEventRecord");
-         }
+         this.mark(lane.stream, lane.events, 2, timed, at);
 
          PointerBuffer pre = stack.mallocPointer(3);
          pre.put(0, stack.pointers(lane.params).address());
@@ -440,9 +451,7 @@ public final class SurfaceGpu {
          } else {
             GpuSelfTest.check(cuLaunchKernel(this.prepassBatch, 1, chunks, 1, 256, 1, 1, 0, lane.stream, pre, null), "cuLaunchKernel surfacePrepassBatch");
          }
-         if (timed) {
-            GpuSelfTest.check(cuEventRecord(lane.events[3], lane.stream), "cuEventRecord");
-         }
+         this.mark(lane.stream, lane.events, 3, timed, at);
 
          PointerBuffer block = stack.mallocPointer(8);
          block.put(0, stack.pointers(lane.params).address());
@@ -455,17 +464,13 @@ public final class SurfaceGpu {
          block.put(7, stack.pointers(this.np).address());
          GpuSelfTest.check(cuLaunchKernel(this.blocksBatch, (256 * maxHeight + 255) / 256, chunks, 1, 256, 1, 1, 0, lane.stream, block, null),
             "cuLaunchKernel surfaceBlocksBatch");
-         if (timed) {
-            GpuSelfTest.check(cuEventRecord(lane.events[4], lane.stream), "cuEventRecord");
-         }
+         this.mark(lane.stream, lane.events, 4, timed, at);
       }
 
       GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.flagsHost, lane.special, 4L * 256 * chunks, lane.stream), "copy out");
       GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.flagsHost + 4L * 256 * chunks, lane.unsure, 4L * 256 * chunks, lane.stream), "copy out");
       GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.outHost, lane.out, 2L * blocks * chunks, lane.stream), "copy out");
-      if (timed) {
-         GpuSelfTest.check(cuEventRecord(lane.events[5], lane.stream), "cuEventRecord");
-      }
+      this.mark(lane.stream, lane.events, 5, timed, at);
 
       long started = 0L;
       long finished = 0L;
@@ -489,6 +494,14 @@ public final class SurfaceGpu {
       }
 
       GpuSelfTest.check(cuStreamSynchronize(lane.stream), "cuStreamSynchronize");
+      if (hostTimed) {
+         for (int i = 0; i < 5; i++) {
+            this.batchTimings[i + 1].add((at[i + 1] - at[i]) / 1000L / chunks);
+         }
+
+         this.batchTimings[0].increment();
+      }
+
       if (timed) {
          this.hostTimings[5].add(System.nanoTime() - finished);
          this.hostTimings[0].increment();

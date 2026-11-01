@@ -554,10 +554,11 @@ public final class Config {
          .defineInRange("gpuServiceThreads", 3, 1, 8), 3, 3);
       GPU_STREAM_PRIORITIES = Setting.of(builder
          .comment("GPU work a generation thread waits for runs at the card's highest priority, the look-ahead's (nobody waits yet)",
-            "at its lowest (the same blocks either way; only the order the card runs them in changes).")
+            "at its lowest (the same blocks either way; only the order the card runs them in changes). CUDA and HIP only: OpenCL's",
+            "priority hints gave wrong results on AMD's driver (1 Nov 2026), so its queues have none.")
          .define("gpuStreamPriorities", true), true, true);
       GPU_STREAM_POOL = Setting.custom(builder
-         .comment("AMD (HIP) only: how many GPU streams each of the 3 priorities shares (0: one per thread and GPU part, as until",
+         .comment("AMD (HIP) and OpenCL: how many GPU streams (OpenCL queues) each of the 3 priorities shares (0: one per thread and GPU part, as until",
             "0.18.0). Each HIP stream keeps RAM of its own: ~16 MB, plus scratch for the largest kernel run on it (~40-80 MB per",
             "KB a thread spills; the biome search spills 1.1 KB). RX 9070 XT, HIP 6.4: a stream per thread and part was ~3 GB",
             "more RAM than without the mod. The card has only a few hardware queues, so sharing costs little. Read when the GPU",

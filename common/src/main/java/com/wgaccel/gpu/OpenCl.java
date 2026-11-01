@@ -454,13 +454,19 @@ public final class OpenCl {
 
    // ---- Streams: in-order command queues ----
 
+   private static final boolean PRIORITY_HINTS = Boolean.getBoolean("wgaccel.openclPriorities");
+
    /** A new in-order queue; tier 0 (waited for) to 2 (background) as {@link GpuStreams}, -1 none. */
    static long createQueue(int tier) {
       init();
       try (MemoryStack stack = MemoryStack.stackPush()) {
          IntBuffer error = stack.mallocInt(1);
          long queue = 0L;
-         if (tier >= 0 && chosen.priorities() && GpuStreams.priorities) {
+         // No priority hints unless asked for (-Dwgaccel.openclPriorities=true, for diagnosis): with them, AMD's driver
+         // gave wrong results from every part as soon as queues of different priorities ran at once (1 Nov 2026, RX 9070
+         // XT, driver 3679.0: gpuStreamPool 0 or 8 failed every check within seconds; the default 2, sharing queues, rarely,
+         // once impossible fill codes). Without them the same runs checked IDENTICAL and were as fast (FreeTerraForged r1000 47 s).
+         if (tier >= 0 && chosen.priorities() && GpuStreams.priorities && PRIORITY_HINTS) {
             int priority = tier == 0 ? KHRPriorityHints.CL_QUEUE_PRIORITY_HIGH_KHR : tier == 2 ? KHRPriorityHints.CL_QUEUE_PRIORITY_LOW_KHR
                : KHRPriorityHints.CL_QUEUE_PRIORITY_MED_KHR;
             queue = CL20.clCreateCommandQueueWithProperties(context, chosen.id(), stack.longs(KHRPriorityHints.CL_QUEUE_PRIORITY_KHR, priority, 0L), error);
