@@ -53,6 +53,11 @@ public final class BiomeDecoration {
 
    @SuppressWarnings("unchecked")
    public static BiomeDecoration of(RandomState random, BiomeTable table) throws ReflectiveOperationException {
+      if (!com.wgaccel.gen.BiomeInputs.depthPolicy()) {
+         // 1.0.0023's Layout.findValue: a cave biome per 2D region and depth band, ranked by climate distance (no 3D sites).
+         throw new IllegalStateException("FreeTerraForged 1.0.0023's cave-biome layout has no GPU version yet (cave biomes and rivers stay on the CPU)");
+      }
+
       Object plan = BiomeTable.call(random.sampler(), "getWorldgenPlan");
       Object decoration = BiomeTable.call(plan, "selectionDecoration");
       // C1: several providers (each decorated with its own Layout and river table) and later stages (run on the CPU after

@@ -53,6 +53,8 @@ public final class SurfaceCodegen {
     * and 5 (12 in deserts) / 3, deepslate as is. Same class and fields, so told by FreeTerraForged's version.
     */
    private final boolean strata14 = ftfAtLeast("1.0.0014");
+   /** FreeTerraForged 1.0.0023's FastStrataSequenceRule: its deepslate zone down to 5 above the world's lowest y, not -59. */
+   private final boolean strata23 = ftfAtLeast("1.0.0023");
    /** The prepass's flags of the column's first stone's biome (2 badlands, 4 desert): its expression of fb, or none. */
    private String firstFlags = null;
 
@@ -655,8 +657,9 @@ public final class SurfaceCodegen {
             Object strataSource = field(node, "strata");
             String strata = strataSource == null ? "-1" : this.rule(strataSource) + "(c)";
             int deepslate = this.state(net.minecraft.world.level.block.Blocks.DEEPSLATE.defaultBlockState());
+            int bedrockY = this.strata23 ? this.context.getMinGenY() + 5 : -59;
             body = this.strata14 ? line("if ((c.fastFlags & 1) == 0) {")
-               + line("    if (c.y <= 0 && c.y > -59 && c.stoneAbove > 10 && (c.stoneBelow <= 0 || c.stoneBelow > 4)) {")
+               + line("    if (c.y <= 0 && c.y > %d && c.stoneAbove > 10 && (c.stoneBelow <= 0 || c.stoneBelow > 4)) {", bedrockY)
                + line("        int v = %s;", strata)
                + line("        return v >= 0 ? v : %d;", deepslate)
                + line("    }")

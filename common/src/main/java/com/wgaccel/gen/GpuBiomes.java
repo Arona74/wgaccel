@@ -217,7 +217,10 @@ public final class GpuBiomes {
       }
 
       com.wgaccel.gpu.BiomeDecoration decoration = null;
-      if (!vanilla && Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.OFF) {
+      if (!vanilla && Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.OFF && !BiomeInputs.depthPolicy()) {
+         WorldgenAccelerator.LOG.info("WGA GPU biome decoration: off with FreeTerraForged 1.0.0023 and later (its new cave-biome layout has no GPU version yet;"
+            + " cave biomes and rivers on the CPU)");
+      } else if (!vanilla && Config.GPU_BIOME_DECORATION.get() != Config.GpuFilterMode.OFF) {
          try {
             decoration = com.wgaccel.gpu.BiomeDecoration.of(random, table);
             WorldgenAccelerator.LOG.info(String.format(Locale.ROOT,
@@ -503,6 +506,7 @@ public final class GpuBiomes {
          int column = cell & 15;
          int read = current.inputs.minimumSurface[column];
          int now = envelopeNow(current, column);
+         // FreeTerraForged 1.0.0023: its climate depth's surface heights in place of the envelope (BiomeInputs).
          if (othersSame && now != read) {
             // Only the depth, and FreeTerraForged's own surface envelope gave this column another minimum since the GPU's
             // inputs were read (its cache keeps one answer per slot and works a dropped quart out again from cells filtered

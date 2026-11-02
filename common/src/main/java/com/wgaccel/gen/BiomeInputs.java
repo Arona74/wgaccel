@@ -38,8 +38,14 @@ public class BiomeInputs {
 
    private static volatile Method endDepthMethod;
    private static volatile Method minimumMethod;
+   /** ClimateDepthFunction.deferredLookup, CellSampler.getCachedOrLookup, WorldLookup.getContext (FreeTerraForged 1.0.0023). */
+   private static volatile Method[] climateDepthMethods;
+   /** Whether FreeTerraForged's climate sampler still changes a target's depth (UndergroundBiomeBanding.allowsCaveBiome, before 1.0.0023). */
+   private static volatile Boolean depthPolicy;
    /** The surface context's envelope and the context, from the last read with banding (for {@link #minimumSurfaces}). */
    private static volatile Object[] lastEnvelope;
+   /** FreeTerraForged 1.0.0023's climate depth function from the last read (for {@link #minimumSurfaces} without banding). */
+   private static volatile Object lastClimateDepth;
 
    /** Reads everything for the chunk from its noise chunk and the climate sampler in use. */
    public void read(ChunkAccess chunk, Object sampler, List<Object> cellSamplers) throws ReflectiveOperationException {
@@ -50,24 +56,29 @@ public class BiomeInputs {
          throw new IllegalStateException("the chunk has no noise chunk at its first climate sample");
       }
 
-      this.cells(noise, cellSamplers);
       this.policy(sampler);
+      this.cells(noise, cellSamplers);
    }
 
    /** The same for a chunk not made yet (the biome look-ahead): its stand-in noise chunk and a climate sampler's policy. */
    public void read(int chunkX, int chunkZ, NoiseChunk noise, Object sampler, List<Object> cellSamplers) throws ReflectiveOperationException {
       this.chunkX = chunkX;
       this.chunkZ = chunkZ;
-      this.cells(noise, cellSamplers);
       this.policy(sampler);
+      this.cells(noise, cellSamplers);
    }
 
-   private void cells(NoiseChunk noise, List<Object> samplers) {
+   private void cells(NoiseChunk noise, List<Object> samplers) throws ReflectiveOperationException {
       if (this.cells == null || this.cells.length < Math.max(1, samplers.size() * 289)) {
          this.cells = new double[Math.max(1, samplers.size() * 289)];
       }
 
       for (int k = 0; k < samplers.size(); k++) {
+         if (Names.simpleName(samplers.get(k).getClass()).equals("ClimateDepthFunction")) {
+            this.surfaceHeights(samplers.get(k), k);
+            continue;
+         }
+
          DensityFunction wrapped = ((NoiseChunkAccessor)noise).wgaccel$wrapped().get((DensityFunction)samplers.get(k));
          if (wrapped == null) {
             throw new IllegalStateException("the noise chunk has no wrapped form of CellSampler " + samplers.get(k));
@@ -77,6 +88,54 @@ public class BiomeInputs {
             for (int lz = 0; lz < 16; lz += 4) {
                this.cells[k * 289 + lx * 17 + lz] = wrapped.compute(new DensityFunction.SinglePointContext(this.chunkX + lx, 0, this.chunkZ + lz));
             }
+         }
+      }
+   }
+
+   /**
+    * FreeTerraForged 1.0.0023's climate depth's surface heights on the chunk's quart columns, also kept as the chunk's 16
+    * minimum surfaces: FreeTerraForged's answer for a column can change (as its envelope's could), and a result made with
+    * other heights is not used ({@link #minimumSurfaces}).
+    */
+   private void surfaceHeights(Object climateDepth, int k) throws ReflectiveOperationException {
+      surfaceHeights(climateDepth, this.chunkX, this.chunkZ, this.minimumSurface);
+      lastClimateDepth = climateDepth;
+      for (int qx = 0; qx < 4; qx++) {
+         for (int qz = 0; qz < 4; qz++) {
+            this.cells[k * 289 + qx * 4 * 17 + qz * 4] = this.minimumSurface[qx * 4 + qz];
+         }
+      }
+   }
+
+   /**
+    * The climate depth's surface height per quart column (qx * 4 + qz) as it works it out on this thread now: levels.scale
+    * of the height of CellSampler.getCachedOrLookup(lookup, x, z, false), its deferred lookup's. That is the filtered
+    * cell when its chunk is in the filtered chunk cache, else the raw one, kept per thread: another answer by timing.
+    */
+   private static void surfaceHeights(Object climateDepth, int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
+      Method[] methods = climateDepthMethods;
+      if (methods == null) {
+         Class<?> cellSampler = Class.forName("etcodehome.freeterraforged.world.worldgen.densityfunction.CellSampler", false, climateDepth.getClass().getClassLoader());
+         Class<?> lookup = Class.forName("etcodehome.freeterraforged.world.worldgen.cell.heightmap.WorldLookup", false, climateDepth.getClass().getClassLoader());
+         methods = new Method[] {climateDepth.getClass().getMethod("deferredLookup"), cellSampler.getMethod("getCachedOrLookup", lookup, int.class, int.class, boolean.class),
+            lookup.getMethod("getContext")};
+         climateDepthMethods = methods;
+      }
+
+      Object lookup = ((java.util.function.Supplier<?>)methods[0].invoke(climateDepth)).get();
+      Object context = lookup == null ? null : methods[2].invoke(lookup);
+      Object levels = context == null ? null : field(context, "levels");
+      if (levels == null) {
+         // Its compute gives 0 everywhere then, which the GPU's version does not.
+         throw new IllegalStateException("FreeTerraForged's climate depth has no world lookup yet");
+      }
+
+      etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels scale = (etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels)levels;
+      for (int qx = 0; qx < 4; qx++) {
+         for (int qz = 0; qz < 4; qz++) {
+            etcodehome.freeterraforged.world.worldgen.cell.Cell cell = (etcodehome.freeterraforged.world.worldgen.cell.Cell)methods[1].invoke(null, lookup, chunkX + qx * 4,
+               chunkZ + qz * 4, false);
+            out[qx * 4 + qz] = scale.scale(cell.height);
          }
       }
    }
@@ -92,7 +151,7 @@ public class BiomeInputs {
 
       Object policy = call(semantics, "policy");
       Object preset = call(semantics, "preset");
-      if (!(Boolean)call(policy, "appliesUndergroundBanding") || preset == null) {
+      if (!(Boolean)call(policy, "appliesUndergroundBanding") || preset == null || !depthPolicy()) {
          return;
       }
 
@@ -143,6 +202,29 @@ public class BiomeInputs {
       minimumSurfaces(envelope, context, minimum, this.chunkX, this.chunkZ, this.minimumSurface);
    }
 
+   /**
+    * Whether the climate sampler sets a target's depth to the surface's where no cave biome may be (UndergroundBiomeClimatePolicy.apply
+    * through UndergroundBiomeBanding.allowsCaveBiome). FreeTerraForged 1.0.0023 keeps every depth (its apply passes the target
+    * through, the cave biomes being chosen later in the selection), and has no allowsCaveBiome.
+    */
+   public static boolean depthPolicy() {
+      Boolean known = depthPolicy;
+      if (known == null) {
+         boolean found = false;
+         try {
+            Class<?> banding = Class.forName("etcodehome.freeterraforged.world.worldgen.biome.UndergroundBiomeBanding", false, BiomeInputs.class.getClassLoader());
+            for (Method each : banding.getDeclaredMethods()) {
+               found |= each.getName().equals("allowsCaveBiome");
+            }
+         } catch (ClassNotFoundException | LinkageError absent) {
+         }
+
+         depthPolicy = known = found;
+      }
+
+      return known;
+   }
+
    private static void minimumSurfaces(Object envelope, Object context, Method minimum, int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
       int quartX = chunkX >> 2;
       int quartZ = chunkZ >> 2;
@@ -158,8 +240,15 @@ public class BiomeInputs {
     * has run yet. FreeTerraForged 1.0.0013's later builds give a quart another answer depending on when and on which
     * thread it is asked (BiomeSurfaceEnvelope: a per-thread table before a shared one, filled ahead from chunk grids with
     * the full minimum, on demand with a sampled one), so a result made ahead is used only if these are still the same.
+    * FreeTerraForged 1.0.0023 (no envelope in the depth): its climate depth's surface heights, which can change too.
     */
    public static boolean minimumSurfaces(int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
+      Object climateDepth = lastClimateDepth;
+      if (climateDepth != null) {
+         surfaceHeights(climateDepth, chunkX, chunkZ, out);
+         return true;
+      }
+
       Object[] last = lastEnvelope;
       Method minimum = minimumMethod;
       if (last == null || minimum == null) {

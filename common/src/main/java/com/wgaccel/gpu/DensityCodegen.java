@@ -1499,6 +1499,32 @@ public final class DensityCodegen {
 
             yield line("return dc_cell(c, %d);", index);
          }
+         // FreeTerraForged 1.0.0023's climate depth (ClimateDepthFunction.compute): 0 at the column's surface height, 1.5
+         // at the world's bottom and -1.5 at its top. The surface height comes in as a cell value (the caller works it out
+         // per column: BiomeInputs), so only single points (the biome climate) have it.
+         case "ClimateDepthFunction" -> {
+            if (this.mode != Mode.POINT) {
+               throw new Unsupported("ClimateDepthFunction outside the biome climate");
+            }
+
+            int index = this.cellSamplers.indexOf(node);
+            if (index < 0) {
+               index = this.cellSamplers.size();
+               this.cellSamplers.add(node);
+            }
+
+            int worldDepth = (Integer)f.get("worldDepth");
+            int worldHeight = (Integer)f.get("worldHeight");
+            yield line("int s = (int)dc_cell(c, %d);", index)
+               + line("if (c.y <= s) {")
+               + line("    int span = s + %d;", worldDepth)
+               + line("    if (span <= 0) return 1.5;")
+               + line("    return fmin(fmax((double)(s - c.y) / (double)span, 0.0), 1.0) * 1.5;")
+               + line("}")
+               + line("int span = %d - s;", worldHeight)
+               + line("if (span <= 0) return -1.5;")
+               + line("return -(fmin(fmax((double)(c.y - s) / (double)span, 0.0), 1.0) * 1.5);");
+         }
          // C2.5: the End's islands (DensityFunctions.EndIslandDensityFunction.compute), block x and z divided by 8.
          case "EndIslandDensityFunction" -> line("return ((double)%s(c.np + %d, c.x / 8, c.z / 8) - 8.0) / 128.0;", this.endIslands(), this.endIslandNoise(f.get("islandNoise")));
          case "ClampToNearestUnit" -> {

@@ -227,11 +227,33 @@ public final class FtfRawBlocks {
       }
 
       ConcurrentLinkedQueue<Long> queue = (ConcurrentLinkedQueue<Long>)field(rawCache, "evictionQueue").get(rawCache);
-      AtomicInteger count = (AtomicInteger)field(rawCache, "size").get(rawCache);
       queue.offer(key);
       int own = ownSize(rawCache);
       int wanted = Config.FTF_RAW_CHUNK_CACHE.getAsInt();
       int max = wanted > 0 ? Math.max(own, wanted) : own;
+      AtomicInteger count = null;
+      if (counted) {
+         try {
+            count = (AtomicInteger)field(rawCache, "size").get(rawCache);
+         } catch (NoSuchFieldException uncounted) {
+            counted = false;
+         }
+      }
+
+      if (count == null) {
+         // FreeTerraForged 1.0.0023: no counter, the oldest dropped while the map is past its size.
+         while (cache.size() > max) {
+            Long oldest = queue.poll();
+            if (oldest == null) {
+               break;
+            }
+
+            cache.remove(oldest);
+         }
+
+         return;
+      }
+
       if (count.incrementAndGet() > max) {
          Long oldest = queue.poll();
          if (oldest != null) {
@@ -242,6 +264,8 @@ public final class FtfRawBlocks {
    }
 
    private static volatile int ownSize;
+   /** Whether the cache keeps its own count (its size field, before 1.0.0023). */
+   private static volatile boolean counted = true;
 
    /** FreeTerraForged's own RawChunkCache.MAX_ENTRIES (1,024, 2,048 from its 740a69e3 build), as RawChunkCacheMixin raises it. */
    private static int ownSize(Object rawCache) {
