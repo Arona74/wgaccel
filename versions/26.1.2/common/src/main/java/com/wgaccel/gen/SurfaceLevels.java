@@ -33,8 +33,12 @@ public final class SurfaceLevels {
    private final WeakReference<RandomState> owner;
    private final AtomicLongArray table = new AtomicLongArray(1 << BITS);
 
+   /** Whether this world's levels are the same from every chunk ({@link #shared(RandomState)}). */
+   private final boolean shared;
+
    private SurfaceLevels(RandomState owner) {
       this.owner = new WeakReference<>(owner);
+      this.shared = shared(owner);
    }
 
    /** The table of this world's noise chunks, null when this is off. */
@@ -45,7 +49,7 @@ public final class SurfaceLevels {
 
       SurfaceLevels levels = last;
       if (levels != null && levels.owner.get() == random) {
-         return levels;
+         return levels.shared ? levels : null;
       }
 
       synchronized (WORLDS) {
@@ -53,7 +57,31 @@ public final class SurfaceLevels {
       }
 
       last = levels;
-      return levels;
+      return levels.shared ? levels : null;
+   }
+
+   /**
+    * Whether the world's preliminary surface level reads no cells (Conquest ReTerraForged's CellSampler): a noise chunk
+    * reads its own chunk's cells and the shared lookup's past its edges, so a column's level depends on the chunk working
+    * it out (every Conquest run turned this off at its first check, until then handing a few chunks another chunk's level).
+    */
+   private static boolean shared(RandomState random) {
+      boolean[] cells = new boolean[1];
+      try {
+         random.router().preliminarySurfaceLevel().mapAll(function -> {
+            cells[0] |= com.wgaccel.gpu.DensityCodegen.kind(function).equals("CellSampler");
+            return function;
+         });
+      } catch (RuntimeException failure) {
+         WorldgenAccelerator.LOG.info("WGA surface levels: off in this world (its preliminary surface level could not be read: {})", failure.toString());
+         return false;
+      }
+
+      if (cells[0]) {
+         WorldgenAccelerator.LOG.info("WGA surface levels: off in this world (its preliminary surface level reads each chunk's own terrain cells)");
+      }
+
+      return !cells[0];
    }
 
    /** Whether this is still on (a difference turns it off for every world). */
