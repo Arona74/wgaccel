@@ -291,7 +291,8 @@ public final class Reporter {
       lines.add("WGA   surface per chunk (ms): " + surfaceParts(run));
       lines.add("WGA   main thread per full chunk (ms): " + mainThread(run));
       if (com.wgaccel.ftf.FtfRegionPrefetch.regions() > 0L) {
-         lines.add("WGA   FreeTerraForged regions: " + com.wgaccel.ftf.FtfRegionPrefetch.regions() + " made; " + com.wgaccel.ftf.FtfRegionsAhead.summary().substring("WGA FreeTerraForged ".length()));
+         lines.add("WGA   FreeTerraForged regions: " + com.wgaccel.ftf.FtfRegionPrefetch.regions() + " made; " + com.wgaccel.ftf.FtfRegionsAhead.summary().substring("WGA FreeTerraForged ".length())
+            + com.wgaccel.ftf.FtfCoasts.summary());
       }
 
       if (runActiveSeconds > 0.0) {

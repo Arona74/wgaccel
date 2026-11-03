@@ -66,6 +66,8 @@ final class Improvements {
          "FreeTerraForged 1.0.0013 and later: its 4 x 4 chunk regions made ahead on 3 threads, each a different one, instead of chunks waiting for one thread.", null),
       new Improvement(Config.FAST_CHUNK_COMPRESSION, "Fast chunk compression",
          "Saved chunks compressed in large blocks at zlib's fastest level: less CPU while saving, region files somewhat larger, the same world.", null),
+      new Improvement(Config.FTF_FAST_CONTINENTS, "Fast continents",
+         "FreeTerraForged 1.0.0024 and later: the coasts a column measures its distance to gathered once per continent instead of for every column.", null),
       new Improvement(Config.FTF_FAST_RIVERS, "Fast rivers", "FreeTerraForged's river carving skips the rivers too far away to touch a column.", null),
       new Improvement(Config.TILE_CACHE_TILES, "Bigger tile cache",
          "FreeTerraForged 1.0.0010 (tiles): keeps more of its terrain tiles (4 to 6 MB each) than its own 4 to 32, so they are not made again and again.",
