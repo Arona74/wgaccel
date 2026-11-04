@@ -1617,6 +1617,25 @@ public final class DensityCodegen {
    }
 
    /** As {@link #noise} for a NormalNoise itself (the surface rules' noises), packed once into the same arrays. */
+   /**
+    * A long (a world's seed) kept in the noise data as two exact halves, low int then high int; the code reads it with
+    * VanillaKernels' mc_long_data(nd + offset). Written into the code as text, every world's seed made another program, so
+    * the compiled one kept for it never matched a new world (NVIDIA's OpenCL compiler: 2 minutes before the spawn area).
+    */
+   /** Ints (a world's badlands bands) kept in the int data after the noises' permutations, for the same reason; their offset. */
+   public int intData(int[] values) {
+      int at = this.permutations.size();
+      this.permutations.addElements(at, values);
+      return at;
+   }
+
+   public int longData(long value) {
+      int at = this.noiseData.size();
+      this.noiseData.add((double)(int)value);
+      this.noiseData.add((double)(int)(value >>> 32));
+      return at;
+   }
+
    public String normalNoise(Object noise) throws ReflectiveOperationException {
       int[] offsets = this.noises.get(noise);
       if (offsets == null) {

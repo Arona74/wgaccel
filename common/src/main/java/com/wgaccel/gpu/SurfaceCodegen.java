@@ -732,14 +732,16 @@ public final class SurfaceCodegen {
    private String bandlands() throws ReflectiveOperationException {
       BlockState[] bands = (BlockState[])field(this.system, "clayBands");
       String noise = this.noises.normalNoise(field(this.system, "clayBandsOffsetNoise"));
-      StringBuilder table = new StringBuilder("__device__ const int bands").append(this.next).append('[').append(bands.length).append("] = {");
+      // The bands come from the world's seed: data (DensityCodegen.intData), not a table in the code, so the program is
+      // the same for every world and its compiled form is kept (VanillaKernels.mc_long_data).
+      int[] states = new int[bands.length];
       for (int i = 0; i < bands.length; i++) {
-         table.append(i == 0 ? "" : ", ").append(this.state(bands[i]));
+         states[i] = this.state(bands[i]);
       }
 
-      this.code.append(table).append("};\n");
+      int at = this.noises.intData(states);
       return line("int y = ((c.y % 192) + 192) % 192 + 3840;") + line("int i = (int)sf_round(%s, (double)c.x, 0.0, (double)c.z) * 4.0);", noise)
-         + line("return bands%d[(y + i + %d) %% %d];", this.next, bands.length, bands.length);
+         + line("return c.np[%d + (y + i + %d) %% %d];", at, bands.length, bands.length);
    }
 
    private String condition(Object node) throws ReflectiveOperationException {
@@ -787,7 +789,8 @@ public final class SurfaceCodegen {
 
             yield line("int k = c.y;") + line("if (k <= %d) return true;", i) + line("if (k >= %d) return false;", j)
                + line("double d0 = sf_map((double)k, (double)%d, (double)%d, 1.0, 0.0);", i, j)
-               + line("Xrs r = mc_random_at(%dLL, %dLL, c.x, k, c.z);", (Long)field(factory, "seedLo"), (Long)field(factory, "seedHi"))
+               + line("Xrs r = mc_random_at(mc_long_data(c.nd + %d), mc_long_data(c.nd + %d), c.x, k, c.z);", this.noises.longData((Long)field(factory, "seedLo")),
+                  this.noises.longData((Long)field(factory, "seedHi")))
                + line("return (double)mc_next_float(r) < d0;");
          }
          case "SurfaceRules$YConditionSource" -> line("return c.y + (%s ? c.stoneAbove : 0) >= %d + c.depth * %d;", (Boolean)field(node, "addStoneDepth"),

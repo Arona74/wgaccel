@@ -390,6 +390,11 @@ public final class VanillaKernels {
           u = u * u * 42317861ull + u * 11ull;
           return ((long long)u) >> 16;
       }
+      // A long kept in a noise data array as two exact halves (DensityCodegen.longData: low int, high int), so a world's
+      // seed is data, not text: the program, and the compiled one kept for it, the same for every world.
+      __device__ __forceinline__ long long mc_long_data(const double* p) {
+          return (long long)(((unsigned long long)(unsigned int)(int)p[1] << 32) | (unsigned long long)(unsigned int)(int)p[0]);
+      }
       __device__ __forceinline__ Xrs mc_random_at(long long seedLo, long long seedHi, int x, int y, int z) {
           Xrs r;
           r.lo = (unsigned long long)(mc_get_seed(x, y, z) ^ seedLo);

@@ -26,8 +26,9 @@ public final class SurfaceInputs {
    private final String helpers;
    private final String surfaceNoise;
    private final String secondaryNoise;
-   private final long seedLo;
-   private final long seedHi;
+   /** The surface noise random's seeds as code reading them from this object's noise data (DensityCodegen.longData). */
+   private final String seedLo;
+   private final String seedHi;
 
    public SurfaceInputs(Object surfaceSystem, Registry<Biome> biomes, long zoomSeed) throws ReflectiveOperationException {
       int count = biomes.size();
@@ -47,8 +48,8 @@ public final class SurfaceInputs {
          throw new DensityCodegen.Unsupported("surface positional random " + Names.className(random.getClass()));
       }
 
-      long seedLo = (Long)SurfaceCodegen.field(random, "seedLo");
-      long seedHi = (Long)SurfaceCodegen.field(random, "seedHi");
+      String seedLo = "mc_long_data(nd + " + this.noises.longData((Long)SurfaceCodegen.field(random, "seedLo")) + ")";
+      String seedHi = "mc_long_data(nd + " + this.noises.longData((Long)SurfaceCodegen.field(random, "seedHi")) + ")";
       int temperatureNoise = this.packSimplex(staticField(Biome.class, "TEMPERATURE_NOISE"));
       int frozenNoise = this.packSimplex(staticField(Biome.class, "FROZEN_TEMPERATURE_NOISE"));
       int infoNoise = this.packSimplex(staticField(Biome.class, "BIOME_INFO_NOISE"));
@@ -90,7 +91,7 @@ public final class SurfaceInputs {
    }
 
    /** The CUDA source with its constants (also built by the standalone check with stand-in values). */
-   public static String source(double f2, double g2, int frozenNoise, int infoNoise, int temperatureNoise, String surfaceNoise, long seedLo, long seedHi,
+   public static String source(double f2, double g2, int frozenNoise, int infoNoise, int temperatureNoise, String surfaceNoise, String seedLo, String seedHi,
          String secondaryNoise) {
       return VanillaKernels.NOISE + VanillaKernels.RANDOM + helpers(f2, g2, frozenNoise, infoNoise, temperatureNoise) + """
          extern "C" __global__ void surfaceInputs(const int* calls, int count, const int* grid, const int* g, long long zoomSeed, const int* heights,
@@ -120,7 +121,7 @@ public final class SurfaceInputs {
                  steep = abs(hw - he) >= 4 ? 1 : 0;
              }
              double d0 = %1$s, (double)x, 0.0, (double)z);
-             Xrs rnd = mc_random_at(%2$dLL, %3$dLL, x, 0, z);
+             Xrs rnd = mc_random_at(%2$s, %3$s, x, 0, z);
              double next = (double)(mc_next_long(rnd) >> 11) * (double)1.110223E-16f;
              double v = d0 * 2.75 + 3.0 + next * 0.25;
              int depth = isnan(v) ? 0 : (v >= 2147483647.0 ? 2147483647 : (v <= -2147483648.0 ? (-2147483647 - 1) : (int)v));
@@ -321,7 +322,7 @@ public final class SurfaceInputs {
    public String surfaceDepthCode() {
       return """
          double sd0 = %s, (double)x, 0.0, (double)z);
-         Xrs rnd = mc_random_at(%dLL, %dLL, x, 0, z);
+         Xrs rnd = mc_random_at(%s, %s, x, 0, z);
          double sdn = (double)(mc_next_long(rnd) >> 11) * (double)1.110223E-16f;
          double sdv = sd0 * 2.75 + 3.0 + sdn * 0.25;
          int depth = isnan(sdv) ? 0 : (sdv >= 2147483647.0 ? 2147483647 : (sdv <= -2147483648.0 ? (-2147483647 - 1) : (int)sdv));

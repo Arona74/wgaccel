@@ -117,11 +117,39 @@ public final class GpuBiomes {
     * latitude climate (2026-10-27: every checked chunk differed in those two), so such a world keeps the CPU's biomes.
     */
    static String climateSamplerMods() {
+      return hookingMods(Climate.Sampler.class);
+   }
+
+   /**
+    * In a FreeTerraForged world, the mods whose code runs inside the calls the GPU biomes stand in for: its climate
+    * sample (WorldgenPlans$SamplerDecoration.sample), table search (ProviderSelection.resolveRequired) and decoration
+    * (SelectionDecoration.apply), FreeTerraForged's and wgaccel's own left out. The Still Life FTF bridge changes the
+    * sample's target with a @ModifyReturnValue (4 Nov 2026: a user's world got biomes in the wrong places, the bridge's
+    * change only reaching the 1 chunk in 64 the GPU's biomes are checked in), so such a world keeps the CPU's biomes.
+    */
+   static String ftfSelectionMods() {
       java.util.TreeSet<String> mods = new java.util.TreeSet<>();
-      for (java.lang.reflect.Method method : Climate.Sampler.class.getDeclaredMethods()) {
-         String[] parts = method.getName().split("\\$");
+      for (String name : new String[] {"WorldgenPlans$SamplerDecoration", "WorldgenPlans$ProviderSelection", "WorldgenPlans$SelectionDecoration"}) {
+         try {
+            String found = hookingMods(Names.forName("etcodehome.freeterraforged.world.worldgen.runtime." + name));
+            if (!found.isEmpty()) {
+               mods.addAll(java.util.List.of(found.split(", ")));
+            }
+         } catch (ClassNotFoundException | LinkageError absent) {
+         }
+      }
+
+      return String.join(", ", mods);
+   }
+
+   /** The mods whose mixin handlers are merged into the class, wgaccel's and FreeTerraForged's own left out. */
+   private static String hookingMods(Class<?> type) {
+      java.util.TreeSet<String> mods = new java.util.TreeSet<>();
+      for (java.lang.reflect.Method method : type.getDeclaredMethods()) {
+         String name = method.getName();
+         String[] parts = name.split("\\$");
          if (parts.length >= 4 && (parts[0].equals("handler") || parts[0].startsWith("wrap") || parts[0].startsWith("redirect") || parts[0].startsWith("modify"))
-            && !parts[2].equals("wgaccel")) {
+            && !parts[2].equals("wgaccel") && !name.contains("$wgaccel$") && !parts[2].equals("freeterraforged") && !name.contains("$freeterraforged$")) {
             mods.add(parts[2]);
          }
       }
@@ -148,6 +176,13 @@ public final class GpuBiomes {
       String climateMods = climateSamplerMods();
       if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !climateMods.isEmpty()) {
          WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (Minecraft's climate sampling is changed by {}, which the GPU's climate does not follow)", climateMods);
+         return;
+      }
+
+      String selectionMods = Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") ? ftfSelectionMods() : "";
+      if (!selectionMods.isEmpty()) {
+         WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (FreeTerraForged's biome choice is changed by {}, which the GPU's biomes do not follow)",
+            selectionMods);
          return;
       }
 
@@ -763,6 +798,21 @@ public final class GpuBiomes {
       if (LOGGED.incrementAndGet() <= 12) {
          WorldgenAccelerator.LOG.warn("WGA GPU biomes check: chunk {}: {}", current.chunk == null ? "?" : current.chunk.getPos(), what);
       }
+
+      differed(current);
+   }
+
+   /**
+    * A difference in a checked chunk turns the GPU biomes off for this game, as the noise fill does (the checked chunk
+    * itself keeps the CPU's biomes): before, it was only counted, so a mod changing FreeTerraForged's biome choice where
+    * the GPU does not see it (the Still Life FTF bridge, 4 Nov 2026) had its change in 1 chunk of 64 only.
+    */
+   private static void differed(Current current) {
+      if (!failed) {
+         failed = true;
+         com.wgaccel.WgaChat.warnOff("WGA GPU biomes off: chunk {}'s biomes came out different from the game's (see the log); biomes on the CPU from now on",
+            current.chunk == null ? "?" : current.chunk.getPos());
+      }
    }
 
    private static boolean run(Current current, Object sampler) {
@@ -1067,6 +1117,8 @@ public final class GpuBiomes {
             WorldgenAccelerator.LOG.warn("WGA GPU biome decoration check: chunk {} target {} in {}: game {}, gpu {} (searched {})", current.chunk == null ? "?"
                : current.chunk.getPos(), target, selection.domain(), game.unwrapKey().map(Object::toString).orElse("?"), gpu, selection.biome());
          }
+
+         differed(current);
       }
    }
 

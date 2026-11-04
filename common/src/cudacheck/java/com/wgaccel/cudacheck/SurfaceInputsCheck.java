@@ -9,7 +9,7 @@ public final class SurfaceInputsCheck {
    }
 
    public static void main(String[] args) throws Exception {
-      String source = SurfaceInputs.source(0.3660254037844386, 0.21132486540518713, 1 << 16, 2 << 16, 0, "mc_normal(nd + 0, np + 0", 123L, 456L,
+      String source = SurfaceInputs.source(0.3660254037844386, 0.21132486540518713, 1 << 16, 2 << 16, 0, "mc_normal(nd + 0, np + 0", "123LL", "456LL",
          "mc_normal(nd + 0, np + 0");
       long start = System.nanoTime();
       try (Gpu gpu = new Gpu(source, "surface_inputs.cu")) {
