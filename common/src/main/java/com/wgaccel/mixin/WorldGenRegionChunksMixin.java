@@ -81,6 +81,24 @@ public abstract class WorldGenRegionChunksMixin implements RegionExtras {
    public abstract ChunkAccess getChunk(int x, int z, ChunkStatus status, boolean load);
 
    public ChunkAccess getChunk(int x, int z, ChunkStatus status) {
+      return this.wgaccel$chunk(x, z, status);
+   }
+
+   /**
+    * The same from getChunk(x, z) (every block read and write), for Fabric on 1.21.1: there the game runs with
+    * intermediary names, and the plain method above (not remapped: it is no injector) does not override LevelReader's,
+    * so the region's lookups all went the game's way (7 Nov 2026 WWOO profile: WorldGenRegion.getChunk with C2ME's
+    * holder lookups, 8% of all CPU). A redirect's target is remapped; on 26.1.2 and NeoForge both lead here.
+    */
+   @org.spongepowered.asm.mixin.injection.Redirect(method = "getChunk(II)Lnet/minecraft/world/level/chunk/ChunkAccess;", at = @At(value = "INVOKE",
+      target = "Lnet/minecraft/server/level/WorldGenRegion;getChunk(IILnet/minecraft/world/level/chunk/status/ChunkStatus;)Lnet/minecraft/world/level/chunk/ChunkAccess;"),
+      require = 0)
+   private ChunkAccess wgaccel$chunkOf(WorldGenRegion self, int x, int z, ChunkStatus status) {
+      return this.wgaccel$chunk(x, z, status);
+   }
+
+   @Unique
+   private ChunkAccess wgaccel$chunk(int x, int z, ChunkStatus status) {
       if (!this.wgaccel$features || status != ChunkStatus.EMPTY || !RegionChunks.on()) {
          return this.getChunk(x, z, status, true);
       }

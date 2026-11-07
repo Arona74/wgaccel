@@ -30,6 +30,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
    public static final Setting<Boolean> FAST_CHUNK_PACK;
    public static final Setting<Boolean> FAST_MULTIFACE_SPREAD;
+   public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -286,6 +287,12 @@ public final class Config {
             "the same calls in the same order (the deep dark's sculk patches were 5% of the CPU in a Conquest profile, 40% of it the",
             "streams). The same world.")
          .define("fastMultifaceSpread", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_DISK_COLUMNS = Setting.of(builder
+         .comment("Disk features (terrain fixes, crusts, cliffs) skip the columns that cannot pass their target: when the target",
+            "needs the position's own block to be one of a few, a column whose chunk sections hold none of them is not tested.",
+            "William Wythers' Overhauled Overworld places such disks 100 to 256 times a chunk (42% of all CPU in a 7 Nov 2026",
+            "profile, 1.21.1). About 1 skipped column in 256 is tested anyway; a position that passes turns this off. The same world.")
+         .define("fastDiskColumns", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_READS = Setting.of(builder
          .comment("Gain: vanilla's surface block reads were ~5% of the CPU (0.9.91 profile).",
             "Minecraft's surface step reads every block of every column through the chunk's getBlockState (height checks and",

@@ -88,6 +88,8 @@ final class Improvements {
          "Biome tables searched on a flat copy of their search tree: the same biomes, about twice as fast.", null),
       new Improvement(Config.FAST_CHUNK_PACK, "Fast chunk packing",
          "Minecraft 26.1.2: saving numbers each section's blocks for its palette with one look-up per block kind instead of per change.", null),
+      new Improvement(Config.FAST_DISK_COLUMNS, "Fast disk features",
+         "Disk features (terrain fixes, crusts, cliffs) skip the columns whose blocks cannot match: much faster with William Wythers' Overhauled Overworld.", null),
       new Improvement(Config.FAST_MULTIFACE_SPREAD, "Fast sculk spreading",
          "Sculk veins spreading over all their faces (the deep dark's sculk patches) with plain loops instead of streams: the same world.", null),
       new Improvement(Config.FAST_CLIMATE_COLUMNS, "Fast climate columns",
