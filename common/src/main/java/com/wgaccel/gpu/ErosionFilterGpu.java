@@ -233,6 +233,9 @@ public final class ErosionFilterGpu {
             cell.height = job.outHeight.get(i);
             cell.heightErosion = job.outHeightErosion.get(i);
             cell.sediment = job.outSediment.get(i);
+            if (job.params.weirdness) {
+               weirdness(job.params, cell);
+            }
          } else {
             unsure++;
          }
@@ -295,16 +298,18 @@ public final class ErosionFilterGpu {
          int z = i / job.n;
          if (job.unsure.get(i) != 0) {
             unsure++;
-         } else if (!same(job.outHeight.get(i), cell.height) || !same(job.outHeightErosion.get(i), cell.heightErosion)
-            || !same(job.outSediment.get(i), cell.sediment) || !same(job.height.get(i), cell.preErosionHeight)) {
-            gpuDifferent++;
-            report("GPU", job, x, z, job.outHeight.get(i), job.outHeightErosion.get(i), job.outSediment.get(i), cell);
+         } else {
+            Cell gpu = gpuCell(job, i, cell);
+            if (!sameResult(gpu, cell) || !same(job.height.get(i), cell.preErosionHeight)) {
+               gpuDifferent++;
+               report("GPU", job, x, z, gpu.height, gpu.heightErosion, gpu.sediment, cell);
+            }
          }
 
          Cell mine = port[i];
          step(job, mine, x, z, grids, phacelle);
          finish(job.params, mine, job.height.get(i));
-         if (!same(mine.height, cell.height) || !same(mine.heightErosion, cell.heightErosion) || !same(mine.sediment, cell.sediment)) {
+         if (!sameResult(mine, cell)) {
             cpuDifferent++;
             report("CPU step", job, x, z, mine.height, mine.heightErosion, mine.sediment, cell);
          }
@@ -341,12 +346,11 @@ public final class ErosionFilterGpu {
          int gpuAgain = 0;
          for (int i = 0; i < count; i++) {
             Cell cell = backing[i];
-            if (!same(first[i].height, cell.height) || !same(first[i].heightErosion, cell.heightErosion) || !same(first[i].sediment, cell.sediment)) {
+            if (!sameResult(first[i], cell)) {
                again++;
             }
 
-            if (job.unsure.get(i) == 0 && (!same(job.outHeight.get(i), cell.height) || !same(job.outHeightErosion.get(i), cell.heightErosion)
-               || !same(job.outSediment.get(i), cell.sediment))) {
+            if (job.unsure.get(i) == 0 && !sameResult(gpuCell(job, i, cell), cell)) {
                gpuAgain++;
             }
          }
@@ -377,7 +381,26 @@ public final class ErosionFilterGpu {
       return gpuDifferent + cpuDifferent;
    }
 
-   private static final java.util.concurrent.atomic.AtomicBoolean DIAGNOSED = new java.util.concurrent.atomic.AtomicBoolean();
+   /** The GPU's cell i as use() would write it (on a copy of like: its mask and macro biome are the filter's inputs). */
+   private static Cell gpuCell(Job job, int i, Cell like) {
+      Cell gpu = new Cell();
+      gpu.copyFrom(like);
+      gpu.height = job.outHeight.get(i);
+      gpu.heightErosion = job.outHeightErosion.get(i);
+      gpu.sediment = job.outSediment.get(i);
+      if (job.params.weirdness) {
+         weirdness(job.params, gpu);
+      }
+
+      return gpu;
+   }
+
+   /** The filter's results the same (and its weirdness, for FreeTerraForged 1.0.0025's grids). */
+   private static boolean sameResult(Cell a, Cell b) {
+      return same(a.height, b.height) && same(a.heightErosion, b.heightErosion) && same(a.sediment, b.sediment) && same(a.weirdness, b.weirdness);
+   }
+
+   private static final java.util.concurrent.atomic.AtomicBoolean DIAGNOSED =new java.util.concurrent.atomic.AtomicBoolean();
 
    /**
     * Where a checked grid's difference starts: the batch it was in, the filter's settings read again against the ones in
@@ -669,6 +692,8 @@ public final class ErosionFilterGpu {
       final float slopeOnsetOctave;
       final float water;
       final float ground;
+      /** The chunk grids' filter of FreeTerraForged 1.0.0025 and later: it ends by setting weirdness ({@link #weirdness}). */
+      final boolean weirdness;
       final FloatBuffer packed;
 
       Params(Object erosion, int algorithm) throws ReflectiveOperationException {
@@ -711,6 +736,7 @@ public final class ErosionFilterGpu {
          Levels levels = (Levels)field(erosion, "levels");
          this.water = levels.water;
          this.ground = levels.ground;
+         this.weirdness = algorithm == 3 && com.wgaccel.ftf.FtfVersion.CLIMATE_EROSION;
          float minRelief = 3.0F / this.worldHeight;
          float maxRelief = 8.0F / this.worldHeight;
          float invRange = 1.0F / Math.max(1.0E-5F, maxRelief - minRelief);
@@ -750,6 +776,26 @@ public final class ErosionFilterGpu {
       if (preErosionHeight > p.water && cell.height <= p.water) {
          cell.heightErosion = cell.heightErosion + (p.ground - cell.height);
          cell.height = p.ground;
+      }
+
+      if (p.weirdness) {
+         weirdness(p, cell);
+      }
+   }
+
+   /**
+    * FreeTerraForged 1.0.0025's last step of the filter, on a cell whose height and sediment are final: masked cells and
+    * those at ground level or below get sediment -0.5 and weirdness 0, the others the weirdness of their sediment
+    * (ReferenceWeirdness.fromSediment: its magnitude clamp(sediment + 0.5, 0, 1), negative unless macroBiomeId > 0.5). The
+    * weirdness the filter's loop writes before it is always overwritten here, so the GPU need not make it.
+    */
+   private static void weirdness(Params p, Cell cell) {
+      if (cell.erosionMask || cell.height <= p.ground) {
+         cell.sediment = -0.5F;
+         cell.weirdness = 0.0F;
+      } else {
+         float magnitude = NoiseUtil.clamp(cell.sediment + 0.5F, 0.0F, 1.0F);
+         cell.weirdness = cell.macroBiomeId > 0.5F ? magnitude : -magnitude;
       }
    }
 

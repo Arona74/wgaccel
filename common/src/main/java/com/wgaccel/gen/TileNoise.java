@@ -2,6 +2,7 @@ package com.wgaccel.gen;
 
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
+import com.wgaccel.ftf.FtfVersion;
 import com.wgaccel.gpu.TileNoiseGpu;
 import etcodehome.freeterraforged.world.worldgen.cell.Cell;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -104,7 +105,10 @@ public final class TileNoise {
          list.add(table.cell(state.worldX, state.worldZ));
          cell.terrain = (etcodehome.freeterraforged.world.worldgen.cell.terrain.Terrain)type;
          cell.height = 0.0F;
-         cell.erosion = 0.0F;
+         if (!FtfVersion.CLIMATE_EROSION) {
+            cell.erosion = 0.0F;
+         }
+
          cell.weirdness = 0.0F;
          return true;
       }
@@ -127,7 +131,11 @@ public final class TileNoise {
 
       cell.terrain = (etcodehome.freeterraforged.world.worldgen.cell.terrain.Terrain)type;
       cell.height = height;
-      cell.erosion = v[2];
+      if (!FtfVersion.CLIMATE_EROSION) {
+         // 1.0.0025 and later: the populator leaves the cell's erosion alone (the climate sets it).
+         cell.erosion = v[2];
+      }
+
       cell.weirdness = v[3];
       TileNoiseGpu.USED.increment();
       return true;
@@ -147,7 +155,7 @@ public final class TileNoise {
       }
 
       if (Float.floatToRawIntBits(cell.height) != Float.floatToRawIntBits(state.expectHeight)
-         || Float.floatToRawIntBits(cell.erosion) != Float.floatToRawIntBits(state.expectErosion)
+         || !FtfVersion.CLIMATE_EROSION && Float.floatToRawIntBits(cell.erosion) != Float.floatToRawIntBits(state.expectErosion)
          || Float.floatToRawIntBits(cell.weirdness) != Float.floatToRawIntBits(state.expectWeirdness)) {
          TileNoiseGpu.disable(String.format(java.util.Locale.ROOT, "column (%d, %d): FTF height %s erosion %s weirdness %s, GPU %s %s %s", state.worldX, state.worldZ,
             cell.height, cell.erosion, cell.weirdness, state.expectHeight, state.expectErosion, state.expectWeirdness));

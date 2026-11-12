@@ -411,11 +411,14 @@ public final class TileNoiseGpu {
       long maxCost = 0;
       int unsupported = 0;
       Map<String, Integer> missingKinds = new java.util.TreeMap<>();
+      // FreeTerraForged 1.0.0025 and later never works the populators' erosion noise out (the climate sets a cell's
+      // erosion): its row is a constant 0, not the mountains' costly Erosion module made for nothing.
+      Object unusedErosion = com.wgaccel.ftf.FtfVersion.CLIMATE_EROSION ? etcodehome.freeterraforged.world.worldgen.noise.module.Noises.zero() : null;
       for (Object populator : found) {
          long[] cost = new long[4];
          try {
             for (int k = 0; k < 4; k++) {
-               Object noise = NoiseCodegen.invoke(populator, parts[k]);
+               Object noise = part(populator, parts[k], unusedErosion);
                codegen.function(noise);
                cost[k] = Math.max(1, codegen.cost(noise));
             }
@@ -442,7 +445,7 @@ public final class TileNoiseGpu {
          Object populator = supported.get(i);
          chosen.add(populator);
          for (int k = 0; k < 4; k++) {
-            names.add(codegen.function(NoiseCodegen.invoke(populator, parts[k])));
+            names.add(codegen.function(part(populator, parts[k], unusedErosion)));
             rowCosts.add(cost[k]);
          }
       }
@@ -466,6 +469,11 @@ public final class TileNoiseGpu {
          "WGA GPU tile noise: %d of %d terrain populators on the GPU (%d without a GPU version: %s; the rest cheap), costliest %,d noise samples per column; compiled in %.0f ms",
          chosen.size(), found.size(), unsupported, missingKinds, maxCost, (System.nanoTime() - compileStart) / 1.0e6));
       return new Program(frequency, chosen, rowCosts.stream().mapToLong(Long::longValue).toArray(), gpu);
+   }
+
+   /** The populator's noise tree for this part (base, height, erosion, weirdness); the erosion one replaced when unused is given. */
+   private static Object part(Object populator, String part, Object unusedErosion) throws Exception {
+      return unusedErosion != null && part.equals("erosion") ? unusedErosion : NoiseCodegen.invoke(populator, part);
    }
 
    /** Every TerrainPopulator reachable from the terrain's populators (fields, arrays, lambdas' captured values); noise trees are not entered. */
