@@ -48,12 +48,37 @@ public interface Platform {
       return platform;
    }
 
-   /** Shorthand for {@code get().gameDir().resolve("logs")}: where the mod's sources and samples are saved. */
+   /** Shorthand for {@code get().gameDir().resolve("logs/wgaccel")}: where the mod's sources and samples are saved. */
    static Path logs() {
-      return get().gameDir().resolve("logs");
+      Path dir = get().gameDir().resolve("logs").resolve("wgaccel");
+      try {
+         java.nio.file.Files.createDirectories(dir);
+      } catch (java.io.IOException ignored) {
+      }
+      Holder.cleanOldLogs(dir.getParent());
+      return dir;
    }
 
    final class Holder {
+      private static boolean cleaned;
+
+      /** Deletes the wgaccel-* files older versions left directly in the logs folder (once per run). */
+      private static synchronized void cleanOldLogs(Path logsDir) {
+         if (cleaned) {
+            return;
+         }
+
+         cleaned = true;
+         try (java.nio.file.DirectoryStream<Path> files = java.nio.file.Files.newDirectoryStream(logsDir, "wgaccel-*")) {
+            for (Path file : files) {
+               if (java.nio.file.Files.isRegularFile(file)) {
+                  java.nio.file.Files.deleteIfExists(file);
+               }
+            }
+         } catch (java.io.IOException | RuntimeException ignored) {
+         }
+      }
+
       private static final String[] IMPLEMENTATIONS = {"com.wgaccel.neoforge.NeoForgePlatform", "com.wgaccel.fabric.FabricPlatform"};
       private static volatile Platform instance;
 

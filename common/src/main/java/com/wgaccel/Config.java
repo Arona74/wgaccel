@@ -611,7 +611,7 @@ public final class Config {
             "slower, for finding a difference). The first difference turns the GPU fill off.")
          .defineInRange("gpuFillCheckEvery", 64, 1, 4096));
       GPU_FILL_DEBUG_CHUNKS = Setting.custom(builder
-         .comment("Chunks whose GPU noise fill is always checked, diagnosed in the log and saved (logs/wgaccel-noise-fill-sample-1NN.bin)",
+         .comment("Chunks whose GPU noise fill is always checked, diagnosed in the log and saved (logs/wgaccel/wgaccel-noise-fill-sample-1NN.bin)",
             "with the game's own blocks, as \"x,z\" chunk coordinates (as the log's chunk [x, z]). Empty: none.")
          .defineListAllowEmpty("gpuFillDebugChunks", java.util.List.of(), () -> "0,0", value -> value instanceof String));
       builder.pop();
