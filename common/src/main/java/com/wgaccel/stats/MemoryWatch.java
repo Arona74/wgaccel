@@ -51,11 +51,15 @@ public final class MemoryWatch {
       done = 0;
    }
 
-   /** ProtoChunk, LevelChunk, ImposterProtoChunk and ChunkHolder: Fabric's intermediary names and NeoForge's. */
-   private static final java.util.Set<String> CHUNK_CLASSES = java.util.Set.of("net.minecraft.class_2839", "net.minecraft.class_2818",
-      "net.minecraft.class_2821", "net.minecraft.class_3193", "net.minecraft.world.level.chunk.ProtoChunk",
+   /**
+    * ProtoChunk, LevelChunk, ImposterProtoChunk and ChunkHolder: Fabric's intermediary names and NeoForge's. Not Set.of:
+    * Sinytra Connector (the Fabric jar on NeoForge) remaps the intermediary strings to the Mojang names, and Set.of throws
+    * on the duplicates.
+    */
+   private static final java.util.Set<String> CHUNK_CLASSES = new java.util.HashSet<>(java.util.Arrays.asList("net.minecraft.class_2839",
+      "net.minecraft.class_2818", "net.minecraft.class_2821", "net.minecraft.class_3193", "net.minecraft.world.level.chunk.ProtoChunk",
       "net.minecraft.world.level.chunk.LevelChunk", "net.minecraft.world.level.chunk.ImposterProtoChunk",
-      "net.minecraft.server.level.ChunkHolder");
+      "net.minecraft.server.level.ChunkHolder"));
 
    private static void report(long used, long max) {
       try {

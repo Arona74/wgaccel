@@ -126,6 +126,34 @@ public final class ErosionFilterGpu {
       }
    }
 
+   /** FilterGrid.getCellSpacing (FreeTerraForged 1.0.0026 and later), or null before it. */
+   private static final java.lang.reflect.Method CELL_SPACING = cellSpacingMethod();
+
+   private static java.lang.reflect.Method cellSpacingMethod() {
+      try {
+         return etcodehome.freeterraforged.world.worldgen.cell.filter.FilterGrid.class.getMethod("getCellSpacing");
+      } catch (NoSuchMethodException | LinkageError absent) {
+         return null;
+      }
+   }
+
+   /**
+    * Whether a chunk grid's cells are a block apart, as the port assumes (FreeTerraForged 1.0.0026's filter scales its
+    * slopes and noise positions by FilterGrid.getCellSpacing: 1 on the chunk grids, more on the world-creation preview's).
+    */
+   public static boolean blockSpaced(Object grid) {
+      if (CELL_SPACING == null) {
+         return true;
+      }
+
+      try {
+         float spacing = (Float)CELL_SPACING.invoke(grid);
+         return spacing <= 0.0F || spacing == 1.0F;
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return false;
+      }
+   }
+
    private static volatile Integer algorithm;
 
    /**
@@ -694,6 +722,8 @@ public final class ErosionFilterGpu {
       final float ground;
       /** The chunk grids' filter of FreeTerraForged 1.0.0025 and later: it ends by setting weirdness ({@link #weirdness}). */
       final boolean weirdness;
+      /** The chunk grids' filter of FreeTerraForged 1.0.0026 and later ({@link com.wgaccel.ftf.FtfVersion#GRID_WATER}). */
+      final boolean v26;
       final FloatBuffer packed;
 
       Params(Object erosion, int algorithm) throws ReflectiveOperationException {
@@ -737,13 +767,14 @@ public final class ErosionFilterGpu {
          this.water = levels.water;
          this.ground = levels.ground;
          this.weirdness = algorithm == 3 && com.wgaccel.ftf.FtfVersion.CLIMATE_EROSION;
+         this.v26 = algorithm == 3 && com.wgaccel.ftf.FtfVersion.GRID_WATER;
          float minRelief = 3.0F / this.worldHeight;
          float maxRelief = 8.0F / this.worldHeight;
          float invRange = 1.0F / Math.max(1.0E-5F, maxRelief - minRelief);
          float[] p = {this.scaleBlocks, this.worldHeight, this.strength, this.gullyWeight, this.detail, this.lacunarity, this.gain, this.phacelleScale,
             this.phacelleOffset, this.phacelleNormalization, this.roundingMin, this.roundingMax, this.slopeOnsetBase, this.slopeOnsetRidge, this.slopeOnsetOctave,
             (Float)field(this.modifier, "min"), (Float)field(this.modifier, "max"), (Float)field(this.modifier, "range"), this.water, this.ground, minRelief,
-            invRange};
+            invRange, this.v26 ? 1.0F : 0.0F};
          this.packed = MemoryUtil.memAllocFloat(PACKED).put(0, p);
       }
    }
@@ -787,14 +818,23 @@ public final class ErosionFilterGpu {
     * FreeTerraForged 1.0.0025's last step of the filter, on a cell whose height and sediment are final: masked cells and
     * those at ground level or below get sediment -0.5 and weirdness 0, the others the weirdness of their sediment
     * (ReferenceWeirdness.fromSediment: its magnitude clamp(sediment + 0.5, 0, 1), negative unless macroBiomeId > 0.5). The
-    * weirdness the filter's loop writes before it is always overwritten here, so the GPU need not make it.
+    * weirdness the filter's loop writes before it is always overwritten here, so the GPU need not make it. 1.0.0026: river,
+    * lake and wetland cells at or below their water level (riverWaterLevel when above 0, else the sea's) are water too,
+    * and the magnitude is at least 0.055.
     */
    private static void weirdness(Params p, Cell cell) {
-      if (cell.erosionMask || cell.height <= p.ground) {
+      boolean water = cell.erosionMask || cell.height <= p.ground;
+      if (!water && p.v26) {
+         float waterLevel = cell.riverWaterLevel > 0.0F ? cell.riverWaterLevel : p.water;
+         water = cell.terrain.isRiver() && cell.height <= waterLevel || cell.terrain.isLake() && cell.height <= waterLevel
+            || cell.terrain.isWetland() && cell.height <= waterLevel;
+      }
+
+      if (water) {
          cell.sediment = -0.5F;
          cell.weirdness = 0.0F;
       } else {
-         float magnitude = NoiseUtil.clamp(cell.sediment + 0.5F, 0.0F, 1.0F);
+         float magnitude = NoiseUtil.clamp(cell.sediment + 0.5F, p.v26 ? 0.055F : 0.0F, 1.0F);
          cell.weirdness = cell.macroBiomeId > 0.5F ? magnitude : -magnitude;
       }
    }
@@ -930,7 +970,8 @@ public final class ErosionFilterGpu {
    static void cpuCellV2(Params p, Cell cell, int x, int z, int n, int worldBlockX, int worldBlockZ, float[] heights, float[] envelope, float[] slopeX,
          float[] slopeZ, float[] gate, float[] phacelleOut) {
       int idx = z * n + x;
-      if (cell.erosionMask) {
+      // 1.0.0026: cells at ground level or below are left alone too (cell.height is still the height the filter started from).
+      if (cell.erosionMask || p.v26 && cell.height <= p.ground) {
          return;
       }
 
@@ -956,7 +997,8 @@ public final class ErosionFilterGpu {
       float ampT = NoiseUtil.clamp((smoothSlope - v.slopeStart()) / slopeGateRange, 0.0F, 1.0F);
       float flatGate = ampT * ampT * (3.0F - 2.0F * ampT);
       float erosionFactor = modify(p, cell);
-      if (erosionFactor == 0.0F) {
+      // 1.0.0026: a modifier of 0 (or less) still updates the sediment below; only the carve is skipped.
+      if (erosionFactor == 0.0F && !p.v26) {
          return;
       }
 
@@ -1006,7 +1048,7 @@ public final class ErosionFilterGpu {
       }
 
       cell.sediment = NoiseUtil.clamp(cell.sediment + ridgeMapFadeTarget * (1.0F - ridgeMapCombiMask), -1.0F, 1.0F);
-      if (flatGate <= 0.0F) {
+      if (flatGate <= 0.0F || p.v26 && erosionFactor <= 0.0F) {
          return;
       }
 

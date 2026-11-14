@@ -16,6 +16,12 @@ import org.spongepowered.asm.mixin.Pseudo;
 public abstract class ErosionGridMixin {
    @WrapMethod(method = "apply(Letcodehome/freeterraforged/world/worldgen/cell/filter/FilterGrid;III)V")
    private void wgaccel$gpu(FilterGrid map, int regionX, int regionZ, int iterationsPerChunk, Operation<Void> original) {
+      if (!ErosionFilterGpu.blockSpaced(map)) {
+         // 1.0.0026's world-creation preview grids: cells several blocks apart, which the port does not scale for.
+         original.call(map, regionX, regionZ, iterationsPerChunk);
+         return;
+      }
+
       ErosionFilterGpu.apply(this, map.getBacking(), map.getTotalSize(), map.getBlockX(), map.getBlockZ(),
          () -> original.call(map, regionX, regionZ, iterationsPerChunk));
    }

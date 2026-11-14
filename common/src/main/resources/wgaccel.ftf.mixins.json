@@ -26,6 +26,7 @@
     "FilteredChunkCacheMixin",
     "RawChunkBlocksMixin",
     "RiverSkipMixin",
+    "RiverSkip26Mixin",
     "ContinentCoastMixin",
     "FastStrataOnceMixin",
     "RegionPrefetchMixin",

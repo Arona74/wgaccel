@@ -11,7 +11,8 @@ package com.wgaccel.gpu;
  * Parameters P[]: 0 scaleBlocks, 1 worldHeight, 2 strength, 3 gullyWeight, 4 detail, 5 lacunarity, 6 gain,
  * 7 phacelleScale, 8 phacelleOffset, 9 phacelleNormalization, 10 roundingMin, 11 roundingMax, 12 slopeOnsetBase,
  * 13 slopeOnsetRidge, 14 slopeOnsetOctave, 15 modifier min, 16 modifier max, 17 modifier range, 18 water, 19 ground,
- * 20 minRelief, 21 invRange.
+ * 20 minRelief, 21 invRange, 22 FreeTerraForged 1.0.0026's chunk grid filter (1: cells at ground level or below left
+ * alone; a modifier of 0 or less still updates the sediment and only stops the carve; 0 otherwise, as the filters before).
  */
 public final class ErosionKernels {
    /**
@@ -391,7 +392,8 @@ public final class ErosionKernels {
           float erosionSum = heightErosion[idx];
           float sed = sediment[idx];
           int u = 0;
-          if (emask[idx] == 0 && isfinite(baseHeight)) {
+          int v26 = P[22] != 0.0f;
+          if (emask[idx] == 0 && !(v26 && baseHeight <= P[19]) && isfinite(baseHeight)) {
               float curSlopeX = slopeX[idx];
               float curSlopeZ = slopeZ[idx];
               float slopeLen = (float)sqrt((double)(curSlopeX * curSlopeX + curSlopeZ * curSlopeZ + 1.0E-10f));
@@ -405,7 +407,7 @@ public final class ErosionKernels {
                   float ampT = ftf_clamp((smoothSlope - slopeStart) / range, 0.0f, 1.0f);
                   float flatGate = ampT * ampT * (3.0f - 2.0f * ampT);
                   float erosionFactor = ero_modify(P, height, emod[idx], edge[idx], river[idx]);
-                  if (erosionFactor != 0.0f) {
+                  if (v26 || erosionFactor != 0.0f) {
                       float worldX = (float)(worldBlockX + x);
                       float worldZ = (float)(worldBlockZ + z);
                       float currentStrength = P[2] * P[0];
@@ -448,7 +450,7 @@ public final class ErosionKernels {
                       }
                       if (isfinite(accumulatedHeightDelta)) {
                           sed = ftf_clamp(sed + ridgeMapFadeTarget * (1.0f - ridgeMapCombiMask), -1.0f, 1.0f);
-                          if (!(flatGate <= 0.0f)) {
+                          if (!(flatGate <= 0.0f) && !(v26 && erosionFactor <= 0.0f)) {
                               float sedimentModifier = java_maxf(0.2f, 1.0f - sed);
                               float capSlope = java_minf(smoothSlope, 3.0f);
                               float maxDepth = depthPerSlope * capSlope * P[0];
@@ -764,7 +766,7 @@ public final class ErosionKernels {
 
    /** Device buffers for tiles of up to this many cells; inputs are copied into the first eight before {@link #run}. */
    public static final class Buffers {
-      public static final int PARAMS = 22;
+      public static final int PARAMS = 23;
       public final int cells;
       public final long params;
       public final long height;

@@ -12,12 +12,15 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
    private boolean present;
    /** FreeTerraForged 1.0.0024 or later (its continents' PlateUpliftBridge, which ContinentCoastMixin reads). */
    private boolean continents24;
+   /** FreeTerraForged 1.0.0026 or later (UpliftRiverCarver.updateValleyMask's new arguments: RiverSkip26Mixin, not RiverSkipMixin). */
+   private boolean rivers26;
 
    @Override
    public void onLoad(String mixinPackage) {
       try {
          this.present = Platform.get().isModLoaded("freeterraforged");
          this.continents24 = this.present && Platform.get().modAtLeast("freeterraforged", "1.0.0024");
+         this.rivers26 = this.present && Platform.get().modAtLeast("freeterraforged", "1.0.0026");
       } catch (RuntimeException | LinkageError failure) {
          this.present = false;
       }
@@ -31,6 +34,10 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
    @Override
    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
       if (mixinClassName.endsWith(".ContinentCoastMixin") && !this.continents24) {
+         return false;
+      }
+
+      if (mixinClassName.endsWith(".RiverSkipMixin") && this.rivers26 || mixinClassName.endsWith(".RiverSkip26Mixin") && !this.rivers26) {
          return false;
       }
 
