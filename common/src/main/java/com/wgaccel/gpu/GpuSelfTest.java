@@ -284,6 +284,34 @@ public final class GpuSelfTest {
       // when several are side by side).
       java.util.Arrays.sort(beside, java.util.Comparator.comparing(File::getName).reversed());
       NVRTC.builtinsLibraryName(beside[0].getAbsolutePath());
+
+      // CUDA 12.9's nvrtc64_120_0.dll asked for nvrtc-builtins.alt64_129.dll, which the toolkit does not ship (only
+      // nvrtc-builtins64_129.dll): every kernel but the tiny self-test failed (RTX 3090, 14 Nov 2026). Windows hands out an
+      // already loaded library for its name, so the plain one is loaded under the alt name from a copy.
+      boolean hasAlt = false;
+      File plain = null;
+      for (File library : beside) {
+         String lower = library.getName().toLowerCase(Locale.ROOT);
+         if (lower.contains(".alt")) {
+            hasAlt = true;
+         } else if (plain == null) {
+            plain = library;
+         }
+      }
+
+      if (!hasAlt && plain != null) {
+         try {
+            File folder = java.nio.file.Files.createTempDirectory("wgaccel-nvrtc").toFile();
+            folder.deleteOnExit();
+            File alias = new File(folder, plain.getName().replaceFirst("(?i)nvrtc-builtins", "nvrtc-builtins.alt"));
+            alias.deleteOnExit();
+            java.nio.file.Files.copy(plain.toPath(), alias.toPath());
+            BUILTINS.add(org.lwjgl.system.Library.loadNative(GpuSelfTest.class, "org.lwjgl", alias.getAbsolutePath()));
+         } catch (Throwable ignored) {
+            // NVRTC names what it misses when it loads.
+         }
+      }
+
       for (File library : beside) {
          try {
             BUILTINS.add(org.lwjgl.system.Library.loadNative(GpuSelfTest.class, "org.lwjgl", library.getAbsolutePath()));
