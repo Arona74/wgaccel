@@ -1,12 +1,12 @@
 # Worldgen Accelerator (`0.64.1`)
 
 > [!NOTE]
-> **Attribution:** Fork built on **Arona's Worldgen Accelerator `0.63.3`** (with updates incorporating what came in `0.63.4` through `0.64.1`), focused on **Minecraft 1.21.1 (NeoForge)** with **FreeTerraForged** (`1.0.0010`–`1.0.0032`), **C2ME**, and **OpenCL** as the default GPU backend.
+> **Attribution:** Originally created by **`agneht26-dotcom`** (`v0.9.78`–`v0.11.5`), expanded by **Arona** up through `0.63.3` / `0.63.4`, and continued here from `0.63.4-lab.1` through **`0.64.1`** for **Minecraft 1.21.1 (NeoForge)** with **FreeTerraForged** (`1.0.0010`–`1.0.0032`), **C2ME**, and **OpenCL** as the default GPU backend.
 
 Faster chunk generation for **Minecraft 1.21.1 NeoForge** — built primarily for **FreeTerraForged** and popular worldgen/biome mods. Worlds generate **block-for-block identical** to vanilla/FreeTerraForged: every acceleration runs periodic live checks against the standard path and automatically disables any component that differs.
 
 > [!WARNING]
-> **AI-generated mod & authorship:** Upstream versions up through **`0.63.3` / `0.63.4`** (including the older `v0.9.78`–`v0.11.5` releases) were created by **Arona** with **Claude**. Starting from `0.63.4-lab.1` through **`0.64.0`** and the current **`0.64.1`**, this fork is developed and maintained by **`agneht26-dotcom`** using **Claude and Gemini**.
+> **AI-generated mod & authorship:** Worldgen Accelerator was originally created by **`agneht26-dotcom`** with **Claude** (`v0.9.78`–`v0.11.5`), later expanded by **Arona** up through **`0.63.3` / `0.63.4`**, and is now continued by **`agneht26-dotcom`** from **`0.63.4-lab.1`** through **`0.64.0`** and the current **`0.64.1`** using **Claude and Gemini**.
 >
 > **What `0.64.1` is and does:** An OpenCL-default **Minecraft 1.21.1 (NeoForge)** build for **FreeTerraForged** (`1.0.0010`–`1.0.0032`) with **C2ME** that accelerates biome selection, 3D noise fill, surface rules, ores/disks/carvers, and Chunky pregeneration on GPU and CPU while staying block-for-block identical via live self-checks (adding OpenCL surface optimizations, Still Life/Terralith/Nature's Spirit/tall-world speedups, reloaded look-ahead cell alignment, and `[version_support]` checks). Always **back up your worlds** before testing, try it on a copy first, and include `logs/latest.log` with any bug reports.
 
