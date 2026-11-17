@@ -64,17 +64,22 @@ Forked from Arona's `0.63.3` (incorporating `0.63.4` fixes) with the following s
 
 ## Benchmarks (`0.64.1` OpenCL)
 
-Measured on **Minecraft 1.21.1 NeoForge**, **FreeTerraForged `1.0.0032`**, **C2ME `0.4.0-alpha.0.122`** (`19` worker threads), `16 GB` Generational ZGC, OpenCL default, Chunky `radius = 1000` (`16,129` chunks) fresh worlds unless noted:
+Measured on an isolated dedicated server (`quiet-host`, fresh world each run, Chunky `radius = 1000` / `16,129` chunks centered at `(100000, 100000)`, `seed = 0`, unless noted):
+
+- **PC specs:** AMD Ryzen 9 7900X (12 cores / 24 threads), NVIDIA GeForce RTX 3080 (10 GB, `68` CUs, OpenCL `3.0` CUDA driver `610.88`), `32 GB` system RAM (`31.4 GiB`), Windows 11 (`x64`)
+- **Java & JVM flags:** Eclipse Temurin OpenJDK `25.0.5`, `-Xms2G -Xmx16G -XX:+UseZGC -Dchunky.maxWorkingCount=128 -Dwgaccel.gpuBackend=opencl` (`16 GB` allocated heap)
+- **Minecraft & world settings:** Minecraft `1.21.1` NeoForge `21.1.265` (`nogui`), `view-distance=6`, `simulation-distance=4`, `region-file-compression=deflate`, `sync-chunk-writes=true`, `generate-structures=true`, `level-type=ftf` (`Modern - Upscaled Community Preset`, `y -128` to `912` / `1040` tall, `seaLevel = 63`)
+- **Base installed mods (`core`):** `wgaccel 0.64.1` (`gpuBackend = OPENCL`), `FreeTerraForged 1.0.0032`, `C2ME 0.4.0-alpha.0.122` (`globalExecutorParallelism = 19`, `threadPoolPriorityPreset = "default"` / `BELOW_NORMAL`), `Chunky 1.4.23`, `ScalableLux 0.3.0-alpha.0.8`, `Lithium 0.15.4`, `FerriteCore 7.0.3`, `Structure Layout Optimizer 1.0.12`, `ImmediatelyFast 1.6.15`, `All The Leaks 1.1.13`
 
 | Setup | Time | Chunks/s (CPS) | Notes |
 | --- | --- | --- | --- |
-| **FreeTerraForged Core** | **0:26.4** | **611.43** | `0` `other cell range`, `740/808` biome-step structure chunks used, `176/176` checked `IDENTICAL` |
-| **+ Biomes O' Plenty** | 0:34.9 | **462.57** | `176/176` `IDENTICAL`, `0` diffs |
-| **+ Regions Unexplored** | 0:34.9 | **462.53** | `176/176` `IDENTICAL`, `0` biome diffs across `1.18M` checks |
-| **+ Terralith** | 0:40.7 | **396.41** | `176/176` `IDENTICAL`, `0` diffs across `1.41M` biome checks |
-| **+ Still Life (`0.3-ftf` + bridge `3.3.0`)** | 0:43.5 | **370.61** | `+103.3%` (`2.03x`) over `0.63.3` OpenCL (`182.30 CPS`); `6.31M` disk checks `IDENTICAL` |
-| **4-in-1 (`WWOO + Nature's Spirit + BOP + RU`)**, `r=1000` / **`r=4000`** (`251,001` chunks) | 0:52.5 / 10:38.7 | **307.53** / **393.00** | `r=4000` peaks ~`450 CPS`; `0` diffs across `16.99M` biome checks |
-| **Tall Mountains (`worldHeight = 2000`)**, `r=2000` (`63,001` chunks) | 2:38.7 | **397.00** | OpenCL (`+19.9 CPS` faster than prior CUDA `377.13 CPS`) |
+| **FreeTerraForged Core** (`y -128..912`) | **0:26.4** | **611.43** | `0` `other cell range`, `740/808` biome-step structure chunks used, `176/176` checked `IDENTICAL` |
+| **+ Biomes O' Plenty** (`21.1.0.14` + `TerraBlender 4.1.0.8`) | 0:34.9 | **462.57** | `176/176` `IDENTICAL`, `0` diffs |
+| **+ Regions Unexplored** (`0.6.2`) | 0:34.9 | **462.53** | `176/176` `IDENTICAL`, `0` biome diffs across `1.18M` checks |
+| **+ Terralith** (`2.6.2`) | 0:40.7 | **396.41** | `176/176` `IDENTICAL`, `0` diffs across `1.41M` biome checks |
+| **+ Still Life** (`0.3-ftf` + `stilllife_ftf_bridge 3.3.0` + `VanillaBackport 1.2.2` + `Platform 1.4.2`) | 0:43.5 | **370.61** | `+103.3%` (`2.03x`) over `0.63.3` OpenCL (`182.30 CPS`); `6.31M` disk checks `IDENTICAL` |
+| **4-in-1** (`WWOO 2.6.7 + Nature's Spirit 2.3.2 + BOP + RU`), `r=1000` / **`r=4000`** (`251,001` chunks) | 0:52.5 / 10:38.7 | **307.53** / **393.00** | `r=4000` peaks ~`450 CPS`; `0` diffs across `16.99M` biome checks |
+| **Tall Mountains** (`worldHeight = 2000`), `r=2000` (`63,001` chunks) | 2:38.7 | **397.00** | OpenCL (`+19.9 CPS` faster than prior CUDA `377.13 CPS`) |
 
 ## Supported versions and mods
 
