@@ -115,10 +115,11 @@ WGAccel includes `[version_support]` checks (`warnUnsupportedVersions = true` by
 4. Join a world and check `logs/latest.log` for `WGA GPU backend: OpenCL`, `WGA GPU self-test: BIT-IDENTICAL`, and `WGA GPU noise fill: ready`.
 
 ### Dedicated server
-Servers lack LWJGL native binaries by default. To enable GPU acceleration on a server (without LWJGL, WGAccel still runs all CPU speedups):
-1. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` (or `natives-linux`) from a client's `libraries/org/lwjgl/lwjgl/3.3.3/` into the server's `libraries/org/lwjgl/lwjgl/3.3.3/`.
-2. Append both jars (separated by `;` on Windows or `:` on Linux) to `-DlegacyClassPath=` in `libraries/net/neoforged/neoforge/<version>/win_args.txt` (or `unix_args.txt`).
-3. Players joining the server do **not** need WGAccel installed.
+Dedicated servers do **not** include LWJGL core (`org.lwjgl.system`), which **all GPU backends (including the OpenCL default, CUDA, and HIP)** require. For OpenCL on a server you only need an up-to-date GPU driver plus the two `lwjgl-3.3.3` jars below — **no CUDA Toolkit or HIP SDK is needed** unless you explicitly switch away from OpenCL. *(Without LWJGL, the server still starts cleanly and runs all CPU optimizations.)*
+1. Put WGAccel (and FreeTerraForged, C2ME, Lithium, ScalableLux, FerriteCore) in the server's `mods/` folder.
+2. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` (or `natives-linux`) from a client's `libraries/org/lwjgl/lwjgl/3.3.3/` into the server's `libraries/org/lwjgl/lwjgl/3.3.3/`.
+3. Append both jars (separated by `;` on Windows or `:` on Linux) to `-DlegacyClassPath=` in `libraries/net/neoforged/neoforge/<version>/win_args.txt` (or `unix_args.txt`).
+4. Check `logs/latest.log` for `WGA GPU backend: OpenCL` and `WGA GPU self-test: BIT-IDENTICAL`. Players joining the server do **not** need WGAccel installed.
 
 <details>
 <summary>Optional backends: CUDA, HIP, Linux ROCm & weak/integrated GPUs</summary>
