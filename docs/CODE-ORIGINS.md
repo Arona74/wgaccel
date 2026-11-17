@@ -56,5 +56,5 @@ The risk is low, but it is the one part that cannot be "rewritten differently": 
 
 - The mod itself is under the MIT licence (`LICENSE`, since 2026-10-21): anyone may use, change and share it. The MIT
   and BSD notices above stay in the jar.
-- Check the copyright lines in `src/main/resources/META-INF/licenses/` against each project's own LICENSE file on
+- Check the copyright lines in `common/src/main/resources/META-INF/licenses/` against each project's own LICENSE file on
   GitHub before publishing (written from the mods' metadata).

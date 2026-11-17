@@ -1,0 +1,42 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.wgaccel.mixin.ftf",
+  "plugin": "com.wgaccel.mixin.ftf.FtfMixinPlugin",
+  "compatibilityLevel": "${mixin_java}",
+  "mixins": [
+    "TileGeneratorMixin",
+    "WorldFiltersMixin",
+    "TileCacheMixin",
+    "BiomeSelectionMixin",
+    "BiomeDecorationMixin",
+    "BiomeCoverageMixin",
+    "BiomeRolesMixin",
+    "ClimateDepthMixin",
+    "BiomeRegionMixin",
+    "BiomeStageMixin",
+    "ErosionFilterMixin",
+    "ErosionGridMixin",
+    "CliffRelaxationMixin",
+    "CliffRelaxationGridMixin",
+    "TileNoiseGeneratorMixin",
+    "TileNoiseHeightmapMixin",
+    "TileNoisePopulatorMixin",
+    "FtfPlacementScopesMixin",
+    "ChunkCellsMixin",
+    "RawChunkCacheMixin",
+    "FilteredChunkCacheMixin",
+    "RawChunkBlocksMixin",
+    "RiverSkipMixin",
+    "RiverSkip26Mixin",
+    "RiverSkip27Mixin",
+    "ContinentCoastMixin",
+    "FastStrataOnceMixin",
+    "RegionPrefetchMixin",
+    "SurfaceEnvelopeMixin",
+    "CandidateFitMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

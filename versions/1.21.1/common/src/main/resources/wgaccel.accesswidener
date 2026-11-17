@@ -1,0 +1,20 @@
+accessWidener v2 named
+
+# Only what NeoForge does not open itself: widening a member NeoForge has already made public stops its dev runs
+# (Biome.climateSettings: read through fabric/mixin/BiomeAccessor instead).
+
+# Biome climates (SurfaceInputs), read through LoaderHooks.
+accessible class net/minecraft/world/level/biome/Biome$ClimateSettings
+
+# Direct block-state palettes, avoiding an encode/read network-buffer round trip.
+accessible class net/minecraft/world/level/chunk/PalettedContainer$Configuration
+
+# Immutable CPU surface sequences call the existing rule interface without reflection per block.
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$SurfaceRule
+
+# Wave 5 GPU light queue integration with ThreadedLevelLightEngine.
+accessible class net/minecraft/server/level/ThreadedLevelLightEngine$TaskType
+accessible method net/minecraft/server/level/ThreadedLevelLightEngine addTask (IILnet/minecraft/server/level/ThreadedLevelLightEngine$TaskType;Ljava/lang/Runnable;)V
+
+accessible class net/minecraft/world/level/chunk/PalettedContainer$Data
+accessible method net/minecraft/world/level/chunk/PalettedContainer$Data palette ()Lnet/minecraft/world/level/chunk/Palette;
