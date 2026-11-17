@@ -17,6 +17,7 @@ Faster chunk generation for **Minecraft 1.21.1 NeoForge** — built primarily fo
 ## Contents
 
 - [What it does](#what-it-does)
+- [What changed from Arona's upstream](#what-changed-from-aronas-upstream)
 - [What runs on the CPU and what on the GPU](#what-runs-on-the-cpu-and-what-on-the-gpu)
 - [Benchmarks (`0.64.1` OpenCL)](#benchmarks-0641-opencl)
 - [Supported versions and mods](#supported-versions-and-mods)
@@ -35,6 +36,18 @@ Generating a chunk runs through several stages: biomes, 3D noise fill (stone, aq
 2. **On the GPU (OpenCL default):** Translates heavy chunk and tile math (noise fill, aquifers, ore veins, Beardifier structure terrain, surface rule trees, erosion/cliff filters, and tile noise) into GPU programs generated dynamically from your world's datapacks and biome mods, caching compiled binaries in `wgaccel-gpu-cache` so subsequent world loads start immediately. While C2ME workers handle CPU stages, GPU **look-ahead** precomputes upcoming chunks asynchronously ahead of the noise step.
 
 **Live parity checks:** Every 64th chunk (and sampled biome/ore/disk checks) is computed on the CPU too and verified against the GPU/fast path. Any mismatch disables only that optimization automatically and logs details. *(The GPU surface check logs race warnings only, since cross-chunk feature writes in mods like Still Life can race even without WGAccel.)*
+
+## What changed from Arona's upstream
+
+Forked from Arona's `0.63.3` (incorporating `0.63.4` fixes) with the following scope and technical changes:
+
+- **Minecraft `1.21.1` NeoForge only (no newer MC versions or Fabric):** Releases and testing target **Minecraft 1.21.1 NeoForge** exclusively. Newer Minecraft versions (`26.1.2+`), Fabric builds, and Conquest ReTerraForged are **not** supported or maintained here.
+- **OpenCL is now the default GPU backend (`gpuBackend = OPENCL`):** OpenCL received the latest GPU kernel optimizations (including workgroup shared-memory surface prepass scans) and is faster than CUDA on this fork; CUDA and HIP remain manual fallbacks without the newer OpenCL-specific speedups.
+- **FreeTerraForged `1.0.0025`–`1.0.0032` parity & fixes:** Version-gated erosion `weirdness` formulas (`v25`–`v27`), river noise fade skips (`FtfRiverSkip`), `experimentalMountainFades` support, `NoiseBasedChunkGeneratorMixin` (`priority = 500`) alignment inner to FTF, and `FtfCellsGround.clampWrapCells` look-ahead cell-range alignment for reloaded chunks and `afterBiomes` structure chunks (`other cell range -> 0`).
+- **Biome-mod, feature & tall-terrain optimizations (`0.64.x`):**
+  - **Still Life:** `ClimateColumns` + `StillLifeClimateBridge.apply` caching, whole-disk `DiskColumns` batching, and compiled `FastPredicates.RulePlan` indexed dispatch (`182.30 -> 370.61 CPS`).
+  - **Terralith, Nature's Spirit & tall worlds:** `UndergroundBiomeBanding` `lastResult` tie parity, C2ME `CompiledDensityFunction`-wrapped `ClimateDepthFunction` column caching, `NaturesSpiritPillars`, `SculkSpreaderCursorMixin`, `BiomeRoles` column resets, `SectionBuilder` single-pass packing, and `GpuSurface` changed-section skipping.
+- **Diagnostics & version guardrails:** Added `[version_support]` warnings for untested worldgen mod versions or standalone Lithosphere, moved WGAccel logs under `logs/wgaccel/`, fixed `GpuNoiseFill` `preparedUsed` stat counting, and fixed Windows NVRTC library loading when CUDA is selected.
 
 ## What runs on the CPU and what on the GPU
 
