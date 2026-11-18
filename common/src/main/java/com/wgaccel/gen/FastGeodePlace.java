@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.WorldGenLevel;
@@ -89,7 +88,7 @@ public final class FastGeodePlace {
          int oz = config.outerWallDistance.sample(random);
          BlockPos pointPos = origin.offset(ox, oy, oz);
          BlockState state = level.getBlockState(pointPos);
-         if (state.isAir() || state.is(BlockTags.GEODE_INVALID_BLOCKS)) {
+         if (state.isAir() || state.is(Mc.geodeInvalidBlocks(blockSettings))) {
             if (++invalidCount > config.invalidBlocksThreshold) {
                return false;
             }

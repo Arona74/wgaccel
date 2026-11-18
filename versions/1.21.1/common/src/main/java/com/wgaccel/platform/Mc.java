@@ -266,4 +266,9 @@ public final class Mc {
          }
       };
    }
+
+   /** The blocks a geode's sample points may not land on (1.21.1: the global tag; GeodeFeature ignores the configured one). */
+   public static net.minecraft.tags.TagKey<Block> geodeInvalidBlocks(net.minecraft.world.level.levelgen.GeodeBlockSettings settings) {
+      return net.minecraft.tags.BlockTags.GEODE_INVALID_BLOCKS;
+   }
 }
