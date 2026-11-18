@@ -38,6 +38,10 @@ final class Improvements {
          "The GPU biomes in vanilla and other worlds. Off by default: the CPU was faster there on the test PC.", Config.GPU_BIOMES),
       new Improvement(Config.GPU_LITHOS_NOISE, "Lithos noise",
          "Minecraft 26.1.2 with Lithos: its rock layers' noise worked out on the GPU for each chunk before Lithos asks for it.", null),
+      new Improvement(Config.GPU_LIGHT, "Lighting",
+         "Chunk light worked out on the GPU, every 64th chunk checked. Off by default: slower than the CPU's in the tests; stays off with ScalableLux.", null),
+      new Improvement(Config.GPU_REUSE_POPULATOR_BUFFERS, "Reuse GPU buffers",
+         "The GPU's terrain buffers kept for the next chunks (at most six sets) instead of made again for each.", null),
       new Improvement(Config.GPU_TILE_NOISE, "Terrain noise",
          "FreeTerraForged's terrain noise (mostly the mountains' erosion noise) worked out on the GPU for many columns at once.", null),
       new Improvement(Config.GPU_EROSION_FILTER, "Erosion filter",
@@ -120,7 +124,17 @@ final class Improvements {
       new Improvement(Config.FAST_SCULK_MOVES, "Fast sculk moves",
          "Sculk charges in the deep dark pick their next block with direct section reads. No live check: on by default on 1.21.1, off on 26.1.2.", null),
       new Improvement(Config.FAST_NOISE_INTERPOLATION, "Fast noise interpolation",
-         "The CPU noise fill interpolates without making a lambda per cell. On by default on 1.21.1, off on 26.1.2 (the GPU fills there).", null));
+         "The CPU noise fill interpolates without making a lambda per cell. On by default on 1.21.1, off on 26.1.2 (the GPU fills there).", null),
+      new Improvement(Config.FAST_SURFACE_SEQUENCES, "Fast surface rule lists",
+         "Minecraft 1.21.1: the surface rules' lists turned into arrays once instead of walked as lists for every block.", null),
+      new Improvement(Config.FAST_BIOME_ZOOM, "Fast biome zoom",
+         "Minecraft 1.21.1: the small random offsets of the biome blending around a block remembered instead of worked out again.", null),
+      new Improvement(Config.FTF_COALESCE_RAW_CHUNKS, "Shared raw chunks",
+         "FreeTerraForged: threads asking for the same missing raw chunk at once share one calculation.", null),
+      new Improvement(Config.NS_FAST_PILLARS, "Fast Nature's Spirit pillars",
+         "Nature's Spirit: its sugi and stratified-desert pillars placed with the GPU surface instead of sending whole chunks back to the CPU.", null),
+      new Improvement(Config.DISABLE_ATL_CHUNK_MONITOR, "Quiet All The Leaks",
+         "All The Leaks: its per-chunk leak tracking, summary scans and forced garbage collections switched off during world generation.", null));
 
    private Improvements() {
    }

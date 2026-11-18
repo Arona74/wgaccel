@@ -73,6 +73,8 @@ final class Advanced {
             "Sections the noise fill covers completely, or the surface changes for the most part, built in one go instead of block by block."),
          new Entry(Config.GPU_CUBIN_CACHE, "Keep compiled machine code",
             "CUDA: the GPU programs also kept on disk as the driver's finished machine code, so worlds load them without translating them again."),
+         new Entry(Config.WARN_UNSUPPORTED_VERSIONS, "Warn about mod versions",
+            "A warning in the log and in chat when FreeTerraForged or a terrain or biome mod is a version this mod was not tested with."),
          new Entry(Config.GPU_NOISE_FILL_CPU_DIMENSIONS, "Dimensions on the CPU",
             "Dimensions whose noise fill stays on the CPU even with Other dimensions on (GPU improvements tab), separated by \";\". The Nether and the"
                + " End by default: the CPU was as fast there."))));
