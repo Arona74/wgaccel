@@ -1,5 +1,6 @@
 package com.wgaccel.gen;
 
+import com.wgaccel.platform.Mc;
 import com.wgaccel.Config;
 import com.wgaccel.WorldgenAccelerator;
 import com.wgaccel.platform.Names;
@@ -432,7 +433,7 @@ public final class PlacementStreams {
          this.generator = context.generator();
          this.random = random;
          this.feature = feature;
-         this.minY = context.getMinBuildHeight();
+         this.minY = Mc.minY(context.getLevel());
       }
 
       FastPredicates.EvalContext predCtx() {

@@ -222,4 +222,48 @@ public final class Mc {
    public static net.minecraft.world.phys.shapes.VoxelShape occlusionShape(BlockState state, net.minecraft.core.Direction dir) {
       return net.minecraft.world.level.lighting.LightEngine.getOcclusionShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO, state, dir);
    }
+   /** The provider's block state at pos (level: the feature's level, which 26.1.2's providers take). */
+   public static BlockState state(net.minecraft.world.level.levelgen.feature.stateproviders.BlockStateProvider provider, net.minecraft.world.level.WorldGenLevel level, net.minecraft.util.RandomSource random, BlockPos pos) {
+      return provider.getState(random, pos);
+   }
+
+   /** The int provider's largest value. */
+   public static int maxValue(net.minecraft.util.valueproviders.IntProvider provider) {
+      return provider.getMaxValue();
+   }
+
+   /** ChunkAccess.setBlockState with 1.21.1's moved-by-piston flag (an update flag on 26.1.2). */
+   public static BlockState setBlockState(ChunkAccess chunk, BlockPos pos, BlockState state, boolean moving) {
+      return chunk.setBlockState(pos, state, moving);
+   }
+
+   /** A block getter over blocks, from minY up for height blocks, without block entities. */
+   public static net.minecraft.world.level.BlockGetter blockGetter(int minY, int height, java.util.function.Function<BlockPos, BlockState> blocks) {
+      return new net.minecraft.world.level.BlockGetter() {
+         @Override
+         public net.minecraft.world.level.block.entity.BlockEntity getBlockEntity(BlockPos pos) {
+            return null;
+         }
+
+         @Override
+         public BlockState getBlockState(BlockPos pos) {
+            return blocks.apply(pos);
+         }
+
+         @Override
+         public net.minecraft.world.level.material.FluidState getFluidState(BlockPos pos) {
+            return blocks.apply(pos).getFluidState();
+         }
+
+         @Override
+         public int getHeight() {
+            return height;
+         }
+
+         @Override
+         public int getMinBuildHeight() {
+            return minY;
+         }
+      };
+   }
 }

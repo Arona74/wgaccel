@@ -242,6 +242,10 @@ public final class CU {
       throw missing();
    }
 
+   public static int cuEventDestroy(long a0) {
+      throw missing();
+   }
+
    public static int cuLaunchKernel(long a0, int a1, int a2, int a3, int a4, int a5, int a6, int a7, long a8, PointerBuffer a9, PointerBuffer a10) {
       throw missing();
    }

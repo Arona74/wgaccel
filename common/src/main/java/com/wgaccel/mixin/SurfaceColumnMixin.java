@@ -112,7 +112,7 @@ public abstract class SurfaceColumnMixin {
       target = "Lnet/minecraft/world/level/chunk/ChunkAccess;setBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Z)Lnet/minecraft/world/level/block/state/BlockState;"), require = 0)
    private BlockState wgaccel$fastWrite(ChunkAccess chunk, BlockPos pos, BlockState state, boolean isMoving) {
       if (wgaccel$off || chunk.getClass() != ProtoChunk.class || !com.wgaccel.Config.FAST_SURFACE_READS.get()) {
-         return chunk.setBlockState(pos, state, isMoving);
+         return Mc.setBlockState(chunk, pos, state, isMoving);
       }
 
       if (this.wgaccel$chunk != chunk) {
@@ -122,7 +122,7 @@ public abstract class SurfaceColumnMixin {
       Heightmap[] maps = this.wgaccel$maps;
       int y = pos.getY();
       if (maps == null || y < this.wgaccel$minY || y >= this.wgaccel$maxY) {
-         return chunk.setBlockState(pos, state, isMoving);
+         return Mc.setBlockState(chunk, pos, state, isMoving);
       }
 
       int lx = pos.getX() & 15;

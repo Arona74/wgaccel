@@ -165,16 +165,16 @@ public final class FastPredicates {
                   }
                }
             }
-            return best < plan.thenProviders.length ? plan.thenProviders[best].getState(random, pos) : plan.fallback.getState(random, pos);
+            return best < plan.thenProviders.length ? Mc.state(plan.thenProviders[best], level, random, pos) : Mc.state(plan.fallback, level, random, pos);
          }
 
          Node[] conditions = plan.conditions;
          for (int i = 0; i < conditions.length; i++) {
             if (conditions[i].test(ctx, x, y, z)) {
-               return plan.thenProviders[i].getState(random, pos);
+               return Mc.state(plan.thenProviders[i], level, random, pos);
             }
          }
-         return plan.fallback.getState(random, pos);
+         return Mc.state(plan.fallback, level, random, pos);
       } finally {
          if (alreadyOpen) {
             ctx.depth--;
@@ -498,9 +498,9 @@ public final class FastPredicates {
          this.level = level;
          if (level instanceof WorldGenRegion r) {
             this.region = r;
-            this.minY = r.getMinBuildHeight();
+            this.minY = Mc.minY(r);
             this.maxY = Mc.maxY(r);
-            this.minSection = r.getMinSection();
+            this.minSection = Mc.minSection(r);
             this.sectionsCount = r.getSectionsCount();
          } else {
             this.region = null;

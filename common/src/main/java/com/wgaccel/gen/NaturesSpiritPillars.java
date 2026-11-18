@@ -136,8 +136,8 @@ public final class NaturesSpiritPillars {
          return true;
       }
 
-      int cx = chunk.getPos().x;
-      int cz = chunk.getPos().z;
+      int cx = Mc.x(chunk.getPos());
+      int cz = Mc.z(chunk.getPos());
       for (int dx = -1; dx <= 1; dx++) {
          for (int dz = -1; dz <= 1; dz++) {
             if (dx == 0 && dz == 0) {
@@ -189,7 +189,7 @@ public final class NaturesSpiritPillars {
       java.util.Arrays.fill(outTops, Integer.MIN_VALUE);
       int minX = chunk.getPos().getMinBlockX();
       int minZ = chunk.getPos().getMinBlockZ();
-      int maxY = chunk.getMaxBuildHeight() - 1;
+      int maxY = Mc.maxY(chunk) - 1;
       int maxTop = Integer.MIN_VALUE;
 
       for (int lx = 0; lx < 16; lx++) {
@@ -208,7 +208,7 @@ public final class NaturesSpiritPillars {
 
             if (j != Integer.MIN_VALUE) {
                int clamped = Math.min(j, maxY);
-               if (clamped >= chunk.getMinBuildHeight()) {
+               if (clamped >= Mc.minY(chunk)) {
                   outTops[(lx << 4) | lz] = clamped;
                   if (clamped > maxTop) {
                      maxTop = clamped;
@@ -313,7 +313,7 @@ public final class NaturesSpiritPillars {
 
    private static void fillPillarCpu(net.minecraft.world.level.LevelHeightAccessor level, net.minecraft.world.level.chunk.BlockColumn column,
          net.minecraft.world.level.block.state.BlockState defaultBlock, int j) {
-      int minY = level.getMinBuildHeight();
+      int minY = Mc.minY(level);
       net.minecraft.world.level.block.Block waterBlock = net.minecraft.world.level.block.Blocks.WATER;
       for (int k = j; k >= minY; --k) {
          net.minecraft.world.level.block.state.BlockState state = column.getBlock(k);

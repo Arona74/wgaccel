@@ -1,5 +1,6 @@
 package com.wgaccel.mixin;
 
+import com.wgaccel.platform.Mc;
 import com.wgaccel.gen.GpuLightTarget;
 import com.wgaccel.gpu.LightGpu;
 import com.wgaccel.mixin.access.LayerLightSectionStorageAccessor;
@@ -51,7 +52,7 @@ public abstract class ThreadedLevelLightEngineGpuLightMixin extends LevelLightEn
 
       ChunkPos pos = chunk.getPos();
       chunk.setLightCorrect(false);
-      ((ThreadedLevelLightEngine)(Object)this).addTask(pos.x, pos.z, ThreadedLevelLightEngine.TaskType.PRE_UPDATE, () -> {
+      ((ThreadedLevelLightEngine)(Object)this).addTask(Mc.x(pos), Mc.z(pos), ThreadedLevelLightEngine.TaskType.PRE_UPDATE, () -> {
          super.setLightEnabled(pos, true);
          LightEngine<?, ?> blkEng = ((LevelLightEngineAccessor)this).wgaccel$blockEngine();
          LayerLightSectionStorage<?> blkStorage = blkEng != null ? ((LightEngineAccessor)blkEng).wgaccel$storage() : null;
@@ -63,7 +64,7 @@ public abstract class ThreadedLevelLightEngineGpuLightMixin extends LevelLightEn
                   continue;
                }
                int sy = activeMinSec + s;
-               long secLong = SectionPos.asLong(pos.x, sy, pos.z);
+               long secLong = SectionPos.asLong(Mc.x(pos), sy, Mc.z(pos));
                if (blkAcc.wgaccel$storingLightForSection(secLong)) {
                   super.queueSectionData(LightLayer.BLOCK, SectionPos.of(pos, sy), dl);
                }
@@ -76,7 +77,7 @@ public abstract class ThreadedLevelLightEngineGpuLightMixin extends LevelLightEn
             LayerLightSectionStorageAccessor skyAcc = (LayerLightSectionStorageAccessor)skyStorage;
             for (int s = 0; s < secs; s++) {
                int sy = activeMinSec + s;
-               long secLong = SectionPos.asLong(pos.x, sy, pos.z);
+               long secLong = SectionPos.asLong(Mc.x(pos), sy, Mc.z(pos));
                if (!skyAcc.wgaccel$storingLightForSection(secLong)) {
                   continue;
                }

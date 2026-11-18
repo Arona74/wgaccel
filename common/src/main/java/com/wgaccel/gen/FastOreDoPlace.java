@@ -1,5 +1,6 @@
 package com.wgaccel.gen;
 
+import com.wgaccel.platform.Mc;
 import java.util.Arrays;
 import java.util.List;
 import net.minecraft.core.BlockPos;
@@ -270,7 +271,7 @@ public final class FastOreDoPlace {
       int chkCz1 = Integer.MIN_VALUE;
       boolean chkOk0 = false;
       boolean chkOk1 = false;
-      int minSy = level.getMinSection();
+      int minSy = Mc.minSection(level);
       int sectionsCount = level.getSectionsCount();
 
       try {

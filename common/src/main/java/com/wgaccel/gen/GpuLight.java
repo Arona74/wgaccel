@@ -329,43 +329,20 @@ public final class GpuLight {
    }
 
    private static boolean verifyIsolated(ServerLevel level, ChunkAccess[] chunks, ChunkPos centerPos, int activeMinSec, LightGpu.Result gpuResult) {
-      int cx0 = centerPos.x;
-      int cz0 = centerPos.z;
-      int minY = level.getMinBuildHeight();
+      int cx0 = Mc.x(centerPos);
+      int cz0 = Mc.z(centerPos);
+      int minY = Mc.minY(level);
       int height = level.getHeight();
       boolean hasSky = level.dimensionType().hasSkyLight();
 
-      BlockGetter localBlockGetter = new BlockGetter() {
-         @Override
-         public BlockEntity getBlockEntity(BlockPos pos) {
-            return null;
+      BlockGetter localBlockGetter = Mc.blockGetter(minY, height, pos -> {
+         int dx = SectionPos.blockToSectionCoord(pos.getX()) - cx0;
+         int dz = SectionPos.blockToSectionCoord(pos.getZ()) - cz0;
+         if (dx < -1 || dx > 1 || dz < -1 || dz > 1) {
+            return Blocks.BEDROCK.defaultBlockState();
          }
-
-         @Override
-         public BlockState getBlockState(BlockPos pos) {
-            int dx = SectionPos.blockToSectionCoord(pos.getX()) - cx0;
-            int dz = SectionPos.blockToSectionCoord(pos.getZ()) - cz0;
-            if (dx < -1 || dx > 1 || dz < -1 || dz > 1) {
-               return Blocks.BEDROCK.defaultBlockState();
-            }
-            return chunks[(dz + 1) * 3 + (dx + 1)].getBlockState(pos);
-         }
-
-         @Override
-         public FluidState getFluidState(BlockPos pos) {
-            return getBlockState(pos).getFluidState();
-         }
-
-         @Override
-         public int getHeight() {
-            return height;
-         }
-
-         @Override
-         public int getMinBuildHeight() {
-            return minY;
-         }
-      };
+         return chunks[(dz + 1) * 3 + (dx + 1)].getBlockState(pos);
+      });
 
       LightChunkGetter localGetter = new LightChunkGetter() {
          @Override
@@ -455,7 +432,7 @@ public final class GpuLight {
       ChunkAccess[] chunks = scratch.chunks;
       for (int dz = -1; dz <= 1; dz++) {
          for (int dx = -1; dx <= 1; dx++) {
-            GenerationChunkHolder holder = cache.get(pos.x + dx, pos.z + dz);
+            GenerationChunkHolder holder = cache.get(Mc.x(pos) + dx, Mc.z(pos) + dz);
             ChunkAccess c = holder != null ? holder.getLatestChunk() : null;
             if (c == null) {
                return Integer.MIN_VALUE;
@@ -465,7 +442,7 @@ public final class GpuLight {
       }
 
       int secCountWorld = center.getSectionsCount();
-      int minSecWorld = center.getMinSection();
+      int minSecWorld = Mc.minSection(center);
       int minNonAirIdx = secCountWorld;
       int maxNonAirIdx = -1;
       for (int i = 0; i < 9; i++) {

@@ -1,8 +1,8 @@
 package com.wgaccel.gen;
 
+import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.BlockTags;
@@ -61,7 +61,7 @@ public final class FastGeodePlace {
       });
       NormalNoise normalNoise = NormalNoise.create(worldgenRandom, -4, 1.0);
 
-      double outerWallMax = (double)distributionPoints / (double)config.outerWallDistance.getMaxValue();
+      double outerWallMax = (double)distributionPoints / (double)Mc.maxValue(config.outerWallDistance);
       GeodeLayerSettings layerSettings = config.geodeLayerSettings;
       GeodeBlockSettings blockSettings = config.geodeBlockSettings;
       GeodeCrackSettings crackSettings = config.geodeCrackSettings;
@@ -184,26 +184,26 @@ public final class FastGeodePlace {
                }
             }
          } else if (d8 >= fillingThreshold) {
-            safeSet.set(pos, blockSettings.fillingProvider.getState(random, pos));
+            safeSet.set(pos, Mc.state(blockSettings.fillingProvider, level, random, pos));
          } else if (d8 >= innerThreshold) {
             boolean alt = (double)random.nextFloat() < config.useAlternateLayer0Chance;
             BlockState innerState = alt
-               ? blockSettings.alternateInnerLayerProvider.getState(random, pos)
-               : blockSettings.innerLayerProvider.getState(random, pos);
+               ? Mc.state(blockSettings.alternateInnerLayerProvider, level, random, pos)
+               : Mc.state(blockSettings.innerLayerProvider, level, random, pos);
             safeSet.set(pos, innerState);
             if ((!config.placementsRequireLayer0Alternate || alt) && (double)random.nextFloat() < config.usePotentialPlacementsChance) {
                innerPlacements.add(pos.immutable());
             }
          } else if (d8 >= middleThreshold) {
-            safeSet.set(pos, blockSettings.middleLayerProvider.getState(random, pos));
+            safeSet.set(pos, Mc.state(blockSettings.middleLayerProvider, level, random, pos));
          } else {
-            safeSet.set(pos, blockSettings.outerLayerProvider.getState(random, pos));
+            safeSet.set(pos, Mc.state(blockSettings.outerLayerProvider, level, random, pos));
          }
       }
 
       List<BlockState> clusters = blockSettings.innerPlacements;
       for (BlockPos clusterOrigin : innerPlacements) {
-         BlockState clusterState = Util.getRandom(clusters, random);
+         BlockState clusterState = clusters.get(random.nextInt(clusters.size()));
          for (Direction dir : directions) {
             if (clusterState.hasProperty(BlockStateProperties.FACING)) {
                clusterState = clusterState.setValue(BlockStateProperties.FACING, dir);

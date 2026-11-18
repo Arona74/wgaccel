@@ -984,11 +984,11 @@ public final class GpuSurface {
       Holder<Biome> last = null;
       int lastId = 0;
       if (biomes instanceof net.minecraft.server.level.WorldGenRegion region) {
-         int centerCx = chunk.getPos().x;
-         int centerCz = chunk.getPos().z;
-         int minQuartY = net.minecraft.core.QuartPos.fromBlock(chunk.getMinBuildHeight());
-         int maxQuartY = net.minecraft.core.QuartPos.fromBlock(chunk.getMaxBuildHeight() - 1);
-         int minSec = chunk.getMinSection();
+         int centerCx = Mc.x(chunk.getPos());
+         int centerCz = Mc.z(chunk.getPos());
+         int minQuartY = net.minecraft.core.QuartPos.fromBlock(Mc.minY(chunk));
+         int maxQuartY = net.minecraft.core.QuartPos.fromBlock(Mc.maxY(chunk) - 1);
+         int minSec = Mc.minSection(chunk);
          LevelChunkSection[][] neighborSections = new LevelChunkSection[9][];
          for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
