@@ -2,28 +2,23 @@ package com.wgaccel.gpu;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.concurrent.locks.LockSupport;
 
 /**
- * Micro-batching for the surface step, as {@link FillBatcher} does for the noise fill: the generation threads hand
- * their chunks in ({@link #run}) and wait; a few batch threads take whatever has gathered (at most {@code max}
- * chunks, waiting a moment for a second one when only one is there) and run it as one launch per kernel
- * ({@link SurfaceGpu#runBatch}, the surface look-ahead's batch path: per chunk the same blocks as alone). The run of
- * 0.9.45 had one launch per chunk, about 15 ms of GPU waiting per surface and 62% of surfaces on the CPU as the card
- * was busy. Uses no Minecraft classes.
+ * Micro-batching for the surface step, as {@link FillBatcher} does for the noise fill: bounded queue backpressure,
+ * cancellation-safe {@link CompletableFuture} completion, and clean shutdown fallback to the CPU. Uses no Minecraft classes.
  */
 public final class SurfaceBatcher {
    private static final class Request {
       final SurfaceGpu.Job job;
       final short[] out;
-      final Thread waiter = Thread.currentThread();
       final long queued = System.nanoTime();
-      volatile boolean done;
-      volatile boolean usable;
-      volatile Throwable failure;
+      final CompletableFuture<Boolean> done = new CompletableFuture<>();
 
       Request(SurfaceGpu.Job job, short[] out) {
          this.job = job;
@@ -34,7 +29,7 @@ public final class SurfaceBatcher {
    private final SurfaceGpu gpu;
    private final int max;
    private final long waitNanos;
-   private final LinkedBlockingQueue<Request> queue = new LinkedBlockingQueue<>();
+   private final LinkedBlockingQueue<Request> queue;
    private final List<Thread> threads = new ArrayList<>();
    private volatile boolean stopped;
    public final LongAdder batches = new LongAdder();
@@ -46,6 +41,7 @@ public final class SurfaceBatcher {
       this.gpu = gpu;
       this.max = Math.max(1, max);
       this.waitNanos = waitMicros * 1000L;
+      this.queue = new LinkedBlockingQueue<>(Math.max(this.max * 4, 64));
       for (int i = 0; i < threadCount; i++) {
          Thread thread = new Thread(this::run, "WGA GPU surface batch " + i);
          thread.setDaemon(true);
@@ -54,29 +50,47 @@ public final class SurfaceBatcher {
       }
    }
 
-   /** As {@link SurfaceGpu#run}: the chunk's surface in the next batch, waited for; false when a column needs the CPU. */
-   public boolean run(SurfaceGpu.Job job, short[] out) {
+   /** Whether the queue is already saturated so a caller should fall back to the CPU without waiting. */
+   public boolean busy() {
+      return this.stopped || this.queue.size() >= 2 * this.max || this.queue.remainingCapacity() == 0;
+   }
+
+   /** Submits a surface job without blocking; resolves to {@code false} when backpressured, stopped, or column needs CPU. */
+   public CompletableFuture<Boolean> submit(SurfaceGpu.Job job, short[] out) {
       if (this.stopped) {
-         throw new IllegalStateException("the surface batcher is stopped");
+         return CompletableFuture.completedFuture(false);
       }
 
       Request request = new Request(job, out);
-      this.queue.add(request);
-      while (!request.done) {
-         LockSupport.park(this);
-         if (this.stopped && !request.done) {
-            throw new IllegalStateException("the surface batcher stopped");
-         }
+      if (!this.queue.offer(request)) {
+         return CompletableFuture.completedFuture(false);
       }
 
-      if (request.failure != null) {
-         throw new IllegalStateException("GPU surface batch failed: " + request.failure, request.failure);
+      if (this.stopped && this.queue.remove(request)) {
+         request.done.complete(false);
       }
 
-      return request.usable;
+      return request.done;
    }
 
-   /** A new world: the batch threads end; waiting chunks get a failure. */
+   /** As {@link SurfaceGpu#run}: the chunk's surface in the next batch; false on CPU column, busy queue, stop, or cancel. */
+   public boolean run(SurfaceGpu.Job job, short[] out) {
+      CompletableFuture<Boolean> future = this.submit(job, out);
+      try {
+         return Boolean.TRUE.equals(future.get());
+      } catch (CancellationException cancelled) {
+         return false;
+      } catch (InterruptedException interrupted) {
+         future.cancel(false);
+         Thread.currentThread().interrupt();
+         return false;
+      } catch (ExecutionException failure) {
+         Throwable cause = failure.getCause();
+         throw new IllegalStateException("GPU surface batch failed: " + cause, cause);
+      }
+   }
+
+   /** A new world: the batch threads end; waiting chunks resolve {@code false}. */
    public void stop() {
       this.stopped = true;
       for (Thread thread : this.threads) {
@@ -86,9 +100,7 @@ public final class SurfaceBatcher {
       List<Request> left = new ArrayList<>();
       this.queue.drainTo(left);
       for (Request request : left) {
-         request.failure = new IllegalStateException("stopped");
-         request.done = true;
-         LockSupport.unpark(request.waiter);
+         request.done.complete(false);
       }
    }
 
@@ -102,54 +114,77 @@ public final class SurfaceBatcher {
 
    private void run() {
       List<Request> batch = new ArrayList<>();
+      List<Request> active = new ArrayList<>();
       List<SurfaceGpu.Job> jobs = new ArrayList<>();
       List<short[]> outs = new ArrayList<>();
       while (!this.stopped) {
+         batch.clear();
+         active.clear();
+         boolean completed = false;
          try {
-            batch.clear();
             Request first = this.queue.take();
-            batch.add(first);
-            this.queue.drainTo(batch, this.max - 1);
-            if (batch.size() == 1 && this.waitNanos > 0L) {
+            if (!first.done.isDone()) {
+               batch.add(first);
+            }
+            this.queue.drainTo(batch, this.max - batch.size());
+            if (batch.size() == 1 && this.waitNanos > 0L && !this.stopped) {
                Request second = this.queue.poll(this.waitNanos, TimeUnit.NANOSECONDS);
-               if (second != null) {
+               if (second != null && !second.done.isDone()) {
                   batch.add(second);
-                  this.queue.drainTo(batch, this.max - 2);
+               }
+               if (!batch.isEmpty()) {
+                  this.queue.drainTo(batch, this.max - batch.size());
                }
             }
+
+            if (batch.isEmpty()) {
+               completed = true;
+               continue;
+            }
+
+            if (this.stopped) {
+               continue;
+            }
+
+            jobs.clear();
+            outs.clear();
+            long start = System.nanoTime();
+            for (Request request : batch) {
+               if (!request.done.isDone()) {
+                  this.queuedNanos.add(start - request.queued);
+                  active.add(request);
+                  jobs.add(request.job);
+                  outs.add(request.out);
+               }
+            }
+
+            if (active.isEmpty()) {
+               completed = true;
+               continue;
+            }
+
+            try {
+               boolean[] usable = this.gpu.runBatch(jobs, outs);
+               this.runNanos.add((System.nanoTime() - start) * active.size());
+               this.batches.increment();
+               this.chunks.add(active.size());
+               for (int i = 0; i < active.size(); i++) {
+                  active.get(i).done.complete(usable != null && usable[i]);
+               }
+            } catch (Throwable thrown) {
+               for (Request request : active) {
+                  request.done.completeExceptionally(thrown);
+               }
+            }
+            completed = true;
          } catch (InterruptedException interrupted) {
             break;
-         }
-
-         jobs.clear();
-         outs.clear();
-         for (Request request : batch) {
-            jobs.add(request.job);
-            outs.add(request.out);
-         }
-
-         Throwable failure = null;
-         boolean[] usable = null;
-         long start = System.nanoTime();
-         for (Request request : batch) {
-            this.queuedNanos.add(start - request.queued);
-         }
-
-         try {
-            usable = this.gpu.runBatch(jobs, outs);
-            this.runNanos.add((System.nanoTime() - start) * batch.size());
-            this.batches.increment();
-            this.chunks.add(batch.size());
-         } catch (Throwable thrown) {
-            failure = thrown;
-         }
-
-         for (int i = 0; i < batch.size(); i++) {
-            Request request = batch.get(i);
-            request.failure = failure;
-            request.usable = usable != null && usable[i];
-            request.done = true;
-            LockSupport.unpark(request.waiter);
+         } finally {
+            if (!completed) {
+               for (Request request : batch) {
+                  request.done.complete(false);
+               }
+            }
          }
       }
    }

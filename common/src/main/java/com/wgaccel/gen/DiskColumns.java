@@ -6,7 +6,6 @@ import com.wgaccel.platform.Names;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Predicate;
@@ -44,9 +43,13 @@ public final class DiskColumns {
    private static final LongAdder SKIPPED = new LongAdder();
    /** Of those, the columns whose sections hold such a block somewhere, skipped by reading the column's own blocks. */
    private static final LongAdder SKIPPED_BY_BLOCKS = new LongAdder();
+   private record Derived(Predicate<BlockState> need, boolean exact) {
+   }
+
+   private static final Derived NONE = new Derived(null, false);
    private static final BlockState AIR = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
    private static final LongAdder CHECKED = new LongAdder();
-   private static final ConcurrentHashMap<BlockPredicate, Optional<Predicate<BlockState>>> NEEDS = new ConcurrentHashMap<>();
+   private static final ConcurrentHashMap<BlockPredicate, Derived> NEEDS = new ConcurrentHashMap<>();
    private static volatile boolean off;
    private static volatile Field offsetField;
    private static volatile Field blocksField;
@@ -56,8 +59,166 @@ public final class DiskColumns {
    private DiskColumns() {
    }
 
+   public static final int DISK_EMPTY = -1;
+   public static final int DISK_UNINDEXED = 0;
+   public static final int DISK_ACTIVE = 1;
+
    public static boolean on() {
       return !off && Config.FAST_DISK_COLUMNS.get();
+   }
+
+   /**
+    * Begins a batched disk placement for {@code target} centered at {@code (ox, oz)} with {@code radius}.
+    * Resolves the target need once and checks overlapping chunk sections' palettes; returns {@link #DISK_EMPTY}
+    * when no overlapping section in {@code [bottom + 1 .. top]} can possibly pass {@code target}.
+    */
+   public static int beginDisk(BlockPredicate target, WorldGenLevel level, int ox, int oz, int radius, int top, int bottom) {
+      if (top <= bottom || radius < 0) {
+         return DISK_EMPTY;
+      }
+
+      Column column = COLUMN.get();
+      Derived derived = NEEDS.computeIfAbsent(target, DiskColumns::deriveNeed);
+      Predicate<BlockState> need = derived.need;
+      column.diskTarget = target;
+      column.diskDerived = derived;
+      column.diskActive = false;
+
+      if (need == null) {
+         column.diskIndexed = false;
+         column.diskActive = true;
+         return DISK_UNINDEXED;
+      }
+
+      int minCx = (ox - radius) >> 4;
+      int maxCx = (ox + radius) >> 4;
+      int minCz = (oz - radius) >> 4;
+      int maxCz = (oz + radius) >> 4;
+      int spanX = maxCx - minCx + 1;
+      int spanZ = maxCz - minCz + 1;
+      if (spanX > 2 || spanZ > 2) {
+         column.diskIndexed = false;
+         column.diskActive = true;
+         return DISK_UNINDEXED;
+      }
+
+      column.diskMinCx = minCx;
+      column.diskMinCz = minCz;
+      column.diskSpanX = spanX;
+      boolean anyMaybe = false;
+      for (int dz = 0; dz < spanZ; dz++) {
+         for (int dx = 0; dx < spanX; dx++) {
+            int slot = dz * spanX + dx;
+            ChunkAccess chunk = level.getChunk(minCx + dx, minCz + dz, ChunkStatus.EMPTY, false);
+            column.diskChunks[slot] = chunk;
+            if (chunk == null) {
+               column.diskChunkHas[slot] = true;
+               anyMaybe = true;
+               continue;
+            }
+
+            int low = chunk.getSectionIndex(bottom + 1);
+            int high = chunk.getSectionIndex(top);
+            LevelChunkSection[] sections = chunk.getSections();
+            int minY = com.wgaccel.platform.Mc.minY(chunk);
+            if (low < 0 || high >= sections.length || bottom + 1 < minY || top >= minY + chunk.getHeight()) {
+               column.diskChunkHas[slot] = true;
+               anyMaybe = true;
+               continue;
+            }
+
+            boolean chunkHas = false;
+            for (int sy = high; sy >= low; sy--) {
+               if (sections[sy].maybeHas(need)) {
+                  chunkHas = true;
+                  break;
+               }
+            }
+            column.diskChunkHas[slot] = chunkHas;
+            anyMaybe |= chunkHas;
+         }
+      }
+
+      if (!anyMaybe) {
+         int cols = countCircleColumns(radius);
+         column.columns += cols;
+         column.skipped += cols;
+         if (column.columns >= FLUSH) {
+            column.flush();
+         }
+         if (java.util.concurrent.ThreadLocalRandom.current().nextInt(CHECK_EVERY) == 0) {
+            check(target, level, top, bottom, new BlockPos(ox, top, oz));
+         }
+         clearDiskChunks(column);
+         return DISK_EMPTY;
+      }
+
+      column.diskIndexed = true;
+      column.diskActive = true;
+      return DISK_ACTIVE;
+   }
+
+   /** Fast column pre-check inside an active {@link #beginDisk} batch using hoisted derived state and cached chunks. */
+   public static boolean skipDiskColumn(WorldGenLevel level, int top, int bottom, BlockPos pos) {
+      Column column = COLUMN.get();
+      if (++column.columns >= FLUSH) {
+         column.flush();
+      }
+
+      Derived derived = column.diskDerived;
+      Predicate<BlockState> need = derived.need;
+      if (need == null || top <= bottom) {
+         return false;
+      }
+
+      int cx = pos.getX() >> 4;
+      int cz = pos.getZ() >> 4;
+      ChunkAccess chunk;
+      if (column.diskIndexed) {
+         int slot = (cz - column.diskMinCz) * column.diskSpanX + (cx - column.diskMinCx);
+         if (!column.diskChunkHas[slot]) {
+            column.skipped++;
+            if (java.util.concurrent.ThreadLocalRandom.current().nextInt(CHECK_EVERY) == 0) {
+               check(column.diskTarget, level, top, bottom, pos);
+            }
+            return true;
+         }
+         chunk = column.diskChunks[slot];
+      } else {
+         chunk = level.getChunk(cx, cz, ChunkStatus.EMPTY, false);
+      }
+
+      return skipInChunk(column.diskTarget, derived, need, chunk, level, top, bottom, pos, column);
+   }
+
+   /** Ends the active {@link #beginDisk} batch on this thread. */
+   public static void endDisk() {
+      Column column = COLUMN.get();
+      column.diskActive = false;
+      column.diskIndexed = false;
+      column.diskTarget = null;
+      column.diskDerived = null;
+      clearDiskChunks(column);
+   }
+
+   private static void clearDiskChunks(Column column) {
+      for (int i = 0; i < 4; i++) {
+         column.diskChunks[i] = null;
+      }
+   }
+
+   private static int countCircleColumns(int radius) {
+      int r2 = radius * radius;
+      int count = 0;
+      for (int dz = -radius; dz <= radius; dz++) {
+         int dz2 = dz * dz;
+         for (int dx = -radius; dx <= radius; dx++) {
+            if (dx * dx + dz2 <= r2) {
+               count++;
+            }
+         }
+      }
+      return count;
    }
 
    /**
@@ -66,16 +227,22 @@ public final class DiskColumns {
     */
    public static boolean skip(BlockPredicate target, WorldGenLevel level, int top, int bottom, BlockPos pos) {
       Column column = COLUMN.get();
-      if (++column.columns == FLUSH) {
+      if (++column.columns >= FLUSH) {
          column.flush();
       }
 
-      Predicate<BlockState> need = NEEDS.computeIfAbsent(target, DiskColumns::need).orElse(null);
+      Derived derived = NEEDS.computeIfAbsent(target, DiskColumns::deriveNeed);
+      Predicate<BlockState> need = derived.need;
       if (need == null || top <= bottom) {
          return false;
       }
 
       ChunkAccess chunk = level.getChunk(pos.getX() >> 4, pos.getZ() >> 4, ChunkStatus.EMPTY, false);
+      return skipInChunk(target, derived, need, chunk, level, top, bottom, pos, column);
+   }
+
+   private static boolean skipInChunk(BlockPredicate target, Derived derived, Predicate<BlockState> need, ChunkAccess chunk,
+         WorldGenLevel level, int top, int bottom, BlockPos pos, Column column) {
       if (chunk == null) {
          return false;
       }
@@ -88,38 +255,55 @@ public final class DiskColumns {
          return false;
       }
 
-      boolean maybe = false;
-      for (int i = low; i <= high && !maybe; i++) {
-         maybe = sections[i].maybeHas(need);
-      }
+      int lx = pos.getX() & 15;
+      int lz = pos.getZ() & 15;
+      long mask = 0L;
+      boolean anyMaybe = false;
+      for (int sy = high; sy >= low; sy--) {
+         LevelChunkSection section = sections[sy];
+         if (!section.maybeHas(need)) {
+            continue;
+         }
 
-      if (maybe) {
-         // A section holds such a block somewhere: the column's own blocks, read straight from its sections (what the
-         // chunk's getBlockState gives in a world that is not the debug one), a few nanoseconds each instead of a test.
-         // The heights with such a block are kept for the column's tests ({@link #test}): the others fail at once.
-         int lx = pos.getX() & 15;
-         int lz = pos.getZ() & 15;
-         long mask = 0L;
-         for (int y = top; y > bottom; y--) {
-            LevelChunkSection section = sections[chunk.getSectionIndex(y)];
-            if (need.test(section.hasOnlyAir() ? AIR : section.getBlockState(lx, y & 15, lz))) {
+         anyMaybe = true;
+         int secMinY = minY + (sy << 4);
+         int yTop = Math.min(top, secMinY + 15);
+         int yBot = Math.max(bottom + 1, secMinY);
+         if (section.hasOnlyAir()) {
+            if (need.test(AIR)) {
+               for (int y = yTop; y >= yBot; y--) {
+                  if (top - y >= 64) {
+                     return false;
+                  }
+
+                  mask |= 1L << (top - y);
+               }
+            }
+            continue;
+         }
+
+         for (int y = yTop; y >= yBot; y--) {
+            if (need.test(section.getBlockState(lx, y & 15, lz))) {
                if (top - y >= 64) {
                   return false;
                }
 
-               mask |= 1L << top - y;
+               mask |= 1L << (top - y);
             }
          }
+      }
 
-         if (mask != 0L) {
-            column.target = target;
-            column.x = pos.getX();
-            column.z = pos.getZ();
-            column.top = top;
-            column.mask = mask;
-            return false;
-         }
+      if (mask != 0L) {
+         column.target = target;
+         column.x = pos.getX();
+         column.z = pos.getZ();
+         column.top = top;
+         column.mask = mask;
+         column.exact = derived.exact;
+         return false;
+      }
 
+      if (anyMaybe) {
          column.skippedByBlocks++;
       }
 
@@ -133,11 +317,22 @@ public final class DiskColumns {
 
    /** The column being placed on this thread whose own blocks were read ({@link #skip}): the heights that may pass. */
    private static final class Column {
+      boolean diskActive;
+      boolean diskIndexed;
+      BlockPredicate diskTarget;
+      Derived diskDerived;
+      int diskMinCx;
+      int diskMinCz;
+      int diskSpanX;
+      final ChunkAccess[] diskChunks = new ChunkAccess[4];
+      final boolean[] diskChunkHas = new boolean[4];
+
       BlockPredicate target;
       int x;
       int z;
       int top;
       long mask;
+      boolean exact;
       // This thread's counts, added to the shared ones every FLUSH columns (a shared counter per column and test was
       // 1.7% of all CPU in the 7 Nov profile).
       long columns;
@@ -171,26 +366,46 @@ public final class DiskColumns {
       Column column = COLUMN.get();
       if (column.target == target && column.x == pos.getX() && column.z == pos.getZ()) {
          int row = column.top - pos.getY();
-         if (row >= 0 && row < 64 && (column.mask & 1L << row) == 0L) {
-            column.positions++;
-            if (java.util.concurrent.ThreadLocalRandom.current().nextInt(CHECK_EVERY) == 0) {
-               CHECKED.increment();
-               if (target.test(level, pos)) {
-                  if (!off) {
-                     off = true;
-                     WorldgenAccelerator.LOG.warn("WGA disk columns: a skipped position passes its target at {} (block {}); off, disks test every position again",
-                        pos.immutable(), level.getBlockState(pos));
-                  }
+         if (row >= 0 && row < 64) {
+            if ((column.mask & 1L << row) == 0L) {
+               column.positions++;
+               if (java.util.concurrent.ThreadLocalRandom.current().nextInt(CHECK_EVERY) == 0) {
+                  CHECKED.increment();
+                  if (FastPredicates.testOnce(target, level, pos)) {
+                     if (!off) {
+                        off = true;
+                        WorldgenAccelerator.LOG.warn("WGA disk columns: a skipped position passes its target at {} (block {}); off, disks test every position again",
+                           pos.immutable(), level.getBlockState(pos));
+                     }
 
-                  return true;
+                     return true;
+                  }
                }
+
+               return false;
             }
 
-            return false;
+            if (column.exact) {
+               column.positions++;
+               if (java.util.concurrent.ThreadLocalRandom.current().nextInt(CHECK_EVERY) == 0) {
+                  CHECKED.increment();
+                  if (!FastPredicates.testOnce(target, level, pos)) {
+                     if (!off) {
+                        off = true;
+                        WorldgenAccelerator.LOG.warn("WGA disk columns: an exact position fails its target at {} (block {}); off, disks test every position again",
+                           pos.immutable(), level.getBlockState(pos));
+                     }
+
+                     return false;
+                  }
+               }
+
+               return true;
+            }
          }
       }
 
-      return target.test(level, pos);
+      return FastPredicates.testOnce(target, level, pos);
    }
 
    /** The column is placed: its heights no longer apply. */
@@ -225,13 +440,13 @@ public final class DiskColumns {
          POSITIONS_SKIPPED.sum(), CHECKED.sum(), off ? " (a test passed: off)" : ": IDENTICAL");
    }
 
-   private static Optional<Predicate<BlockState>> need(BlockPredicate target) {
+   private static Derived deriveNeed(BlockPredicate target) {
       try {
-         Predicate<BlockState> need = derive(target);
-         WorldgenAccelerator.LOG.debug("WGA disk columns: target {} needs {}", target, need);
-         return Optional.ofNullable(need);
+         Derived derived = derive(target);
+         WorldgenAccelerator.LOG.debug("WGA disk columns: target {} needs {}", target, derived);
+         return derived == null ? NONE : derived;
       } catch (ReflectiveOperationException | RuntimeException failure) {
-         return Optional.empty();
+         return NONE;
       }
    }
 
@@ -242,7 +457,7 @@ public final class DiskColumns {
     * or fails on other blocks too, so it gives none.
     */
    @SuppressWarnings("unchecked")
-   private static Predicate<BlockState> derive(BlockPredicate predicate) throws ReflectiveOperationException {
+   private static Derived derive(BlockPredicate predicate) throws ReflectiveOperationException {
       String kind = Names.simpleName(predicate.getClass());
       switch (kind) {
          case "MatchingBlocksPredicate" -> {
@@ -253,12 +468,12 @@ public final class DiskColumns {
             HolderSet<Block> blocks = (HolderSet<Block>)field(predicate, "blocks");
             if (blocks.unwrapKey().isPresent()) {
                // A tag's holder set follows the tag: asked as the test asks it.
-               return state -> state.is(blocks);
+               return new Derived(state -> state.is(blocks), true);
             }
 
             BlockSet set = new BlockSet();
             blocks.forEach(holder -> set.blocks.add(holder.value()));
-            return set;
+            return new Derived(set, true);
          }
          case "MatchingBlockTagPredicate" -> {
             if (!Vec3i.ZERO.equals(field(predicate, "offset"))) {
@@ -266,31 +481,39 @@ public final class DiskColumns {
             }
 
             TagKey<Block> tag = (TagKey<Block>)field(predicate, "tag");
-            return state -> state.is(tag);
+            return new Derived(state -> state.is(tag), true);
          }
          case "AllOfPredicate" -> {
             Predicate<BlockState> all = null;
+            boolean allExact = true;
             for (BlockPredicate child : (List<BlockPredicate>)field(predicate, "predicates")) {
-               Predicate<BlockState> need = derive(child);
-               if (need != null) {
+               Derived sub = derive(child);
+               if (sub == null) {
+                  allExact = false;
+               } else {
+                  Predicate<BlockState> need = sub.need;
                   all = all == null ? need : all instanceof BlockSet a && need instanceof BlockSet b ? a.and(b) : all.and(need);
+                  allExact &= sub.exact;
                }
             }
 
-            return all;
+            return all == null ? null : new Derived(all, allExact);
          }
          case "AnyOfPredicate" -> {
             Predicate<BlockState> any = null;
+            boolean allExact = true;
             for (BlockPredicate child : (List<BlockPredicate>)field(predicate, "predicates")) {
-               Predicate<BlockState> need = derive(child);
-               if (need == null) {
+               Derived sub = derive(child);
+               if (sub == null) {
                   return null;
                }
 
+               Predicate<BlockState> need = sub.need;
                any = any == null ? need : any instanceof BlockSet a && need instanceof BlockSet b ? a.or(b) : any.or(need);
+               allExact &= sub.exact;
             }
 
-            return any;
+            return any == null ? null : new Derived(any, allExact);
          }
          default -> {
             return null;

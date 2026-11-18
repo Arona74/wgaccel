@@ -20,7 +20,8 @@ import org.spongepowered.asm.mixin.injection.At;
 @Mixin(SinglePoolElement.class)
 public abstract class SinglePoolElementMixin {
    @WrapOperation(method = "getShuffledJigsawBlocks", at = @At(value = "INVOKE",
-      target = "Lnet/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate;filterBlocks(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/levelgen/structure/templatesystem/StructurePlaceSettings;Lnet/minecraft/world/level/block/Block;Z)Lit/unimi/dsi/fastutil/objects/ObjectArrayList;"))
+      target = "Lnet/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate;filterBlocks(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/levelgen/structure/templatesystem/StructurePlaceSettings;Lnet/minecraft/world/level/block/Block;Z)Lit/unimi/dsi/fastutil/objects/ObjectArrayList;"),
+      require = 0)
    private ObjectArrayList<StructureTemplate.StructureBlockInfo> wgaccel$jigsaws(StructureTemplate template, BlockPos position, StructurePlaceSettings settings,
          Block block, boolean relative, Operation<ObjectArrayList<StructureTemplate.StructureBlockInfo>> original) {
       List<StructureTemplate.StructureBlockInfo> kept = JigsawLists.get(template, position, settings.getRotation(),

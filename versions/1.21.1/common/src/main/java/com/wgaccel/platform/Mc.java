@@ -156,6 +156,13 @@ public final class Mc {
       return new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, fill, PalettedContainer.Strategy.SECTION_STATES);
    }
 
+   /** Construct a local palette directly; the caller already packed Minecraft's padded bit storage. */
+   public static PalettedContainer<BlockState> packedBlockStates(BlockState[] palette, int size, int bits, long[] data) {
+      var strategy = PalettedContainer.Strategy.SECTION_STATES;
+      return new PalettedContainer<>(Block.BLOCK_STATE_REGISTRY, strategy, strategy.getConfiguration(Block.BLOCK_STATE_REGISTRY, bits),
+         new net.minecraft.util.SimpleBitStorage(bits, 4096, data), java.util.Arrays.asList(java.util.Arrays.copyOf(palette, size)));
+   }
+
    /** A section's block states as saved. */
    public static PalettedContainerRO.PackedData<BlockState> pack(PalettedContainerRO<BlockState> states) {
       return states.pack(Block.BLOCK_STATE_REGISTRY, PalettedContainer.Strategy.SECTION_STATES);
@@ -204,5 +211,15 @@ public final class Mc {
 
    /** A features step's region was made, before any feature is placed (nothing here: Lithos is 26.1.2 only). */
    public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
+   }
+
+   /** Block light attenuation (0..15) queried statically at BlockPos.ZERO. */
+   public static int lightBlock(BlockState state) {
+      return state.getLightBlock(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+   }
+
+   /** Directional face occlusion shape for lighting checks. */
+   public static net.minecraft.world.phys.shapes.VoxelShape occlusionShape(BlockState state, net.minecraft.core.Direction dir) {
+      return net.minecraft.world.level.lighting.LightEngine.getOcclusionShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO, state, dir);
    }
 }

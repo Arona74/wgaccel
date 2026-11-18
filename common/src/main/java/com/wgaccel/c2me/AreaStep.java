@@ -82,7 +82,7 @@ public final class AreaStep {
       }
 
       Thread thread = new Thread(() -> {
-         while (true) {
+         while (!Thread.currentThread().isInterrupted()) {
             long now = System.nanoTime();
             for (Waiter waiter : WAITING) {
                boolean late = now - waiter.start() > TIMEOUT_NANOS;
@@ -104,6 +104,20 @@ public final class AreaStep {
       thread.setDaemon(true);
       thread.start();
       watcher = thread;
+   }
+
+   /** Completes any waiting area futures and stops the watcher thread cleanly on server stop. */
+   public static synchronized void stop() {
+      Thread running = watcher;
+      watcher = null;
+      if (running != null) {
+         running.interrupt();
+      }
+
+      Waiter waiter;
+      while ((waiter = WAITING.poll()) != null) {
+         waiter.done().complete(null);
+      }
    }
 
    /** For the reports: areas, how long they waited for their results, timeouts. */

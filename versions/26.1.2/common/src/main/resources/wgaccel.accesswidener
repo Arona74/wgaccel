@@ -8,3 +8,7 @@ accessible class net/minecraft/world/level/biome/Biome$ClimateSettings
 
 # The surface rules' context, for its sea level (platform/Mc.coldEnoughToSnow).
 accessible class net/minecraft/world/level/levelgen/SurfaceRules$Context
+
+# Wave 5 GPU light queue integration with ThreadedLevelLightEngine.
+accessible class net/minecraft/server/level/ThreadedLevelLightEngine$TaskType
+accessible method net/minecraft/server/level/ThreadedLevelLightEngine addTask (IILnet/minecraft/server/level/ThreadedLevelLightEngine$TaskType;Ljava/lang/Runnable;)V

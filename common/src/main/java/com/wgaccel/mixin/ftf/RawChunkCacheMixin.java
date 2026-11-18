@@ -25,6 +25,9 @@ public abstract class RawChunkCacheMixin {
    @ModifyConstant(method = "getRawChunk", constant = {@Constant(intValue = 1024), @Constant(intValue = 2048)})
    private int wgaccel$capacity(int own) {
       int wanted = Config.FTF_RAW_CHUNK_CACHE.getAsInt();
+      if (Runtime.getRuntime().maxMemory() <= 10L * 1024 * 1024 * 1024) {
+         wanted = wanted > 0 ? Math.min(wanted, 2048) : 2048;
+      }
       int capacity = wanted > 0 ? Math.max(own, wanted) : own;
       if (wgaccel$logged.compareAndSet(false, true)) {
          WorldgenAccelerator.LOG.info("WGA FreeTerraForged raw chunk cache: {} chunks (FreeTerraForged's own size {})", capacity, own);

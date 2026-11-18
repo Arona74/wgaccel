@@ -13,6 +13,7 @@ import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 
 /** NeoForge's entry point: its events passed on to {@link WorldgenAccelerator}. */
 @Mod(WorldgenAccelerator.MOD_ID)
@@ -34,6 +35,7 @@ public final class WorldgenAcceleratorNeoForge {
       });
       NeoForge.EVENT_BUS.addListener((ServerStartedEvent event) -> WorldgenAccelerator.onServerStarted(event.getServer()));
       NeoForge.EVENT_BUS.addListener((ServerStoppingEvent event) -> WorldgenAccelerator.onServerStopping());
+      NeoForge.EVENT_BUS.addListener((ServerStoppedEvent event) -> WorldgenAccelerator.onServerStopped());
       NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedInEvent event) -> WorldgenAccelerator.onPlayerLoggedIn(event.getEntity()));
       NeoForge.EVENT_BUS.addListener((RegisterCommandsEvent event) -> WgaCommands.register(event.getDispatcher()));
       NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, (ChunkEvent.Load event) -> WorldgenAccelerator.onChunkLoadFirst(event.getLevel()));

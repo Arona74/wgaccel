@@ -104,7 +104,9 @@ final class Improvements {
       new Improvement(Config.GPU_CARVER_BIOMES, "Carver biomes from the chunk",
          "Caves and canyons read nearby biomes from the chunks that already hold them instead of working them out again.", null),
       new Improvement(Config.FAST_BLOCK_PREDICATES, "Fast block predicates",
-         "Placement filters read each block once per check. Off by default: slower in the Still Life test.", null));
+         "Placement filters read each block once per check. Off by default: slower in the Still Life test.", null),
+      new Improvement(Config.FAST_PLACEMENT_STREAMS, "Fast placement streams",
+         "Placed features walk modifiers directly without stacked Stream.flatMap wrappers. Off by default until measured.", null));
 
    private Improvements() {
    }

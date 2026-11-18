@@ -7,9 +7,13 @@ import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.core.Holder;
@@ -33,6 +37,8 @@ import net.minecraft.world.level.levelgen.NoiseChunk;
 public final class SurfaceAhead {
    private static final int THREADS = 3;
    private static final int BIOME_BUDGET = 8192;
+   private static final int RESULT_BUDGET = 4096;
+   private static final int QUEUE_CAPACITY = 2048;
    /** How long a surface step waits for a result still on the card before going the usual way. */
    private static final long WAIT_NANOS = 20_000_000L;
 
@@ -40,6 +46,7 @@ public final class SurfaceAhead {
    static final class Result {
       final SurfaceGpu.Job job;
       final short[] out;
+      final CompletableFuture<Boolean> readyFuture = new CompletableFuture<>();
       volatile boolean ready;
       volatile boolean done;
 
@@ -109,8 +116,9 @@ public final class SurfaceAhead {
    private static final ConcurrentHashMap<Long, Biomes> BIOMES = new ConcurrentHashMap<>();
    private static final ConcurrentLinkedQueue<Long> BIOME_ORDER = new ConcurrentLinkedQueue<>();
    private static final ConcurrentHashMap<Long, Result> RESULTS = new ConcurrentHashMap<>();
-   /** The results to make, themselves (a surface step may already have taken one from RESULTS and be waiting on it). */
-   private static final LinkedBlockingQueue<Result> QUEUE = new LinkedBlockingQueue<>();
+   private static final ConcurrentLinkedQueue<Long> RESULTS_ORDER = new ConcurrentLinkedQueue<>();
+   /** Bounded pending queue so orphaned noise fills fall back gracefully instead of buffering unbounded jobs. */
+   private static final LinkedBlockingQueue<Result> QUEUE = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
    private static final List<Thread> THREADS_RUNNING = new ArrayList<>();
    private static final AtomicInteger FAILURES = new AtomicInteger();
    private static volatile boolean enabled;
@@ -129,14 +137,7 @@ public final class SurfaceAhead {
 
    /** At the overworld's load. */
    public static synchronized void start() {
-      // The last world's fill codes too: the next world has chunks at the same places (the benchmark's Chunky area), and
-      // one filled on the CPU would otherwise find the old world's codes as its surface inputs.
-      CODES.clear();
-      CODES_ORDER.clear();
-      BIOMES.clear();
-      BIOME_ORDER.clear();
-      RESULTS.clear();
-      QUEUE.clear();
+      stop();
       enabled = Config.GPU_SURFACE_AHEAD.get() && Config.GPU_SURFACE.get() == Config.GpuFilterMode.ON && !com.wgaccel.gpu.OpenCl.intel();
       if (enabled && THREADS_RUNNING.isEmpty()) {
          for (int i = 0; i < THREADS; i++) {
@@ -147,6 +148,33 @@ public final class SurfaceAhead {
             thread.start();
          }
       }
+   }
+
+   /** Stops surface look-ahead workers and clears world-scoped maps/queues on server stop or restart. */
+   public static synchronized void stop() {
+      enabled = false;
+      for (Thread thread : THREADS_RUNNING) {
+         thread.interrupt();
+      }
+      THREADS_RUNNING.clear();
+      List<Result> queued = new ArrayList<>();
+      QUEUE.drainTo(queued);
+      for (Result pending : queued) {
+         pending.done = false;
+         pending.ready = true;
+         pending.readyFuture.complete(false);
+      }
+      for (Result pending : RESULTS.values()) {
+         pending.done = false;
+         pending.ready = true;
+         pending.readyFuture.complete(false);
+      }
+      CODES.clear();
+      CODES_ORDER.clear();
+      BIOMES.clear();
+      BIOME_ORDER.clear();
+      RESULTS.clear();
+      RESULTS_ORDER.clear();
    }
 
    static boolean enabled() {
@@ -248,7 +276,7 @@ public final class SurfaceAhead {
          }
       }
 
-      if (!enabled || noise == null) {
+      if (!enabled || noise == null || (p.nsPillars() != null && Config.NS_FAST_PILLARS.get() && p.nsPillars().chunkHasBiome(chunk))) {
          return;
       }
 
@@ -353,11 +381,26 @@ public final class SurfaceAhead {
       }
 
       job.zoomSeed = p.zoomSeed();
+      if (p.nsPillars() != null && Config.NS_FAST_PILLARS.get() && p.nsPillars().containsAnyBiomeId(job.quarts)) {
+         return;
+      }
       INPUT_NANOS.add(System.nanoTime() - start);
       long key = Mc.key(chunk.getPos());
       Result result = new Result(job, new short[n]);
-      RESULTS.put(key, result);
-      QUEUE.add(result);
+      if (!QUEUE.offer(result)) {
+         return;
+      }
+
+      if (RESULTS.put(key, result) == null) {
+         RESULTS_ORDER.add(key);
+         while (RESULTS.size() > RESULT_BUDGET) {
+            Long old = RESULTS_ORDER.poll();
+            if (old == null) {
+               break;
+            }
+            RESULTS.remove(old);
+         }
+      }
    }
 
    /** At the surface step: the chunk's result, waited for if it is still being made, or null (the usual way). */
@@ -371,15 +414,11 @@ public final class SurfaceAhead {
       if (!result.ready) {
          long start = System.nanoTime();
          WAITED.increment();
-         synchronized (result) {
-            while (!result.ready && System.nanoTime() - start < WAIT_NANOS) {
-               try {
-                  result.wait(5);
-               } catch (InterruptedException interrupted) {
-                  Thread.currentThread().interrupt();
-                  break;
-               }
-            }
+         try {
+            result.readyFuture.get(WAIT_NANOS, TimeUnit.NANOSECONDS);
+         } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+         } catch (TimeoutException | ExecutionException | RuntimeException ignored) {
          }
 
          WAIT_NANOS_SUM.add(System.nanoTime() - start);
@@ -438,7 +477,7 @@ public final class SurfaceAhead {
 
          long start = System.nanoTime();
          boolean[] done = null;
-         if (p != null) {
+         if (p != null && enabled) {
             try {
                done = p.gpu().runBatch(jobs, outs);
                MADE.add(results.size());
@@ -453,11 +492,10 @@ public final class SurfaceAhead {
          BATCHES.increment();
          for (int i = 0; i < results.size(); i++) {
             Result result = results.get(i);
-            result.done = done != null && done[i];
-            synchronized (result) {
-               result.ready = true;
-               result.notifyAll();
-            }
+            boolean usable = done != null && done[i];
+            result.done = usable;
+            result.ready = true;
+            result.readyFuture.complete(usable);
          }
       }
    }

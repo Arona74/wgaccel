@@ -25,8 +25,6 @@ public abstract class ChunkStatusTasksMixin {
    private static CompletableFuture<ChunkAccess> wgaccel$structureStarts(WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> cache, ChunkAccess chunk, Operation<CompletableFuture<ChunkAccess>> original) {
       // G5.3: its biomes can be worked out ahead from here (the biome step comes right after structure references).
       com.wgaccel.gen.BiomesAhead.noticed(context.level(), chunk.getPos());
-      // FreeTerraForged's region of it made ahead from here too.
-      com.wgaccel.ftf.FtfRegionsAhead.noticed(context.level(), chunk.getPos());
       return Stats.timeFuture(Stage.STRUCTURE_STARTS, () -> original.call(context, step, cache, chunk));
    }
 
@@ -35,8 +33,9 @@ public abstract class ChunkStatusTasksMixin {
       // G4b: its noise fill can be worked out ahead from here (structure starts also run in a wide ring of chunks that
       // never get further; structure references only where the chunk itself is going to be generated).
       com.wgaccel.gen.BiomesAhead.soon(context.level(), chunk.getPos());
-      // The fill once the references are known: a chunk with structure terrain is filled at its noise step with its
-      // Beardifier, so it is not made ahead (its area mates still are).
+      // FreeTerraForged's 4x4 filtered region made ahead only for real chunks reaching structure references.
+      com.wgaccel.ftf.FtfRegionsAhead.noticed(context.level(), chunk.getPos());
+      // The fill once the references are known.
       return Stats.timeFuture(Stage.STRUCTURE_REFERENCES, () -> original.call(context, step, cache, chunk)).thenApply(done -> {
          com.wgaccel.gen.GpuNoiseFill.noticed(context.level(), done.getPos(), com.wgaccel.gen.GpuNoiseFill.structureTerrain(done));
          return done;
@@ -75,7 +74,7 @@ public abstract class ChunkStatusTasksMixin {
 
    @WrapMethod(method = "light")
    private static CompletableFuture<ChunkAccess> wgaccel$light(WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> cache, ChunkAccess chunk, Operation<CompletableFuture<ChunkAccess>> original) {
-      return Stats.timeFuture(Stage.LIGHT, () -> original.call(context, step, cache, chunk));
+      return Stats.timeFuture(Stage.LIGHT, () -> com.wgaccel.gen.GpuLight.light(context.level(), context.lightEngine(), cache, chunk, () -> original.call(context, step, cache, chunk)));
    }
 
    @WrapMethod(method = "generateSpawn")

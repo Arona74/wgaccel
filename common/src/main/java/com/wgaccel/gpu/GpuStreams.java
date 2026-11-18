@@ -52,10 +52,22 @@ public final class GpuStreams {
    private static final java.util.concurrent.atomic.AtomicInteger[] NEXT = {
       new java.util.concurrent.atomic.AtomicInteger(), new java.util.concurrent.atomic.AtomicInteger(), new java.util.concurrent.atomic.AtomicInteger()};
 
+   /** True when lanes share a bounded stream pool (HIP only, where each stream reserves ~16 MB). */
+   public static boolean pooled() {
+      return GpuBackend.HIP && pool > 0;
+   }
+
+   /** Releases a dedicated OpenCL queue created via {@link #create()} when a lane tears down cleanly. */
+   public static void destroy(long stream) {
+      if (GpuBackend.OPENCL && !pooled() && stream != 0L) {
+         OpenCl.destroyQueue(stream);
+      }
+   }
+
    /** A non-blocking stream in the current context, its priority by the calling thread (under HIP, one of a pool). */
    public static long create() {
       int size = pool;
-      if (!GpuBackend.HIP && !GpuBackend.OPENCL || size <= 0) {
+      if (!pooled()) {
          return made();
       }
 

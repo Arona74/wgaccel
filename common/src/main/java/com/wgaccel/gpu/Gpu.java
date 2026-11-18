@@ -34,6 +34,8 @@ public final class Gpu implements AutoCloseable {
    private long stream;
    private final boolean ownsContext;
    private final long module;
+   private final boolean ownsModule;
+   private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
    /** Shared by threads (tile noise's program is one Gpu for every thread making tables): a plain list lost entries. */
    private final List<Long> buffers = java.util.Collections.synchronizedList(new ArrayList<>());
 
@@ -49,6 +51,7 @@ public final class Gpu implements AutoCloseable {
    private Gpu(long context, boolean ownsContext, String source, String name) {
       this.context = context;
       this.ownsContext = ownsContext;
+      this.ownsModule = true;
       try {
          makeCurrent(context);
          this.module = loadModule(source, name);
@@ -59,6 +62,20 @@ public final class Gpu implements AutoCloseable {
 
          throw failure;
       }
+   }
+
+   /** A buffer-owning view of a compiled module. Its parent must outlive every view. */
+   private Gpu(Gpu parent, long stream) {
+      this.context = parent.context;
+      this.module = parent.module;
+      this.stream = stream;
+      this.ownsContext = false;
+      this.ownsModule = false;
+   }
+
+   /** Separate OpenCL queue lane, sharing code/context but no mutable buffers. Other backends retain legacy ordering. */
+   public Gpu lane() {
+      return new Gpu(this, GpuBackend.OPENCL ? GpuStreams.create() : 0L);
    }
 
    /** A new CUDA context on the chosen device ({@link GpuDevice}), current on this thread. */
@@ -603,9 +620,15 @@ public final class Gpu implements AutoCloseable {
 
    @Override
    public void close() {
+      if (!this.closed.compareAndSet(false, true)) return;
       this.current();
       for (long device : this.buffers.toArray(new Long[0])) {
          freeDevice(device);
+      }
+      this.buffers.clear();
+      if (!this.ownsModule) {
+         GpuStreams.destroy(this.stream);
+         return;
       }
 
       if (GpuBackend.OPENCL) {

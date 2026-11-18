@@ -43,6 +43,25 @@ public final class FtfSlowPaths {
 
    private static volatile Boolean tileless;
 
+   /** FreeTerraForged without tiles and this world is using a TerraForged preset. */
+   public static boolean isTilelessTerraForged(net.minecraft.server.level.ServerLevel level) {
+      if (level == null || !tileless()) {
+         return false;
+      }
+
+      try {
+         return FtfPresetCheck.isTerraForged(level.getChunkSource().randomState());
+      } catch (LinkageError ignored) {
+         return false;
+      }
+   }
+
+   private static final class FtfPresetCheck {
+      private static boolean isTerraForged(Object random) {
+         return random instanceof etcodehome.freeterraforged.world.worldgen.FTFRandomState ftf && ftf.isTerraForged();
+      }
+   }
+
    /** FreeTerraForged without tiles: its chunk cells come from per-chunk or per-region filter grids (1.0.0013). */
    public static boolean tileless() {
       Boolean value = tileless;

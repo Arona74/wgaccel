@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.Configuration;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
@@ -201,7 +202,7 @@ public final class GpuSelfTest {
       String explicit = System.getProperty("wgaccel.nvrtc");
       if (explicit != null) {
          preloadBuiltins(new File(explicit));
-         NVRTC.libraryName(explicit);
+         Configuration.CUDA_NVRTC_LIBRARY_NAME.set(explicit);
          nvrtcState = explicit + " (-Dwgaccel.nvrtc)";
          return;
       }
@@ -251,7 +252,7 @@ public final class GpuSelfTest {
             // The newest when several are side by side (nvrtc64_120_0.dll, nvrtc64_130_0.dll).
             java.util.Arrays.sort(candidates, java.util.Comparator.comparing(File::getName).reversed());
             preloadBuiltins(candidates[0]);
-            NVRTC.libraryName(candidates[0].getAbsolutePath());
+            Configuration.CUDA_NVRTC_LIBRARY_NAME.set(candidates[0].getAbsolutePath());
             nvrtcState = candidates[0].getAbsolutePath();
             return;
          }
@@ -283,7 +284,7 @@ public final class GpuSelfTest {
       // folder only, where CUDA 13 has none: without it NVRTC failed to load even with its own path given (the newest
       // when several are side by side).
       java.util.Arrays.sort(beside, java.util.Comparator.comparing(File::getName).reversed());
-      NVRTC.builtinsLibraryName(beside[0].getAbsolutePath());
+      Configuration.CUDA_NVRTC_BUILTINS_LIBRARY_NAME.set(beside[0].getAbsolutePath());
 
       // CUDA 12.9's nvrtc64_120_0.dll asked for nvrtc-builtins.alt64_129.dll, which the toolkit does not ship (only
       // nvrtc-builtins64_129.dll): every kernel but the tiny self-test failed (RTX 3090, 14 Nov 2026). Windows hands out an

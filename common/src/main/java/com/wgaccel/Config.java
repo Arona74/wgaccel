@@ -7,12 +7,15 @@ public final class Config {
    public static final Setting<Boolean> FILL_TO_GROUND;
    public static final Setting<Integer> TILE_CACHE_TILES;
    public static final Setting<Boolean> FASTER_BIOME_CHOICE;
+   public static final Setting<Boolean> FAST_BIOME_ZOOM;
    public static final Setting<GpuMode> GPU_MODE;
    public static final Setting<GpuFilterMode> GPU_EROSION_FILTER;
    public static final Setting<GpuFilterMode> GPU_NOISE_FILL;
    public static final Setting<GpuFilterMode> GPU_SURFACE;
+   public static final Setting<GpuFilterMode> GPU_LIGHT;
    public static final Setting<Integer> GPU_QUEUE_LIMIT;
    public static final Setting<GpuFilterMode> GPU_TILE_NOISE;
+   public static final Setting<Boolean> GPU_REUSE_POPULATOR_BUFFERS;
    public static final Setting<Boolean> GPU_SURFACE_MAPS_AFTER;
    public static final Setting<Boolean> GPU_QUEUE_ADAPTIVE;
    public static final Setting<Double> GPU_QUEUE_OPEN_BELOW;
@@ -33,11 +36,13 @@ public final class Config {
    public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
+   public static final Setting<Boolean> FAST_SURFACE_SEQUENCES;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
    public static final Setting<Boolean> GPU_IMPROVEMENTS;
    public static final Setting<Boolean> FTF_FAST_PLACEMENT_SCOPES;
    public static final Setting<Boolean> FTF_SHARED_CHUNK_CELLS;
    public static final Setting<Integer> FTF_RAW_CHUNK_CACHE;
+   public static final Setting<Boolean> FTF_COALESCE_RAW_CHUNKS;
    public static final Setting<Boolean> FTF_FAST_RIVERS;
    public static final Setting<Boolean> FTF_FAST_CONTINENTS;
    public static final Setting<Boolean> FTF_REGION_PREFETCH;
@@ -45,9 +50,18 @@ public final class Config {
    public static final Setting<Integer> FTF_FILTERED_CHUNK_CACHE;
    public static final Setting<Boolean> FAST_CHUNK_COMPRESSION;
    public static final Setting<Boolean> FAST_BLOCK_PREDICATES;
+   public static final Setting<Boolean> FAST_PLACEMENT_STREAMS;
+   public static final Setting<Boolean> FAST_GEODES;
+   public static final Setting<Boolean> FAST_DRIPSTONE;
+   public static final Setting<Boolean> FAST_CARVERS;
+   public static final Setting<Boolean> FAST_NOISE_INTERPOLATION;
+   public static final Setting<Boolean> FAST_COMPILED_PREDICATES;
+   public static final Setting<Boolean> NS_FAST_PILLARS;
+   public static final Setting<Boolean> DISABLE_ATL_CHUNK_MONITOR;
    public static final Setting<Integer> CHUNKY_MAX_WORKING_COUNT;
    public static final Setting<Boolean> MEMORY_REPORT;
    public static final Setting<DebugInfoLevel> DEBUG_INFO_LEVEL;
+   public static final Setting<Boolean> WARN_UNSUPPORTED_VERSIONS;
    public static final Setting<Integer> GPU_BATCH_CHUNKS;
    public static final Setting<Integer> GPU_SURFACE_BATCH_CHUNKS;
    public static final Setting<Integer> GPU_SURFACE_BATCH_THREADS;
@@ -187,6 +201,27 @@ public final class Config {
             "screen's Defaults button empties its tab's).")
          .defineListAllowEmpty("overrides", java.util.List.of(), () -> "fastOres=false", value -> value instanceof String));
       builder.pop();
+      builder.comment("Version support: verified FreeTerraForged, terrain, and biome mod versions for Worldgen Accelerator:",
+         "  Terrain / Shaping Mods:",
+         "    - FreeTerraForged (freeterraforged): 1.0.0010 to 1.0.0032 (MC 1.21.1; tested 1.0.0010, 1.0.0013, 1.0.0014, 1.0.0024-1.0.0032)",
+         "    - Conquest ReTerraForged (reterraforged): 0.1.0 (Fabric 26.1.2, with Conquest of Arborea & Lithos)",
+         "    - Lithosphere (lithosphere): 1.8.2 (supported with Still Life 0.3 / 0.3.5 1.21.1 backport)",
+         "    - RoadWeaver (roadweaver): 2.3.2",
+         "  Biome & Worldgen Mods:",
+         "    - William Wythers' Overhauled Overworld (wwoo): 2.6.7",
+         "    - Nature's Spirit (natures_spirit): 2.3.1 - 2.3.2 (with Lithostitched 1.8.0 - 1.8.1)",
+         "    - Biomes O' Plenty (biomesoplenty): 21.1.0.14 (with TerraBlender 4.1.0.8, GlitchCore 2.1.0.2)",
+         "    - Regions Unexplored (regions_unexplored): 0.6.2 (with Lithostitched 1.8.0 - 1.8.1)",
+         "    - Terralith (terralith): 2.6.2 (with Lithostitched 1.8.0)",
+         "    - Still Life (mr_still_life / still_life): 0.3-ftf (with stilllife_ftf_bridge 3.3.0, VanillaBackport 1.2.1 - 1.2.2) or 0.3 / 0.3.5 (with Lithosphere 1.8.2)",
+         "    - No Man's Land (nomansland): 1.6.2 (with Biolith 3.0.14)",
+         "    - Supporting / Companion Worldgen Mods: TerraBlender 4.1.0.8, Lithostitched 1.8.0 - 1.8.1, Biolith 3.0.14,",
+         "      VanillaBackport 1.2.1 - 1.2.2 (with Platform 1.4.2), Worldgen Patches 1.1.0, Streams Reflowing 2.15.2").push("version_support");
+      WARN_UNSUPPORTED_VERSIONS = Setting.custom(builder
+         .comment("Log a warning at startup and show a yellow chat notice on join if an unsupported FreeTerraForged, terrain,",
+            "or biome mod version (or an untested terrain/biome mod) is installed. false: silence version-support warnings.")
+         .define("warnUnsupportedVersions", true));
+      builder.pop();
       builder.comment("CPU improvements: exact speed-ups of FreeTerraForged's and Minecraft's own CPU work (no GPU needed; any PC).").push("cpu");
       CPU_IMPROVEMENTS = Setting.custom(builder
          .comment("All CPU improvements on or off at once (false: every setting in this section is off, whatever it says).")
@@ -299,6 +334,16 @@ public final class Config {
             "section look-ups each time); here the column reads its section directly. About 1 in 256 reads is compared with the",
             "game's own; a difference turns it off. The same world. Since 0.9.94.")
          .define("fastSurfaceReads", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_SURFACE_SEQUENCES = Setting.of(builder
+         .comment("Minecraft 1.21.1 surface sequences: compile immutable rule lists to arrays once, then keep the same lazy",
+            "rule calls in the same order. Mutable/unknown list implementations retain their original evaluation.",
+            "No surface result, world read, predicate or random draw is skipped.")
+         .define("fastSurfaceSequences", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_BIOME_ZOOM = Setting.of(builder
+         .comment("Minecraft 1.21.1 biome zoom: remember the three deterministic corner-jitter values, keyed by the full",
+            "seed and quart coordinates. Bounded per-thread storage holds no world or biome references. Distance arithmetic",
+            "and winning-corner order stay unchanged; initial and periodic calls are checked against Minecraft.")
+         .define("fastBiomeZoom", true), true, true).under(CPU_IMPROVEMENTS, false);
       GPU_CARVER_BIOMES = Setting.of(builder
          .comment("Gain: carvers 1.7-2.0 -> 1.19 ms per chunk (30% of the carvers' time was these biome look-ups).",
             "The carvers' biome of each chunk within 8 read from the chunk when it already holds its biomes, instead of asking the",
@@ -325,6 +370,11 @@ public final class Config {
             "(r1000, 15,680 chunks) had 22,745 misses, about 6,000 of them chunks made again after being dropped (~4% of the CPU).",
             "The cells are the same either way; 0 keeps FreeTerraForged's own size.")
          .defineInRange("ftfRawChunkCache", 4096, 0, 65536), 4096, 4096).under(CPU_IMPROVEMENTS, 0);
+      FTF_COALESCE_RAW_CHUNKS = Setting.of(builder
+         .comment("Concurrent requests for the same missing raw FTF chunk share one calculation. Cache hits keep FTF's own",
+            "path; completed values stay in FTF's cache, not a second cache. Nested requests never wait on another owner.",
+            "Terrain arithmetic, cache capacity and the original CPU/GPU fallback are unchanged.")
+         .define("ftfCoalesceRawChunks", true), true, true).under(CPU_IMPROVEMENTS, false);
       FTF_FILTERED_CHUNK_CACHE = Setting.of(builder
          .comment("FreeTerraForged 1.0.0013 and later: how many chunks' filtered cells (after its terrain filters, about 60 KB a chunk)",
             "its FilteredChunkCache keeps. It keeps 2,048, and a chunk asked for after its drop makes its whole 4 x 4 region again:",
@@ -368,9 +418,40 @@ public final class Config {
          .comment("Block predicates (placement filters, rule-based block choices) read each block once per evaluation: a block read",
             "again in the same evaluation comes from that evaluation's own reads (nothing writes blocks while a predicate runs).",
             "About 1 in 256 such answers is compared with the world; a difference turns it off. The same world. Since 0.10.10.",
-            "Off by default: in the Still Life A/B (2026-10-22) it was slower (78.6 s on, 72.9 s off).",
+            "Off by default: in the Still Life A/B (2026-10-22) it was slower (78.6 s on, 72.9 s off); its mixins are skipped",
+            "at startup unless enabled here in wgaccel-common.toml (restart required after enabling).",
             "The presets leave this one alone (being measured): always the value written here.")
          .define("fastBlockPredicates", false)).under(CPU_IMPROVEMENTS, false);
+      FAST_PLACEMENT_STREAMS = Setting.custom(builder
+         .comment("Feature placement runs modifiers depth-first with direct sequential consumption instead of stacked Stream.flatMap",
+            "pipelines, keeping the exact modifier call order, RNG sequence and close semantics.")
+         .define("fastPlacementStreams", true)).under(CPU_IMPROVEMENTS, false);
+      FAST_GEODES = Setting.custom(builder
+         .comment("Amethyst geodes skip the outer Perlin/NormalNoise evaluation when the point sum plus the noise bound is still below the outer shell.")
+         .define("fastGeodes", true)).under(CPU_IMPROVEMENTS, false);
+      FAST_DRIPSTONE = Setting.custom(builder
+         .comment("Dripstone cluster and pointed dripstone helpers read chunk sections directly without intermediate BlockPos or",
+            "Predicate allocations, keeping identical placement logic.")
+         .define("fastDripstone", true)).under(CPU_IMPROVEMENTS, false);
+      FAST_CARVERS = Setting.custom(builder
+         .comment("Cave and canyon carvers reuse section lookups and skip all-air sections when air is not replaceable, reusing",
+            "one MutablePointContext and MutableBoolean per carve instead of allocating per voxel/column.")
+         .define("fastCarvers", true)).under(CPU_IMPROVEMENTS, false);
+      FAST_NOISE_INTERPOLATION = Setting.custom(builder
+         .comment("NoiseChunk cell/block interpolation uses cached arrays instead of allocating capturing Consumer lambdas",
+            "in updateForX/Y/Z and selectCellYZ on CPU worldgen.")
+         .define("fastNoiseInterpolation", true)).under(CPU_IMPROVEMENTS, false);
+      FAST_COMPILED_PREDICATES = Setting.custom(builder
+         .comment("Compiles vanilla BlockPredicate trees and placement modifier chains into allocation-free direct-section",
+            "evaluators for PlacementStreams, DiskFeature, and BlockColumnFeature (WWOO and Nature's Spirit heavy features).")
+         .define("fastCompiledPredicates", true)).under(CPU_IMPROVEMENTS, false);
+      NS_FAST_PILLARS = Setting.custom(builder
+         .comment("Accelerates Nature's Spirit sugi and stratified-desert surface pillars directly on the GPU surface path",
+            "(instead of falling whole chunks back to the CPU) and removes dead scans on CPU fallback columns.")
+         .define("nsFastPillars", true)).under(CPU_IMPROVEMENTS, false);
+      DISABLE_ATL_CHUNK_MONITOR = Setting.custom(builder
+         .comment("Disables AllTheLeaks' per-chunk unload WeakReference tracking, leak summary scans, and explicit System.gc/EmptyWorkingSet calls during worldgen.")
+         .define("disableAllTheLeaksChunkMonitor", true)).under(CPU_IMPROVEMENTS, false);
       builder.pop();
       builder.comment("GPU improvements: world generation work done on the GPU (OpenCL; CUDA or HIP when chosen). Every GPU",
          "result is checked against the CPU's now and then; a part that differs turns itself off.").push("gpu");
@@ -387,16 +468,22 @@ public final class Config {
             "small Radeon beside the graphics card is skipped). Read when the GPU is first used: a change takes a restart of the game.")
          .defineInRange("gpuDevice", -1, -1, 15));
       GPU_BACKEND = Setting.custom(builder
-         .comment("Which GPU API: AUTO (OpenCL, a separate card first, then the most compute units; Intel integrated graphics and GPUs under 8 compute units only when chosen; on Linux HIP on an AMD GPU (not RDNA 1) when ROCm is installed),",
-            "OPENCL, CUDA (NVIDIA, needs the CUDA Toolkit) or HIP (AMD, needs the HIP SDK on Windows, ROCm on Linux). gpuDevice then counts that API's devices. Both are set by the settings screen's Config tab (Options, the WGA button, or the mods list's",
-            "Config). Read when the GPU is first used: a change takes a restart of the game. -Dwgaccel.gpuBackend=cuda, hip or opencl still wins.")
-         .defineEnum("gpuBackend", GpuBackendChoice.AUTO));
+         .comment("Which GPU API: OPENCL (default — faster than CUDA, which did not receive the latest optimizations; runs through the GPU driver's",
+            "OpenCL compiler with nothing else to install), AUTO (OpenCL, or HIP on Linux with ROCm), CUDA (NVIDIA, legacy/unoptimized relative",
+            "to OpenCL; needs the CUDA Toolkit), or HIP (AMD, needs the HIP SDK on Windows, ROCm on Linux). gpuDevice then counts that API's devices.",
+            "Both are set by the settings screen's Config tab (Options, the WGA button, or the mods list's Config). Read when the GPU is first used:",
+            "a change takes a restart of the game. -Dwgaccel.gpuBackend=opencl, cuda or hip still wins.")
+         .defineEnum("gpuBackend", GpuBackendChoice.OPENCL));
       GPU_MODE = Setting.of(builder
          .comment("The GPU (OpenCL, CUDA or HIP, through LWJGL). OFF: never touched. SELFTEST: when a world starts,",
             "compile and run a small kernel and check its maths is bit-identical to Java's, then log the result; world",
             "generation itself does not use the GPU yet. CHECK: the self-test, plus FreeTerraForged's noise worked out on the GPU",
             "and compared bit for bit with its own results at world load (logged as WGA GPU noise check).")
          .defineEnum("gpuMode", GpuMode.CHECK), GpuMode.SELFTEST, GpuMode.SELFTEST).under(GPU_IMPROVEMENTS, GpuMode.OFF);
+      GPU_REUSE_POPULATOR_BUFFERS = Setting.of(builder
+         .comment("Reuse at most six sets of terrain-populator input/output buffers. A set is returned only after its GPU",
+            "results have been downloaded. Larger-than-65536-column sets and failed jobs are discarded. No terrain math changes.")
+         .define("gpuReusePopulatorBuffers", true), true, true).under(GPU_IMPROVEMENTS, false);
       GPU_TILE_NOISE = Setting.of(builder
          .comment("Gain: 0:51 -> 0:46 (the best client time, 3.1x the 2:23 start; a dedicated server 0:47).",
             "FreeTerraForged's tile terrain noise (the terrain populators' noise trees, mostly the mountains' erosion noise) worked",
@@ -505,6 +592,13 @@ public final class Config {
             "for the 16 chunks, so their GPU results are ready when their steps come. On, it also turns on the GPU fill and biomes in",
             "worlds that are not FreeTerraForged's (gpuNoiseFillVanilla, gpuBiomesVanilla). In development: off by default.")
          .define("gpuAreaStep", false)).under(GPU_IMPROVEMENTS, false);
+      GPU_LIGHT = Setting.of(builder
+         .comment("Measured (without ScalableLux, FTF r1000 16 GB C2ME=19): 30.70 s / 525.41 CPS on CPU vs 34.87 s / 462.49 CPS on CUDA",
+            "(38.55 s OpenCL); Trace 12.64 s CPU vs 16.28 s CUDA. Bit-identical (0 diffs across 338 checked chunks), but slower than",
+            "C2ME-threaded Vanilla/ScalableLux CPU lighting due to 3x3 section gather and GPU contention, so OFF by default.",
+            "Automatically stays off when ScalableLux is installed. CHECK: compares every chunk nibble-for-nibble against an isolated",
+            "3x3 CPU light engine. ON: uses the GPU light result and checks every 64th chunk.")
+         .defineEnum("gpuLight", GpuFilterMode.OFF), GpuFilterMode.OFF, GpuFilterMode.OFF).under(GPU_IMPROVEMENTS, GpuFilterMode.OFF);
       builder.comment("GPU tuning: how the GPU work is queued and batched. The defaults are the measured best on the test PC; every value",
          "gives the same world.").push("tuning");
       GPU_SURFACE_MAPS_AFTER = Setting.of(builder
@@ -546,9 +640,9 @@ public final class Config {
             "decides how many may wait). 0: one chunk per launch.")
          .defineInRange("gpuSurfaceBatchChunks", 16, 0, 256), 16, 16);
       GPU_SURFACE_BATCH_THREADS = Setting.of(builder
-         .comment("With gpuSurfaceBatchChunks above 0: how many threads gather and launch the surface batches (more: a chunk waits less",
-            "for its batch to start; the same blocks either way). Was 2 until 0.9.56.")
-         .defineInRange("gpuSurfaceBatchThreads", 4, 1, 16), 4, 4);
+         .comment("With gpuSurfaceBatchChunks above 0: how many threads gather and launch the surface batches (1 keeps",
+            "batches bigger with lower driver overhead; the same blocks either way).")
+         .defineInRange("gpuSurfaceBatchThreads", 1, 1, 16), 1, 1);
       GPU_SURFACE_WARP_PREPASS = Setting.of(builder
          .comment("The surface's column walk (stone above and below each block, water above it) by 32 GPU threads per column instead of",
             "one (shorter batches on the card; the same results). Since 0.9.61.")
@@ -587,8 +681,7 @@ public final class Config {
          .defineInRange("gpuStreamPool", 2, 0, 64));
       GPU_SURFACE_KINDS_FROM_CODES = Setting.of(builder
          .comment("The surface's inputs (which blocks are air, fluid, the default block) from the noise fill's codes instead of",
-            "reading the chunk's blocks. Off: 0.9.53's codes check found a block the codes call stone but air in the chunk",
-            "(1 chunk of 234), so the codes are not always the chunk's blocks when the surface starts.")
+            "reading the chunk's blocks for sections untouched since noise fill (dirty section bitmask falls back per section).")
          .define("gpuSurfaceKindsFromCodes", false), false, false);
       GPU_LOOK_AHEAD_CHUNKS = Setting.of(builder
          .comment("With gpuLookAhead ON: how many finished chunks' blocks may wait in memory for their noise step (about 120 KB",

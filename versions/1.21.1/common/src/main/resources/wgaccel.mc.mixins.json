@@ -10,6 +10,9 @@
     "ChunkGeneratorMixin",
     "ChunkEntitiesMixin",
     "ChunkSerializerMixin",
+    "PalettedContainerPackMixin",
+    "BiomeZoomMixin",
+    "SurfaceSequenceMixin",
     "RuleBasedBlockStateProviderMixin",
     "SinglePoolElementMixin"
   ],

@@ -38,16 +38,28 @@ public final class FtfRawBlocks {
    /** Chunks per side of a block. */
    private static final int BLOCK = 4;
    /** Blocks whose table is kept at most (a block's chunks are asked close together; the oldest go first). */
-   private static final int KEPT = 128;
+   private static final int KEPT = 48;
 
    /** A block's table, ready once its dry pass and GPU job are done. */
    private static final class Block {
+      final BlockKey blockKey;
       final CompletableFuture<TileNoiseGpu.Table> table = new CompletableFuture<>();
       final Object key = new Object();
+      final AtomicInteger doneMask = new AtomicInteger();
+
+      Block(BlockKey blockKey) {
+         this.blockKey = blockKey;
+      }
    }
 
-   private static final ConcurrentHashMap<Long, Block> BLOCKS_KEPT = new ConcurrentHashMap<>();
-   private static final ConcurrentLinkedQueue<Long> BLOCK_ORDER = new ConcurrentLinkedQueue<>();
+   private record BlockKey(Heightmap heightmap, int x, int z) {
+      @Override public boolean equals(Object other) {
+         return other instanceof BlockKey key && key.heightmap == this.heightmap && key.x == this.x && key.z == this.z;
+      }
+      @Override public int hashCode() { return (31 * System.identityHashCode(this.heightmap) + this.x) * 31 + this.z; }
+   }
+   private static final ConcurrentHashMap<BlockKey, Block> BLOCKS_KEPT = new ConcurrentHashMap<>();
+   private static final ConcurrentLinkedQueue<BlockKey> BLOCK_ORDER = new ConcurrentLinkedQueue<>();
    private static final LongAdder BLOCKS = new LongAdder();
    private static final LongAdder CHUNKS = new LongAdder();
    private static final LongAdder TABLE_NANOS = new LongAdder();
@@ -103,7 +115,8 @@ public final class FtfRawBlocks {
 
          Object context = field(rawCache, "context").get(rawCache);
          Heightmap heightmap = (Heightmap)field(context, "heightmap").get(context);
-         TileNoiseGpu.Table table = table(heightmap, Math.floorDiv(chunkX, BLOCK), Math.floorDiv(chunkZ, BLOCK));
+         Block block = block(heightmap, Math.floorDiv(chunkX, BLOCK), Math.floorDiv(chunkZ, BLOCK));
+         TileNoiseGpu.Table table = tableOf(block);
          if (table == null) {
             return original.get();
          }
@@ -127,6 +140,11 @@ public final class FtfRawBlocks {
          }
 
          put(rawCache, cache, chunkKey, cells);
+         int bit = 1 << (((chunkX & 3) << 2) | (chunkZ & 3));
+         int prev = block.doneMask.getAndUpdate(m -> m | bit);
+         if ((prev & bit) == 0 && (prev | bit) == 0xFFFF && BLOCKS_KEPT.remove(block.blockKey, block)) {
+            TileNoiseGpu.end(block.key);
+         }
          CHUNKS.increment();
          if (Due.due(NEXT_REPORT, CHUNKS.sum(), 2)) {
             WorldgenAccelerator.LOG.info(summary());
@@ -141,18 +159,18 @@ public final class FtfRawBlocks {
       return original.get();
    }
 
-   /** The block's table: made by the first thread to ask (dry pass and GPU job), waited for by the others; null without a program. */
-   private static TileNoiseGpu.Table table(Heightmap heightmap, int blockX, int blockZ) {
-      long blockKey = pack(blockX, blockZ);
+   /** The block's table holder: made by the first thread to ask (dry pass and GPU job), waited for by the others. */
+   private static Block block(Heightmap heightmap, int blockX, int blockZ) {
+      BlockKey blockKey = new BlockKey(heightmap, blockX, blockZ);
       Block block = BLOCKS_KEPT.get(blockKey);
       if (block == null) {
-         Block mine = new Block();
+         Block mine = new Block(blockKey);
          block = BLOCKS_KEPT.putIfAbsent(blockKey, mine);
          if (block == null) {
             block = mine;
             BLOCK_ORDER.add(blockKey);
             while (BLOCKS_KEPT.size() > KEPT) {
-               Long oldest = BLOCK_ORDER.poll();
+               BlockKey oldest = BLOCK_ORDER.poll();
                if (oldest == null) {
                   break;
                }
@@ -172,6 +190,10 @@ public final class FtfRawBlocks {
          }
       }
 
+      return block;
+   }
+
+   private static TileNoiseGpu.Table tableOf(Block block) {
       // Never forever (as ErosionGridBatch): past this, FreeTerraForged makes raw chunks alone (the caller turns this off).
       try {
          return block.table.get(30L, java.util.concurrent.TimeUnit.SECONDS);
@@ -335,5 +357,10 @@ public final class FtfRawBlocks {
       long blocks = Math.max(1, BLOCKS.sum());
       return String.format(Locale.ROOT, "WGA GPU raw chunk blocks: %,d chunks made from %,d block tables (dry pass and GPU %.1f ms per table); %s", CHUNKS.sum(),
          BLOCKS.sum(), TABLE_NANOS.sum() / 1.0e6 / blocks, TileNoiseGpu.summary());
+   }
+
+   public static void clearWorld() {
+      for (Block block : BLOCKS_KEPT.values()) TileNoiseGpu.end(block.key);
+      BLOCKS_KEPT.clear(); BLOCK_ORDER.clear();
    }
 }

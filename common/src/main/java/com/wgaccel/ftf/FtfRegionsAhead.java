@@ -47,6 +47,8 @@ public final class FtfRegionsAhead {
    private static volatile boolean started;
    private static volatile Object lastRandom;
    private static volatile Object lastCache;
+   private static volatile Object ensureRandom;
+   private static volatile Object ensureCache;
    private static volatile Method getFiltered;
    private static volatile Method getIfPresent;
 
@@ -101,27 +103,7 @@ public final class FtfRegionsAhead {
          return lastCache;
       }
 
-      Object cache = null;
-      if (random instanceof etcodehome.freeterraforged.world.worldgen.FTFRandomState ftf && ftf.isTerraForged() && ftf.generatorContext() != null) {
-         Object context = ftf.generatorContext();
-         Field field;
-         try {
-            // GeneratorContext.filteredChunkCache (1.0.0013; the build compiles against 1.0.0010's, without it).
-            field = Names.declaredField(context.getClass(), "filteredChunkCache");
-         } catch (NoSuchFieldException none) {
-            field = null;
-         }
-
-         if (field != null) {
-            field.setAccessible(true);
-            cache = field.get(context);
-            if (cache != null && getFiltered == null) {
-               getIfPresent = Names.method(cache.getClass(), "getIfPresent", int.class, int.class);
-               getFiltered = Names.method(cache.getClass(), "getFilteredChunk", int.class, int.class);
-            }
-         }
-      }
-
+      Object cache = cacheFromRandom(random);
       if (cache != lastCache) {
          // A new world: what was queued for the last one is not wanted.
          QUEUED.clear();
@@ -132,6 +114,70 @@ public final class FtfRegionsAhead {
       lastCache = cache;
       lastRandom = random;
       return cache;
+   }
+
+   /** FilteredChunkCache on an FTFRandomState, or null when absent or not TerraForged. */
+   private static Object cacheFromRandom(Object random) throws ReflectiveOperationException {
+      if (!(random instanceof etcodehome.freeterraforged.world.worldgen.FTFRandomState ftf) || !ftf.isTerraForged() || ftf.generatorContext() == null) {
+         return null;
+      }
+
+      Object context = ftf.generatorContext();
+      Field field;
+      try {
+         // GeneratorContext.filteredChunkCache (1.0.0013; the build compiles against 1.0.0010's, without it).
+         field = Names.declaredField(context.getClass(), "filteredChunkCache");
+      } catch (NoSuchFieldException none) {
+         return null;
+      }
+
+      field.setAccessible(true);
+      Object cache = field.get(context);
+      if (cache != null && getFiltered == null) {
+         getIfPresent = Names.method(cache.getClass(), "getIfPresent", int.class, int.class);
+         getFiltered = Names.method(cache.getClass(), "getFilteredChunk", int.class, int.class);
+      }
+
+      return cache;
+   }
+
+   /**
+    * Ensures FTF's 4x4 filtered regions sampled by a chunk's aquifer/preliminary surface (reaching +-3 chunks from
+    * cell centers) are already in FilteredChunkCache before building a look-ahead stand-in, avoiding raw fallback cells.
+    */
+   public static void ensureAround(Object random, int chunkX, int chunkZ) {
+      if (!FTF || off) {
+         return;
+      }
+
+      try {
+         Object cache;
+         if (random == ensureRandom) {
+            cache = ensureCache;
+         } else {
+            cache = cacheFromRandom(random);
+            ensureCache = cache;
+            ensureRandom = random;
+         }
+
+         if (cache == null) {
+            return;
+         }
+
+         int minRx = chunkX - 4 & -4;
+         int maxRx = chunkX + 2 & -4;
+         int minRz = chunkZ - 2 & -4;
+         int maxRz = chunkZ + 2 & -4;
+         for (int rz = minRz; rz <= maxRz; rz += 4) {
+            for (int rx = minRx; rx <= maxRx; rx += 4) {
+               if (getIfPresent.invoke(cache, rx, rz) == null || getIfPresent.invoke(cache, rx + 3, rz + 3) == null) {
+                  getFiltered.invoke(cache, rx, rz);
+               }
+            }
+         }
+      } catch (Throwable failure) {
+         off(failure instanceof java.lang.reflect.InvocationTargetException wrapped && wrapped.getCause() != null ? wrapped.getCause() : failure);
+      }
    }
 
    private static synchronized void start() {
@@ -188,6 +234,17 @@ public final class FtfRegionsAhead {
          QUEUED.clear();
          WorldgenAccelerator.LOG.warn("WGA FreeTerraForged regions ahead: off ({}); regions are made by their chunks as before", failure.toString());
       }
+   }
+
+   /** Clears world-owned region cache references and queued tasks on server shutdown. */
+   public static void clearWorld() {
+      QUEUED.clear();
+      SEEN.clear();
+      SEEN_ORDER.clear();
+      lastCache = null;
+      lastRandom = null;
+      ensureCache = null;
+      ensureRandom = null;
    }
 
    public static String summary() {

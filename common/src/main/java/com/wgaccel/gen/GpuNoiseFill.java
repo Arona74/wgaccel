@@ -157,6 +157,7 @@ public final class GpuNoiseFill {
       // without equals), the level and fluid on 26.1 (a record; numbered by identity, C2ME's flags came out different).
       final java.util.HashMap<Object, Integer> identities = new java.util.HashMap<>();
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+      final MutablePointContext point = new MutablePointContext();
       byte[] codes = new byte[0];
    }
 
@@ -517,7 +518,10 @@ public final class GpuNoiseFill {
          // The thread's own buffer: this chunk is written or compared before the thread fills another.
          byte[] codes = scratch.codes;
          if (p.batcher() != null) {
-            p.batcher().fill(job, codes);
+            if (!p.batcher().fill(job, codes)) {
+               SKIP_BUSY.increment();
+               return null;
+            }
          } else {
             p.gpu.fill(job, codes);
          }
@@ -580,7 +584,7 @@ public final class GpuNoiseFill {
 
          for (int lx = 0; lx <= 16; lx++) {
             for (int lz = 0; lz <= 16; lz++) {
-               job.cells[k * 289 + lx * 17 + lz] = wrapped.compute(new DensityFunction.SinglePointContext(chunkX + lx, 0, chunkZ + lz));
+               job.cells[k * 289 + lx * 17 + lz] = wrapped.compute(scratch.point.at(chunkX + lx, 0, chunkZ + lz));
             }
          }
       }
@@ -615,10 +619,39 @@ public final class GpuNoiseFill {
    // G4b: fills worked out ahead (config gpuLookAhead ON).
    private static volatile Ahead ahead;
 
+   public static void stopLookAhead() {
+      Ahead old = ahead; ahead = null;
+      if (old != null) old.stop();
+   }
+
+   /** Releases batchers and world-owned fill programs after the server has drained chunk generation. */
+   public static void stopWorld() {
+      stopLookAhead();
+      Program old = program;
+      program = null;
+      if (old != null) {
+         if (old.batcher() != null) {
+            old.batcher().stop();
+         }
+         old.gpu().close();
+      }
+
+      synchronized (OTHERS) {
+         for (Program other : OTHERS.values()) {
+            if (other.batcher() != null) {
+               other.batcher().stop();
+            }
+            other.gpu().close();
+         }
+
+         OTHERS.clear();
+      }
+   }
+
    /** The 4 x 4 area step: whether the look-ahead still has this chunk queued or being made (its result not ready yet). */
    public static boolean aheadPending(long key) {
       Ahead look = ahead;
-      return look != null && look.states.get(key) == Ahead.QUEUED;
+      return look != null && Ahead.pending(look.states.get(key));
    }
 
    /** The 4 x 4 area step: the chunk queued (at the front) unless already queued, made, or done (structure terrain). */
@@ -692,7 +725,9 @@ public final class GpuNoiseFill {
          int cellHeight = access.wgaccel$cellHeight();
          net.minecraft.world.level.levelgen.NoiseSettings full = p.generator.generatorSettings().value().noiseSettings().clampToHeightAccessor(chunk);
          int minCellY = Math.floorDiv(full.minY(), full.getCellHeight());
-         int cellCountY = Math.min(Math.floorDiv(full.height(), full.getCellHeight()), access.wgaccel$cellCountY());
+         int cellCountY = com.wgaccel.ftf.FtfCellsGround.clampWrapCells(
+            Math.min(Math.floorDiv(full.height(), full.getCellHeight()), access.wgaccel$cellCountY()),
+            random, chunk, p.generator.getSeaLevel(), full);
          if (access.wgaccel$cellNoiseMinY() != minCellY || cellWidth <= 0 || 16 % cellWidth != 0 || cellCountY <= 0) {
             return;
          }
@@ -722,13 +757,21 @@ public final class GpuNoiseFill {
     */
    private static final class Ahead {
       private static final Object QUEUED = new Object();
-      private static final Object TAKEN = new Object();
       private static final Object DONE = new Object();
+      private record Prepared(FillGpu.Job job) {}
+      /** Unique ownership token: an older worker cannot publish into a newer request for the same chunk. */
+      private static final class Work {
+         final FillGpu.Job prepared;
+         Work(Object queued) { this.prepared = queued instanceof Prepared real ? real.job : null; }
+      }
+      private static boolean pending(Object state) {
+         return state == QUEUED || state instanceof Prepared || state instanceof Work;
+      }
       private static final int DONE_KEEP = 65_536;
       private static final int BATCH = 64;
 
       /** real: made from the chunk's own noise chunk at its biome step (structure pieces included), not a stand-in. */
-      private record Result(int minCellY, int cellCountY, int cellWidth, int cellHeight, byte[] codes, boolean real, FillGpu.Job job) {
+      private record Result(int minCellY, int cellCountY, int cellWidth, int cellHeight, byte[] codes, boolean real, long hash1, long hash2, int[] sheets) {
       }
 
       /** Results whose inputs were no longer the chunk's at its noise step (not used; the chunk filled the usual way). */
@@ -736,16 +779,15 @@ public final class GpuNoiseFill {
       private final AtomicInteger inputsLogged = new AtomicInteger();
 
       /** Jobs made from real chunks (structure chunks at their biome step), used instead of a stand-in for their keys. */
-      private final java.util.concurrent.ConcurrentHashMap<Long, FillGpu.Job> prepared = new java.util.concurrent.ConcurrentHashMap<>();
-      private final java.util.Set<Long> realKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
       final LongAdder preparedMade = new LongAdder();
       final LongAdder preparedUsed = new LongAdder();
 
       /** A structure chunk's job from its real noise chunk: queued at the front, made like the others (marked real). */
       void submitPrepared(long key, FillGpu.Job job) {
-         this.prepared.put(key, job);
-         this.realKeys.add(key);
-         this.states.put(key, QUEUED);
+         if (this.stopped) return;
+         // Keep source identity and inputs together with the queued request, rather than in separately raced maps.
+         Object before = this.states.put(key, new Prepared(job));
+         if (before instanceof Result) this.readyCount.decrementAndGet();
          this.soon.add(key);
       }
 
@@ -763,7 +805,7 @@ public final class GpuNoiseFill {
       private volatile boolean stopped;
       final LongAdder noticed = new LongAdder();
       final LongAdder areaMates = new LongAdder();
-      private static final long FILL_WAIT_NANOS = 0L;
+      private static final long WORK_WAIT_NANOS = 600_000L;
       final LongAdder waited = new LongAdder();
       final LongAdder waitedInTime = new LongAdder();
       final LongAdder structuredSkipped = new LongAdder();
@@ -795,6 +837,7 @@ public final class GpuNoiseFill {
 
       void stop() {
          this.stopped = true;
+         this.soon.clear(); this.wanted.clear();
          for (Thread thread : this.threads) {
             thread.interrupt();
          }
@@ -887,16 +930,16 @@ public final class GpuNoiseFill {
       /** As take; with realOnly (a structure chunk) only a result made from the real chunk is used. */
       Pending take(ChunkAccess chunk, int minCellY, int cellCountY, int cellWidth, int cellHeight, boolean realOnly) {
          long waitKey = Mc.key(chunk.getPos());
-         if (this.states.get(waitKey) == QUEUED) {
-            // Still queued or on the card: to the front and a short wait for it, as the biome step does (0.9.91, vanilla
-            // and CPU-bound: 3,275 chunks not ready in time and 4,071 more while the GPU was busy filled on the CPU at
-            // ~18 ms each; waiting for a result already being made is far cheaper).
+         Object curState = this.states.get(waitKey);
+         if (pending(curState)) {
+            // Still queued or on the card: to the front, and if already in-flight on the GPU (Work), allow a short wait.
             this.soon.add(waitKey);
             this.waited.increment();
-            // 0.9.92 waited 25 ms: 3,009 waits, only 260 in time (the GPU 93% busy), 1:25 vs 1:22: no wait now (0 ms).
-            long until = System.nanoTime() + FILL_WAIT_NANOS;
-            while (this.states.get(waitKey) == QUEUED && System.nanoTime() < until) {
-               java.util.concurrent.locks.LockSupport.parkNanos(200_000L);
+            if (curState instanceof Work) {
+               long until = System.nanoTime() + WORK_WAIT_NANOS;
+               while (this.states.get(waitKey) instanceof Work && System.nanoTime() < until) {
+                  java.util.concurrent.locks.LockSupport.parkNanos(150_000L);
+               }
             }
 
             if (this.states.get(waitKey) instanceof Result) {
@@ -907,7 +950,7 @@ public final class GpuNoiseFill {
          long key = Mc.key(chunk.getPos());
          Object state = this.done(key);
          if (!(state instanceof Result result)) {
-            if (state == QUEUED) {
+            if (pending(state)) {
                // Still waiting or being made: the maker skips it, as it is DONE now.
                this.late.increment();
             }
@@ -920,10 +963,6 @@ public final class GpuNoiseFill {
             return null;
          }
 
-         if (result.real) {
-            this.preparedUsed.increment();
-         }
-
          if (result.minCellY != minCellY || result.cellCountY != cellCountY || result.cellWidth != cellWidth || result.cellHeight != cellHeight) {
             this.mismatched.increment();
             return null;
@@ -933,7 +972,7 @@ public final class GpuNoiseFill {
          // its biome step) is used only if the chunk's own inputs now are the same as the ones it was made from (0.11.0's
          // only fill difference: a structure chunk's job made at its biome step, its inputs changed by the noise step;
          // the GPU from the noise step's inputs gave the game's blocks). The same inputs give the same blocks.
-         String changed = this.changedInputs(chunk, result.job);
+         String changed = this.changedInputs(chunk, result);
          if (changed != null) {
             this.inputsChanged.increment();
             if (this.inputsLogged.incrementAndGet() <= 8) {
@@ -945,13 +984,16 @@ public final class GpuNoiseFill {
          }
 
          this.used.increment();
+         if (result.real) {
+            this.preparedUsed.increment();
+         }
          boolean debug = debugChunk(chunk);
          boolean check = ELIGIBLE.getAndIncrement() % checkEvery() == 0 || debug;
          Pending pending = new Pending(chunk, minCellY, cellCountY, cellWidth, cellHeight, result.codes, check, 0L, 0L);
          pending.fromAhead = true;
          pending.debug = debug;
          pending.real = result.real;
-         pending.sheets = sheets(result.job);
+         pending.sheets = result.sheets;
          pending.program = this.p;
          if (check && !snapshot(pending)) {
             SKIP_OTHER.increment();
@@ -964,25 +1006,27 @@ public final class GpuNoiseFill {
       private final ThreadLocal<Scratch> verify = ThreadLocal.withInitial(Scratch::new);
 
       String memorySummary() {
-         return String.format(Locale.ROOT, "fill look-ahead states %,d (results %,d), prepared %,d, real keys %,d, queues %,d + %,d, done %,d", this.states.size(),
-            this.readyCount.get(), this.prepared.size(), this.realKeys.size(), this.wanted.size(), this.soon.size(), this.doneCount.get());
+         return String.format(Locale.ROOT, "fill look-ahead states %,d (results %,d), queues %,d + %,d, done %,d", this.states.size(),
+            this.readyCount.get(), this.wanted.size(), this.soon.size(), this.doneCount.get());
       }
 
-      /** The first input in which the chunk's own inputs now differ from the job's, or null when they are the same. */
-      private String changedInputs(ChunkAccess chunk, FillGpu.Job made) {
+      /** Verifies that the chunk's inputs at noise-fill time still match the 128-bit fingerprint saved when made ahead. */
+      private String changedInputs(ChunkAccess chunk, Result made) {
          try {
             NoiseChunk noise = ((com.wgaccel.mixin.access.ChunkAccessAccessor)chunk).wgaccel$noiseChunk();
-            if (noise == null || made == null) {
+            if (noise == null) {
                return "no noise chunk to compare with";
             }
 
             Scratch scratch = this.verify.get();
-            if (!inputs(this.p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), made.cellMinY, made.cellCountY, made.cellWidth,
+            if (!inputs(this.p, noise, chunk.getPos().getMinBlockX(), chunk.getPos().getMinBlockZ(), made.minCellY, made.cellCountY, made.cellWidth,
                made.cellHeight, scratch.job, scratch)) {
                return "its aquifer has something the GPU does not know";
             }
 
-            return difference(scratch.job, made);
+            long h1 = hashInputs(scratch.job, 0x9E3779B97F4A7C15L);
+            long h2 = hashInputs(scratch.job, 0xBF58476D1CE4E5B9L);
+            return h1 == made.hash1 && h2 == made.hash2 ? null : "input fingerprint mismatch";
          } catch (Throwable failure) {
             return failure.toString();
          }
@@ -994,11 +1038,18 @@ public final class GpuNoiseFill {
          List<FillGpu.Job> jobs = new ArrayList<>();
          List<byte[]> codes = new ArrayList<>();
          List<Long> made = new ArrayList<>();
+         List<Work> claims = new ArrayList<>();
          java.util.Set<Long> inBatch = new java.util.HashSet<>();
+         Scratch workerScratch = new Scratch();
+         FillGpu.Job[] batchJobs = new FillGpu.Job[BATCH];
+         for (int i = 0; i < BATCH; i++) {
+            batchJobs[i] = new FillGpu.Job();
+         }
          while (!this.stopped) {
             keys.clear();
             try {
                Long first = this.soon.poll();
+               boolean urgent = first != null;
                if (first == null) {
                   first = this.wanted.poll(5, java.util.concurrent.TimeUnit.MILLISECONDS);
                }
@@ -1008,14 +1059,18 @@ public final class GpuNoiseFill {
                }
 
                keys.add(first);
-               this.soon.drainTo(keys, BATCH - keys.size());
-               this.wanted.drainTo(keys, BATCH - keys.size());
-               if (keys.size() < BATCH) {
-                  // Nobody waits on these yet: a moment for more to gather into the launch.
-                  Long more = this.wanted.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS);
-                  if (more != null) {
-                     keys.add(more);
-                     this.wanted.drainTo(keys, BATCH - keys.size());
+               int limit = urgent ? 4 : BATCH;
+               int drainedSoon = this.soon.drainTo(keys, limit - keys.size());
+               urgent |= drainedSoon > 0;
+               if (!urgent) {
+                  this.wanted.drainTo(keys, BATCH - keys.size());
+                  if (keys.size() < BATCH) {
+                     // Nobody waits on these yet: a moment for more to gather into the launch.
+                     Long more = this.wanted.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS);
+                     if (more != null) {
+                        keys.add(more);
+                        this.wanted.drainTo(keys, BATCH - keys.size());
+                     }
                   }
                }
             } catch (InterruptedException interrupted) {
@@ -1025,6 +1080,7 @@ public final class GpuNoiseFill {
             jobs.clear();
             codes.clear();
             made.clear();
+            claims.clear();
             long start = System.nanoTime();
             inBatch.clear();
             for (Long key : keys) {
@@ -1032,17 +1088,18 @@ public final class GpuNoiseFill {
                   continue;
                }
 
-               if (this.states.get(key) != QUEUED) {
-                  this.states.remove(key, TAKEN);
+               Object queued = this.states.get(key);
+               Work claim = new Work(queued);
+               if ((queued != QUEUED && !(queued instanceof Prepared)) || !this.states.replace(key, queued, claim)) {
                   this.skipped.increment();
                   continue;
                }
 
                try {
-                  FillGpu.Job prepared = this.prepared.remove(key);
-                  FillGpu.Job job = prepared != null ? prepared : standIn(this.p, Mc.chunk(key), Integer.MIN_VALUE, new Scratch());
+                  FillGpu.Job prepared = claim.prepared;
+                  FillGpu.Job job = prepared != null ? prepared : standIn(this.p, Mc.chunk(key), Integer.MIN_VALUE, workerScratch, batchJobs[jobs.size()]);
                   if (job == null) {
-                     this.states.remove(key, QUEUED);
+                     this.states.remove(key, claim);
                      this.skipped.increment();
                      continue;
                   }
@@ -1050,8 +1107,9 @@ public final class GpuNoiseFill {
                   jobs.add(job);
                   codes.add(new byte[256 * job.cellCountY * job.cellHeight]);
                   made.add(key);
+                  claims.add(claim);
                } catch (Throwable failure) {
-                  this.states.remove(key, QUEUED);
+                  this.states.remove(key, claim);
                   this.skipped.increment();
                   int failed = this.failures.incrementAndGet();
                   if (failed == 1) {
@@ -1074,9 +1132,8 @@ public final class GpuNoiseFill {
             } catch (Throwable failure) {
                if (badLaunch(failure, "the look-ahead's " + made.size() + " chunks")) {
                   // None of the launch's codes are kept: those chunks fill the usual way at their noise step.
-                  for (Long key : made) {
-                     this.realKeys.remove(key);
-                     this.states.remove(key, QUEUED);
+                  for (int i = 0; i < made.size(); i++) {
+                     this.states.remove(made.get(i), claims.get(i));
                   }
 
                   continue;
@@ -1093,19 +1150,19 @@ public final class GpuNoiseFill {
             for (int i = 0; i < made.size(); i++) {
                FillGpu.Job job = jobs.get(i);
                Long key = made.get(i);
-               boolean real = this.realKeys.remove(key);
+               Work claim = claims.get(i);
+               boolean real = claim.prepared != null;
                if (real) {
                   this.preparedMade.increment();
                }
 
-               Result result = new Result(job.cellMinY, job.cellCountY, job.cellWidth, job.cellHeight, codes.get(i), real, job);
-               if (this.states.replace(key, QUEUED, result)) {
+               Result result = new Result(job.cellMinY, job.cellCountY, job.cellWidth, job.cellHeight, codes.get(i), real,
+                  hashInputs(job, 0x9E3779B97F4A7C15L), hashInputs(job, 0xBF58476D1CE4E5B9L), sheets(job));
+               if (!this.stopped && this.states.replace(key, claim, result)) {
                   this.made.increment();
                   this.readyCount.incrementAndGet();
                   this.readyOrder.add(key);
-               } else {
-                  this.states.remove(key, TAKEN);
-               }
+               } else this.states.remove(key, claim);
             }
 
             // Past the budget: the oldest results go (chunks noticed but never filled, at the edge of what was asked).
@@ -1156,22 +1213,30 @@ public final class GpuNoiseFill {
     * when the aquifer has something the GPU does not know. The job is this thread's own (reused).
     */
    private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch) throws ReflectiveOperationException {
+      return standIn(p, pos, minCellY, scratch, scratch.job);
+   }
+
+   private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch, FillGpu.Job job) throws ReflectiveOperationException {
       net.minecraft.world.level.chunk.ProtoChunk proto = Mc.emptyChunk(pos, p.level, p.level.registryAccess());
       net.minecraft.world.level.levelgen.NoiseGeneratorSettings settings = p.generator.generatorSettings().value();
+      com.wgaccel.ftf.FtfRegionsAhead.ensureAround(p.random, Mc.x(pos), Mc.z(pos));
       NoiseChunk noise = NoiseChunk.forChunk(proto, p.random, Mc.noStructures(), settings,
          p.fluidPicker.get(), Blender.empty());
       tileStage(noise, true);
       try {
          NoiseChunkAccessor access = (NoiseChunkAccessor)noise;
          net.minecraft.world.level.levelgen.NoiseSettings full = settings.noiseSettings().clampToHeightAccessor(proto);
-         int cellCountY = Math.min(Math.floorDiv(full.height(), full.getCellHeight()), access.wgaccel$cellCountY());
+         int fullCells = Math.floorDiv(full.height(), full.getCellHeight());
+         int cellCountY = com.wgaccel.ftf.FtfCellsGround.clampWrapCells(
+            Math.min(fullCells, access.wgaccel$cellCountY()),
+            p.random, proto, p.generator.getSeaLevel(), full);
          if (minCellY == Integer.MIN_VALUE) {
             // As NoiseBasedChunkGenerator.fillFromNoise works it out.
             minCellY = Math.floorDiv(full.minY(), full.getCellHeight());
          }
 
          return inputs(p, noise, pos.getMinBlockX(), pos.getMinBlockZ(), minCellY, cellCountY, access.wgaccel$cellWidth(), access.wgaccel$cellHeight(),
-            scratch.job, scratch) ? scratch.job : null;
+            job, scratch) ? job : null;
       } finally {
          tileStage(noise, false);
       }
@@ -1310,6 +1375,53 @@ public final class GpuNoiseFill {
             WorldgenAccelerator.LOG.warn("WGA GPU look-ahead check: chunk {}: the stand-in failed: {}", pos, failure.toString());
          }
       }
+   }
+
+   private static long mix64(long h, long v) {
+      h ^= v;
+      h *= 0x9E3779B97F4A7C15L;
+      return h ^ (h >>> 30);
+   }
+
+   /** Deterministic 64-bit input fingerprint matching every field checked by {@link #difference}. */
+   private static long hashInputs(FillGpu.Job job, long seed) {
+      long h = mix64(seed, job.chunkX);
+      h = mix64(h, job.chunkZ);
+      h = mix64(h, job.cellMinY);
+      h = mix64(h, job.cellCountY);
+      h = mix64(h, job.cellWidth);
+      h = mix64(h, job.cellHeight);
+      h = mix64(h, job.cellsUsed);
+      h = mix64(h, job.skipAbove);
+      h = mix64(h, job.sea);
+      h = mix64(h, job.seaType);
+      h = mix64(h, job.veins ? 1L : 0L);
+      h = mix64(h, job.aquifer);
+      h = mix64(h, job.conquest ? 1L : 0L);
+      h = mix64(h, job.seedLo);
+      h = mix64(h, job.seedHi);
+      for (int v : job.grid) {
+         h = mix64(h, v);
+      }
+      for (int v : job.lava) {
+         h = mix64(h, v);
+      }
+      if (job.beard != null) {
+         h = mix64(h, job.beard.length);
+         for (int v : job.beard) {
+            h = mix64(h, v);
+         }
+      } else {
+         h = mix64(h, -1L);
+      }
+      for (int i = 0, n = 3 * job.cellsUsed; i < n; i++) {
+         h = mix64(h, job.loc[i]);
+         h = mix64(h, job.status[i]);
+      }
+      for (double v : job.cells) {
+         h = mix64(h, Double.doubleToRawLongBits(v));
+      }
+      return h;
    }
 
    /** The first field in which two jobs differ, or null when they are the same (doubles compared by their bits). */
@@ -1794,6 +1906,13 @@ public final class GpuNoiseFill {
          }
 
          if (!same && com.wgaccel.Config.GPU_BULK_SECTIONS.get()) {
+            LevelChunkSection compact = SectionBuilder.fromCodes(codes, from, table, SHEET,
+               sections[index].getBiomes());
+            if (compact != null) {
+               sections[index] = compact;
+               uniform[index] = true;
+               continue;
+            }
             // S3 rest: a mixed section the fill covers completely, made at once from its codes (the writing loop still
             // works the heightmaps and fluid marks out from them).
             BlockState[] blocks = new BlockState[4096];
@@ -1803,10 +1922,10 @@ public final class GpuNoiseFill {
                blocks[i] = c2 == SHEET ? sheet(pending, i & 15, i >> 4 & 15, minY + (i >> 8)) : table[c2];
             }
 
-            net.minecraft.world.level.chunk.PalettedContainer<BlockState> states = SectionBuilder.build(blocks);
-            if (states != null) {
-               LevelChunkSection old = sections[index];
-               sections[index] = SectionBuilder.section(states, old.getBiomes(), blocks);
+            LevelChunkSection old = sections[index];
+            LevelChunkSection rebuilt = SectionBuilder.buildSection(blocks, old.getBiomes());
+            if (rebuilt != null) {
+               sections[index] = rebuilt;
                uniform[index] = true;
                MIXED_SECTIONS.increment();
             }

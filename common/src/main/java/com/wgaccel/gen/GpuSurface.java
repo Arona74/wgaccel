@@ -76,13 +76,14 @@ public final class GpuSurface {
     * optimize gives the same object for the same tree (FastStrataOnceMixin), so a chunk given the source runs rules.
     */
    record Program(RandomState random, SurfaceSystem system, SurfaceRules.RuleSource rules, SurfaceRules.RuleSource source, Registry<Biome> biomes, long zoomSeed,
-         BlockState defaultBlock, BlockState[] table, SurfaceGpu gpu, com.wgaccel.gpu.SurfaceBatcher batcher) {
+         BlockState defaultBlock, BlockState[] table, boolean[] fluid, SurfaceGpu gpu, com.wgaccel.gpu.SurfaceBatcher batcher, NaturesSpiritPillars nsPillars) {
    }
 
    /** The chunk in this thread's buildSurface, from its start to its end. */
    private static final class Current {
       final SurfaceGpu.Job job = new SurfaceGpu.Job();
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+      final int[] nsTops = new int[256];
       short[] out = new short[0];
       BlockState[] before = new BlockState[0];
       Program program;
@@ -100,6 +101,10 @@ public final class GpuSurface {
       it.unimi.dsi.fastutil.shorts.ShortList[] marksBefore;
       /** Marks other threads made on this checked chunk while its CPU surface ran (see FOREIGN). */
       java.util.concurrent.ConcurrentLinkedQueue<Long> foreignMarks;
+      /** Pooled section-sized buffers reused across {@link #bulkSections} calls on this worker thread. */
+      BlockState[][] bulkPool = new BlockState[0][];
+      /** Per-section count of surface changes from the current chunk's {@link #bulkSections} scan. */
+      int[] bulkChanges = new int[0];
    }
 
    private static volatile Program program;
@@ -299,29 +304,38 @@ public final class GpuSurface {
          strataMax = 1;
       }
 
+      BlockState defaultBlock = (BlockState)field(system, "defaultBlock");
+      int skipDefaultCode = codegen.state(defaultBlock);
+      NaturesSpiritPillars nsPillars = Config.NS_FAST_PILLARS.get() ? NaturesSpiritPillars.of(system, biomes) : null;
+      int defaultBlockCode = nsPillars != null ? skipDefaultCode : -1;
+
       String source = codegen.productionSource(inputs, DimensionType.WAY_BELOW_MIN_Y, id(biomes, Biomes.ERODED_BADLANDS), id(biomes, Biomes.FROZEN_OCEAN),
-         id(biomes, Biomes.DEEP_FROZEN_OCEAN));
-      // Other mods' columns made before the rules, as vanilla's eroded badlands pillars and icebergs (special: the chunk's
-      // surface on the CPU): Nature's Spirit 2.3.1's SurfaceBuilderMixin builds stone pillars from its noises in these
-      // biomes at the eroded badlands check, so the stone above every block below changes (FreeTerraForged's strata
-      // came out another stone: 5 of 240 checked chunks, 24 Oct 2026).
-      StringBuilder extra = new StringBuilder();
-      for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
-         int id = id(biomes, Mc.key(Registries.BIOME, "natures_spirit", name));
-         if (id >= 0) {
-            extra.append(" || columnBiome == ").append(id);
-         }
-      }
-
-      if (!extra.isEmpty()) {
-         String before = source;
-         source = source.replace("|| columnBiome < 0 ? 1 : 0", "|| columnBiome < 0" + extra + " ? 1 : 0");
-         if (source.equals(before)) {
-            throw new IllegalStateException("the special columns' test was not found in the surface source");
+         id(biomes, Biomes.DEEP_FROZEN_OCEAN), defaultBlockCode, skipDefaultCode);
+      if (nsPillars != null) {
+         WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's 5 pillar biomes accelerated on the GPU (kind=6 defaultBlockCode={})", defaultBlockCode);
+      } else {
+         // Other mods' columns made before the rules, as vanilla's eroded badlands pillars and icebergs (special: the chunk's
+         // surface on the CPU): Nature's Spirit 2.3.1's SurfaceBuilderMixin builds stone pillars from its noises in these
+         // biomes at the eroded badlands check, so the stone above every block below changes (FreeTerraForged's strata
+         // came out another stone: 5 of 240 checked chunks, 24 Oct 2026).
+         StringBuilder extra = new StringBuilder();
+         for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
+            int id = id(biomes, Mc.key(Registries.BIOME, "natures_spirit", name));
+            if (id >= 0) {
+               extra.append(" || columnBiome == ").append(id);
+            }
          }
 
-         WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's pillar biomes ({}) get their surface on the CPU", 
-            extra.toString().split("==").length - 1);
+         if (!extra.isEmpty()) {
+            String before = source;
+            source = source.replace("|| columnBiome < 0 ? 1 : 0", "|| columnBiome < 0" + extra + " ? 1 : 0");
+            if (source.equals(before)) {
+               throw new IllegalStateException("the special columns' test was not found in the surface source");
+            }
+
+            WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's pillar biomes ({}) get their surface on the CPU",
+               extra.toString().split("==").length - 1);
+         }
       }
       try {
          Files.writeString(Platform.logs().resolve("wgaccel-surface.cu"), source, StandardCharsets.UTF_8);
@@ -334,18 +348,19 @@ public final class GpuSurface {
       }
 
       BlockState[] table = new BlockState[states];
+      boolean[] fluid = new boolean[states];
       for (int i = 0; i < states; i++) {
-         table[i] = codegen.stateAt(i);
+         BlockState state = codegen.stateAt(i);
+         table[i] = state;
+         fluid[i] = state != null && !state.getFluidState().isEmpty();
       }
-
-      BlockState defaultBlock = (BlockState)field(system, "defaultBlock");
       SurfaceGpu gpu = new SurfaceGpu(GpuService.context(), strataSource, strataMax, source, codegen.noiseData(), codegen.permutations(), inputs.noiseData(),
          inputs.permutations(), inputs.simplexData(), inputs.simplexPermutations(), inputs.temperature(), inputs.modifier());
       WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU surface: rule tree of %s, %d block states, strata %s, CUDA source %,d KB", codegen.kinds(),
          states, strata == null ? "none" : "up to " + strataMax + " layers" + strataSampled, source.length() / 1024));
       int batch = Config.GPU_SURFACE_BATCH_CHUNKS.get();
-      com.wgaccel.gpu.SurfaceBatcher batcher = batch > 0 ? new com.wgaccel.gpu.SurfaceBatcher(gpu, batch, Config.GPU_SURFACE_BATCH_THREADS.get(), 200L) : null;
-      return new Program(random, system, rules, unoptimized, biomes, zoomSeed, defaultBlock, table, gpu, batcher);
+      com.wgaccel.gpu.SurfaceBatcher batcher = batch > 0 ? new com.wgaccel.gpu.SurfaceBatcher(gpu, batch, Config.GPU_SURFACE_BATCH_THREADS.get(), 150L) : null;
+      return new Program(random, system, rules, unoptimized, biomes, zoomSeed, defaultBlock, table, fluid, gpu, batcher, nsPillars);
    }
 
    private static int id(Registry<Biome> biomes, net.minecraft.resources.ResourceKey<Biome> key) {
@@ -639,6 +654,12 @@ public final class GpuSurface {
          return;
       }
 
+      if (on && p.batcher() != null && p.batcher().busy()) {
+         SKIP_BUSY.increment();
+         current.timedWay = 2;
+         return;
+      }
+
       Object place = on ? com.wgaccel.gpu.GpuQueue.trySurface() : com.wgaccel.gpu.GpuQueue.NONE;
       if (place == null) {
          SKIP_BUSY.increment();
@@ -714,6 +735,22 @@ public final class GpuSurface {
          maxTop = Math.max(maxTop, height + 1);
       }
 
+      if (noiseBiomeSource == null) {
+         Field source = Names.declaredField(BiomeManager.class, "noiseBiomeSource");
+         source.setAccessible(true);
+         Field seed = Names.declaredField(BiomeManager.class, "biomeZoomSeed");
+         seed.setAccessible(true);
+         biomeZoomSeed = seed;
+         noiseBiomeSource = source;
+      }
+
+      BiomeManager.NoiseBiomeSource biomes = (BiomeManager.NoiseBiomeSource)noiseBiomeSource.get(current.biomeManager);
+      boolean nsPillars = p.nsPillars != null && p.nsPillars.chunkOrBorderHasBiome(chunk, biomes);
+      int nsMaxTop = nsPillars ? p.nsPillars.computeChunkPillars(chunk, current.biomeManager, current.pos, current.nsTops) : Integer.MIN_VALUE;
+      if (nsMaxTop != Integer.MIN_VALUE) {
+         maxTop = Math.max(maxTop, nsMaxTop + 1);
+      }
+
       // Only blocks up to the highest column start: the loop reads and writes none above it.
       int height = Math.max(1, Math.min(fullHeight, maxTop - minY + 1));
       job.minY = minY;
@@ -721,13 +758,16 @@ public final class GpuSurface {
       job.minX = minX;
       job.minZ = minZ;
       int n = 256 * height;
-      if (job.kinds == null || job.kinds.length < n || current.before.length < n) {
+      if (job.kinds == null || job.kinds.length < n) {
          job.kinds = new byte[n + n / 4];
+      }
+
+      if (check && current.before.length < n) {
          current.before = new BlockState[n + n / 4];
       }
 
       byte[] kinds = job.kinds;
-      BlockState[] before = current.before;
+      BlockState[] before = check ? current.before : null;
       BlockState defaultBlock = p.defaultBlock;
       current.mapsBefore = null;
       current.marksBefore = null;
@@ -750,35 +790,55 @@ public final class GpuSurface {
       SurfaceAhead.Codes codes = SurfaceAhead.takeCodes(chunk);
       if (!check && codes != null && Config.GPU_SURFACE_KINDS_FROM_CODES.get()) {
          SurfaceAhead.kinds(codes, kinds, defaultBlock, minY, height);
-      } else for (int y0 = minY; y0 < minY + height; y0 = (y0 & ~15) + 16) {
-         int y1 = Math.min(minY + height, (y0 & ~15) + 16);
-         LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(y0));
-         // A section of one state (its palette holds no other: most sections before the surface, all stone or all air)
-         // is filled at once instead of read block by block.
-         BlockState first = section.hasOnlyAir() ? air : section.getBlockState(0, 0, 0);
-         BlockState only = first == air && section.hasOnlyAir() || !section.getStates().maybeHas(state -> state != first) ? first : null;
+      } else {
+         for (int y0 = minY; y0 < minY + height; y0 = (y0 & ~15) + 16) {
+            int y1 = Math.min(minY + height, (y0 & ~15) + 16);
+            LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(y0));
+            // A section of one state (its palette holds no other: most sections before the surface, all stone or all air)
+            // is filled at once instead of read block by block.
+            BlockState first = section.hasOnlyAir() ? air : section.getBlockState(0, 0, 0);
+            BlockState only = first == air && section.hasOnlyAir() || !section.getStates().maybeHas(state -> state != first) ? first : null;
 
-         if (only != null) {
-            byte kind = (byte)(only.isAir() ? 0 : !only.getFluidState().isEmpty() ? 1 : only == defaultBlock ? 2 : 3);
-            java.util.Arrays.fill(before, (y0 - minY) * 256, (y1 - minY) * 256, only);
-            java.util.Arrays.fill(kinds, (y0 - minY) * 256, (y1 - minY) * 256, kind);
-            continue;
-         }
+            if (only != null) {
+               byte kind = (byte)(only.isAir() ? 0 : !only.getFluidState().isEmpty() ? 1 : only == defaultBlock ? 2 : 3);
+               if (check) {
+                  java.util.Arrays.fill(before, (y0 - minY) * 256, (y1 - minY) * 256, only);
+               }
+               java.util.Arrays.fill(kinds, (y0 - minY) * 256, (y1 - minY) * 256, kind);
+               continue;
+            }
 
-         for (int y = y0; y < y1; y++) {
-            int at = (y - minY) * 256;
-            for (int t = 0; t < 256; t++) {
-               BlockState state = section.getBlockState(t / 16, y & 15, t % 16);
-               before[at + t] = state;
-               kinds[at + t] = (byte)(state.isAir() ? 0 : !state.getFluidState().isEmpty() ? 1 : state == defaultBlock ? 2 : 3);
+            if (check) {
+               for (int y = y0; y < y1; y++) {
+                  int ly = y & 15;
+                  int at = (y - minY) * 256;
+                  for (int lx = 0; lx < 16; lx++) {
+                     int col = at + (lx << 4);
+                     for (int lz = 0; lz < 16; lz++) {
+                        BlockState state = section.getBlockState(lx, ly, lz);
+                        before[col + lz] = state;
+                        kinds[col + lz] = (byte)(state.isAir() ? 0 : !state.getFluidState().isEmpty() ? 1 : state == defaultBlock ? 2 : 3);
+                     }
+                  }
+               }
+            } else {
+               for (int y = y0; y < y1; y++) {
+                  int ly = y & 15;
+                  int at = (y - minY) * 256;
+                  for (int lx = 0; lx < 16; lx++) {
+                     int col = at + (lx << 4);
+                     for (int lz = 0; lz < 16; lz++) {
+                        BlockState state = section.getBlockState(lx, ly, lz);
+                        kinds[col + lz] = (byte)(state.isAir() ? 0 : !state.getFluidState().isEmpty() ? 1 : state == defaultBlock ? 2 : 3);
+                     }
+                  }
+               }
             }
          }
       }
 
       if (check && codes != null) {
-         // The codes check: a checked chunk's kinds come from its blocks; those the fill's codes give (as an unchecked
-         // chunk's do) must be the same (FreeTerraForged's river water, placed in the surface step before this, is
-         // one way they could not be).
+         // On every checked chunk that kept its fill codes: verify what kinds() would produce (for logging/stats only).
          byte[] fromCodes = new byte[256 * height];
          SurfaceAhead.kindsOnly(codes, fromCodes, defaultBlock, minY, height);
          int first = -1;
@@ -857,6 +917,31 @@ public final class GpuSurface {
          }
       }
 
+      if (nsMaxTop != Integer.MIN_VALUE) {
+         int maxAllowedY = minY + height - 1;
+         for (int t = 0; t < 256; t++) {
+            int pTop = current.nsTops[t];
+            if (pTop == Integer.MIN_VALUE) {
+               continue;
+            }
+            int j = Math.min(pTop, maxAllowedY);
+            int lx = t / 16;
+            int lz = t % 16;
+            current.pos.setX(minX + lx).setZ(minZ + lz);
+            for (int y = j; y >= minY; y--) {
+               int at = (y - minY) * 256 + t;
+               byte k = kinds[at];
+               if (k == 0 || (k == 1 && chunk.getBlockState(current.pos.setY(y)).is(Blocks.WATER))) {
+                  kinds[at] = 6;
+               } else {
+                  break;
+               }
+            }
+            job.heights[t] = Math.max(job.heights[t], j);
+            job.tops[t] = Math.max(job.tops[t], j + 1);
+         }
+      }
+
       // SurfaceRules.Context.getMinSurfaceLevel without the surface depth: the preliminary surface at the 16-block cell's corners.
       int cellX = minX >> 4;
       int cellZ = minZ >> 4;
@@ -872,22 +957,12 @@ public final class GpuSurface {
 
       // The noise biomes BiomeManager.getBiome can reach from the blocks worked on (y clamped by the chunk, so only as
       // high as they reach), as the region gives them.
-      if (noiseBiomeSource == null) {
-         Field source = Names.declaredField(BiomeManager.class, "noiseBiomeSource");
-         source.setAccessible(true);
-         Field seed = Names.declaredField(BiomeManager.class, "biomeZoomSeed");
-         seed.setAccessible(true);
-         biomeZoomSeed = seed;
-         noiseBiomeSource = source;
-      }
-
       long zoomSeed = biomeZoomSeed.getLong(current.biomeManager);
       if (zoomSeed != p.zoomSeed) {
          other(chunk, "another biome zoom seed");
          return false;
       }
 
-      BiomeManager.NoiseBiomeSource biomes = (BiomeManager.NoiseBiomeSource)noiseBiomeSource.get(current.biomeManager);
       int gx = (minX >> 2) - 1;
       int gz = (minZ >> 2) - 1;
       int gy = minY >> 2;
@@ -908,17 +983,60 @@ public final class GpuSurface {
       Registry<Biome> registry = p.biomes;
       Holder<Biome> last = null;
       int lastId = 0;
-      for (int qx = 0; qx < 6; qx++) {
-         for (int qz = 0; qz < 6; qz++) {
-            int at = (qx * 6 + qz) * sy;
-            for (int qy = 0; qy < sy; qy++) {
-               Holder<Biome> biome = biomes.getNoiseBiome(gx + qx, gy + qy, gz + qz);
-               if (biome != last) {
-                  last = biome;
-                  lastId = registry.getId(biome.value());
-               }
+      if (biomes instanceof net.minecraft.server.level.WorldGenRegion region) {
+         int centerCx = chunk.getPos().x;
+         int centerCz = chunk.getPos().z;
+         int minQuartY = net.minecraft.core.QuartPos.fromBlock(chunk.getMinBuildHeight());
+         int maxQuartY = net.minecraft.core.QuartPos.fromBlock(chunk.getMaxBuildHeight() - 1);
+         int minSec = chunk.getMinSection();
+         LevelChunkSection[][] neighborSections = new LevelChunkSection[9][];
+         for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+               neighborSections[(dx + 1) * 3 + (dz + 1)] = region.getChunk(centerCx + dx, centerCz + dz).getSections();
+            }
+         }
+         for (int qx = 0; qx < 6; qx++) {
+            int absQx = gx + qx;
+            int relCx = (absQx >> 2) - centerCx + 1;
+            int lqx = absQx & 3;
+            for (int qz = 0; qz < 6; qz++) {
+               int absQz = gz + qz;
+               int relCz = (absQz >> 2) - centerCz + 1;
+               int lqz = absQz & 3;
+               LevelChunkSection[] colSections = neighborSections[relCx * 3 + relCz];
+               int at = (qx * 6 + qz) * sy;
+               int prevSecIdx = -1;
+               LevelChunkSection prevSec = null;
+               for (int qy = 0; qy < sy; qy++) {
+                  int clampedQy = Mth.clamp(gy + qy, minQuartY, maxQuartY);
+                  int secIdx = (clampedQy >> 2) - minSec;
+                  if (secIdx != prevSecIdx) {
+                     prevSecIdx = secIdx;
+                     prevSec = colSections[secIdx];
+                  }
+                  Holder<Biome> biome = prevSec.getNoiseBiome(lqx, clampedQy & 3, lqz);
+                  if (biome != last) {
+                     last = biome;
+                     lastId = registry.getId(biome.value());
+                  }
 
-               job.quarts[at + qy] = lastId;
+                  job.quarts[at + qy] = lastId;
+               }
+            }
+         }
+      } else {
+         for (int qx = 0; qx < 6; qx++) {
+            for (int qz = 0; qz < 6; qz++) {
+               int at = (qx * 6 + qz) * sy;
+               for (int qy = 0; qy < sy; qy++) {
+                  Holder<Biome> biome = biomes.getNoiseBiome(gx + qx, gy + qy, gz + qz);
+                  if (biome != last) {
+                     last = biome;
+                     lastId = registry.getId(biome.value());
+                  }
+
+                  job.quarts[at + qy] = lastId;
+               }
             }
          }
       }
@@ -950,6 +1068,7 @@ public final class GpuSurface {
       BlockPos.MutableBlockPos pos = current.pos;
       short[] out = current.out;
       BlockState[] table = p.table;
+      boolean[] fluid = p.fluid;
       int height = job.height;
       int minY = job.minY;
       byte[] kinds = job.kinds;
@@ -960,87 +1079,161 @@ public final class GpuSurface {
       // S3: sections the surface changes for the most part (and never to air) are collected and made at once after the
       // loop; the loop still makes every heightmap update and fluid mark in vanilla's order (a heightmap's downward scan
       // reads blocks below, which vanilla's order has not written yet either).
-      BlockState[][] bulk = atOnce && maps != null && com.wgaccel.Config.GPU_BULK_SECTIONS.get() ? bulkSections(job, out, table, kinds, defaultBlock, air, sections, lowSection) : null;
-      // Heightmap.update does nothing for a block 2 or more below the map's height (its first test): each map's height
-      // in this column is kept here and the call made only above that, then the height read again after a change. The
-      // same updates as calling it for every block (the profile of 0.9.49: Heightmap.update 5.8% of all samples).
-      int[] firsts = maps == null ? null : new int[maps.length];
+      boolean scanSections = atOnce && maps != null && com.wgaccel.Config.GPU_BULK_SECTIONS.get();
+      BlockState[][] bulk = scanSections
+         ? bulkSections(current, job, out, table, kinds, defaultBlock, air, sections, lowSection) : null;
+      int[] bulkChanges = scanSections ? current.bulkChanges : null;
       // gpuSurfaceMapsAfter: no per-block updates; each column's highest changed block is noted and the heights are
       // worked out after the writes (mapsAfter).
       boolean after = maps != null && !mapsAfterOff && com.wgaccel.Config.GPU_SURFACE_MAPS_AFTER.get();
+      // Heightmap.update does nothing for a block 2 or more below the map's height (its first test): each map's height
+      // in this column is kept here and the call made only above that, then the height read again after a change. The
+      // same updates as calling it for every block (the profile of 0.9.49: Heightmap.update 5.8% of all samples).
+      int[] firsts = maps == null || after ? null : new int[maps.length];
       int[] changedTop = after ? new int[256] : null;
       if (after) {
          java.util.Arrays.fill(changedTop, Integer.MIN_VALUE);
       }
       // 0.9.63: and the lowest of them, so a block below every map's height skips the loop over the maps in one test.
       int floor = Integer.MIN_VALUE;
-      for (int t = 0; t < 256; t++) {
-         int lx = t / 16;
-         int lz = t % 16;
-         pos.setX(job.minX + lx).setZ(job.minZ + lz);
-         if (maps != null) {
-            for (int m = 0; m < maps.length; m++) {
-               firsts[m] = maps[m].getFirstAvailable(lx, lz);
+      if (after && maps != null) {
+         int[] tops = job.tops;
+         int minX = job.minX;
+         int minZ = job.minZ;
+         int maxTop = minY - 1;
+         for (int t = 0; t < 256; t++) {
+            if (tops[t] > maxTop) {
+               maxTop = tops[t];
             }
-
-            floor = lowest(firsts);
          }
-
-         for (int y = Math.min(job.tops[t], minY + height - 1); y >= minY; y--) {
-            int at = (y - minY) * 256 + t;
-            int code = out[at];
-            if (code >= 0) {
-               BlockState state = table[code];
-               if (maps != null && (kinds[at] == 2 && state == defaultBlock || kinds[at] == 0 && state == air)) {
-                  // The block is already this state (the default block, or air): setBlockState would change nothing
-                  // (same block, counts and heightmaps; neither is a fluid). Skipped.
-                  set++;
-                  if (real) {
-                     SAME_SKIPPED.increment();
-                  }
-
+         int startY = Math.min(maxTop, minY + height - 1);
+         for (int y = startY; y >= minY; y--) {
+            int sectionAt = (y - minY) >> 4;
+            if (bulkChanges != null && bulkChanges[sectionAt] == 0) {
+               y = minY + (sectionAt << 4);
+               continue;
+            }
+            int row = (y - minY) * 256;
+            LevelChunkSection section = sections[lowSection + sectionAt];
+            BlockState[] secBulk = bulk != null ? bulk[sectionAt] : null;
+            int ly = y & 15;
+            int yBase = ly << 8;
+            boolean sectionAir = secBulk == null && section.hasOnlyAir();
+            for (int t = 0; t < 256; t++) {
+               if (y > tops[t]) {
                   continue;
                }
 
-               if (maps == null) {
-                  Mc.setBlock(chunk, pos.setY(y), state);
-               } else {
-                  int sectionAt = (y - minY) >> 4;
-                  LevelChunkSection section = sections[lowSection + sectionAt];
-                  if (bulk != null && bulk[sectionAt] != null) {
-                     bulk[sectionAt][((y & 15) * 16 + lz) * 16 + lx] = state;
-                     if (after) {
-                        changedTop[t] = Math.max(changedTop[t], y);
-                     } else if (y > floor - 2) {
-                        floor = updateMaps(maps, firsts, floor, lx, y, lz, state);
+               int at = row + t;
+               int code = out[at];
+               if (code >= 0) {
+                  BlockState state = table[code];
+                  if (kinds[at] == 2 && state == defaultBlock || kinds[at] == 0 && state == air) {
+                     set++;
+                     if (real) {
+                        SAME_SKIPPED.increment();
                      }
-                  } else if (!(state.is(Blocks.AIR) && section.hasOnlyAir())) {
-                     section.setBlockState(lx, y & 15, lz, state, false);
-                     if (after) {
-                        changedTop[t] = Math.max(changedTop[t], y);
-                     } else if (y > floor - 2) {
-                        floor = updateMaps(maps, firsts, floor, lx, y, lz, state);
+                     continue;
+                  }
+
+                  int lx = t >> 4;
+                  int lz = t & 15;
+                  if (secBulk != null) {
+                     secBulk[yBase + (lz << 4) + lx] = state;
+                     if (y > changedTop[t]) {
+                        changedTop[t] = y;
+                     }
+                  } else if (!((state == air || state.getBlock() == Blocks.AIR) && sectionAir)) {
+                     section.setBlockState(lx, ly, lz, state, false);
+                     sectionAir = section.hasOnlyAir();
+                     if (y > changedTop[t]) {
+                        changedTop[t] = y;
                      }
                   }
 
-                  pos.setY(y);
+                  if (fluid[code]) {
+                     pos.set(minX + lx, y, minZ + lz);
+                     if (marks == null) {
+                        chunk.markPosForPostprocessing(pos);
+                     } else {
+                        int index = lowSection + sectionAt;
+                        if (marks[index] == null) {
+                           marks[index] = new it.unimi.dsi.fastutil.shorts.ShortArrayList();
+                        }
+                        marks[index].add(net.minecraft.world.level.chunk.ProtoChunk.packOffsetCoordinates(pos));
+                     }
+                  }
+
+                  set++;
+               }
+            }
+         }
+      } else {
+         for (int t = 0; t < 256; t++) {
+            int lx = t / 16;
+            int lz = t % 16;
+            pos.setX(job.minX + lx).setZ(job.minZ + lz);
+            if (firsts != null) {
+               for (int m = 0; m < maps.length; m++) {
+                  firsts[m] = maps[m].getFirstAvailable(lx, lz);
                }
 
-               if (!state.getFluidState().isEmpty()) {
-                  if (marks == null) {
-                     chunk.markPosForPostprocessing(pos);
+               floor = lowest(firsts);
+            }
+
+            for (int y = Math.min(job.tops[t], minY + height - 1); y >= minY; y--) {
+               int at = (y - minY) * 256 + t;
+               int code = out[at];
+               if (code >= 0) {
+                  BlockState state = table[code];
+                  if (maps != null && (kinds[at] == 2 && state == defaultBlock || kinds[at] == 0 && state == air)) {
+                     set++;
+                     if (real) {
+                        SAME_SKIPPED.increment();
+                     }
+
+                     continue;
+                  }
+
+                  if (maps == null) {
+                     Mc.setBlock(chunk, pos.setY(y), state);
                   } else {
-                     // As ProtoChunk.markPosForPostprocessing does.
-                     int index = chunk.getSectionIndex(pos.getY());
-                     if (marks[index] == null) {
-                        marks[index] = new it.unimi.dsi.fastutil.shorts.ShortArrayList();
+                     int sectionAt = (y - minY) >> 4;
+                     LevelChunkSection section = sections[lowSection + sectionAt];
+                     if (bulk != null && bulk[sectionAt] != null) {
+                        bulk[sectionAt][((y & 15) * 16 + lz) * 16 + lx] = state;
+                        if (after) {
+                           changedTop[t] = Math.max(changedTop[t], y);
+                        } else if (y > floor - 2) {
+                           floor = updateMaps(maps, firsts, floor, lx, y, lz, state);
+                        }
+                     } else if (!((state == air || state.getBlock() == Blocks.AIR) && section.hasOnlyAir())) {
+                        section.setBlockState(lx, y & 15, lz, state, false);
+                        if (after) {
+                           changedTop[t] = Math.max(changedTop[t], y);
+                        } else if (y > floor - 2) {
+                           floor = updateMaps(maps, firsts, floor, lx, y, lz, state);
+                        }
                      }
 
-                     marks[index].add(net.minecraft.world.level.chunk.ProtoChunk.packOffsetCoordinates(pos));
+                     pos.setY(y);
                   }
-               }
 
-               set++;
+                  if (fluid[code]) {
+                     if (marks == null) {
+                        chunk.markPosForPostprocessing(pos);
+                     } else {
+                        int index = chunk.getSectionIndex(pos.getY());
+                        if (marks[index] == null) {
+                           marks[index] = new it.unimi.dsi.fastutil.shorts.ShortArrayList();
+                        }
+
+                        marks[index].add(net.minecraft.world.level.chunk.ProtoChunk.packOffsetCoordinates(pos));
+                     }
+                  }
+
+                  set++;
+               }
             }
          }
       }
@@ -1048,10 +1241,10 @@ public final class GpuSurface {
       if (bulk != null) {
          for (int i = 0; i < bulk.length; i++) {
             if (bulk[i] != null) {
-               net.minecraft.world.level.chunk.PalettedContainer<BlockState> states = SectionBuilder.build(bulk[i]);
                LevelChunkSection old = sections[lowSection + i];
-               if (states != null) {
-                  sections[lowSection + i] = SectionBuilder.section(states, old.getBiomes(), bulk[i]);
+               LevelChunkSection rebuilt = SectionBuilder.buildSection(bulk[i], old.getBiomes());
+               if (rebuilt != null) {
+                  sections[lowSection + i] = rebuilt;
                   if (real) {
                      BULK_SECTIONS.increment();
                   }
@@ -1068,7 +1261,7 @@ public final class GpuSurface {
       }
 
       if (after) {
-         mapsAfter(chunk, maps, changedTop);
+         mapsAfter(chunk, maps, changedTop, pos);
       }
 
       if (real) {
@@ -1084,10 +1277,13 @@ public final class GpuSurface {
     * written; then it is the highest block from there down that the map counts, plus one (where Minecraft's per-block
     * updates end up: a counted block above the height raises it, the top block no longer counted scans down).
     */
-   private static void mapsAfter(ChunkAccess chunk, Heightmap[] maps, int[] changedTop) {
+   private static void mapsAfter(ChunkAccess chunk, Heightmap[] maps, int[] changedTop, BlockPos.MutableBlockPos pos) {
       int min = Mc.minY(chunk);
+      BlockState air = Blocks.AIR.defaultBlockState();
+      LevelChunkSection[] sections = chunk.getSections();
       for (Heightmap map : maps) {
          java.util.function.Predicate<BlockState> counted = ((com.wgaccel.mixin.access.HeightmapAccessor)map).wgaccel$opaque();
+         boolean skipAir = !counted.test(air);
          for (int t = 0; t < 256; t++) {
             int lx = t / 16;
             int lz = t % 16;
@@ -1098,9 +1294,21 @@ public final class GpuSurface {
 
             int y = Math.max(changedTop[t], first - 1);
             int found = min;
-            for (; y >= min; y--) {
-               if (counted.test(chunk.getBlockState(new BlockPos(chunk.getPos().getMinBlockX() + lx, y, chunk.getPos().getMinBlockZ() + lz)))) {
-                  found = y + 1;
+            while (y >= min) {
+               int secIdx = chunk.getSectionIndex(y);
+               LevelChunkSection section = sections[secIdx];
+               int secBottom = Math.max(min, (y & ~15));
+               if (skipAir && section.hasOnlyAir()) {
+                  y = secBottom - 1;
+                  continue;
+               }
+               for (; y >= secBottom; y--) {
+                  if (counted.test(section.getBlockState(lx, y & 15, lz))) {
+                     found = y + 1;
+                     break;
+                  }
+               }
+               if (found != min) {
                   break;
                }
             }
@@ -1124,14 +1332,19 @@ public final class GpuSurface {
 
       int min = Mc.minY(chunk);
       int top = chunk.getHighestSectionPosition() + 15;
+      int baseX = chunk.getPos().getMinBlockX();
+      int baseZ = chunk.getPos().getMinBlockZ();
+      BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
       for (Heightmap map : maps) {
          java.util.function.Predicate<BlockState> counted = ((com.wgaccel.mixin.access.HeightmapAccessor)map).wgaccel$opaque();
          for (int t = 0; t < 256; t++) {
             int lx = t / 16;
             int lz = t % 16;
+            int x = baseX + lx;
+            int z = baseZ + lz;
             int found = min;
             for (int y = top; y >= min; y--) {
-               if (counted.test(chunk.getBlockState(new BlockPos(chunk.getPos().getMinBlockX() + lx, y, chunk.getPos().getMinBlockZ() + lz)))) {
+               if (counted.test(chunk.getBlockState(pos.set(x, y, z)))) {
                   found = y + 1;
                   break;
                }
@@ -1180,36 +1393,49 @@ public final class GpuSurface {
     * The sections to make at once: at least half their blocks changed by the surface (writes that change nothing not
     * counted) and none to air; each starts as the section's blocks now, the loop then puts the new ones in.
     */
-   private static BlockState[][] bulkSections(SurfaceGpu.Job job, short[] out, BlockState[] table, byte[] kinds, BlockState defaultBlock, BlockState air,
+   private static BlockState[][] bulkSections(Current current, SurfaceGpu.Job job, short[] out, BlockState[] table, byte[] kinds, BlockState defaultBlock, BlockState air,
          LevelChunkSection[] sections, int lowSection) {
       int count = (job.height + 15) / 16;
-      int[] changes = new int[count];
+      int[] changes = current.bulkChanges;
+      if (changes.length < count) {
+         changes = new int[count];
+         current.bulkChanges = changes;
+      } else {
+         java.util.Arrays.fill(changes, 0, count, 0);
+      }
       boolean[] toAir = new boolean[count];
-      // Row by row (the arrays' own order; only counts, so the order does not matter): column by column stepped 512
-      // bytes at a time through about 400 KB per chunk (0.50.1 profile: this pass 2.5% of the generation threads).
-      for (int y = job.minY + job.height - 1; y >= job.minY; y--) {
-         int row = (y - job.minY) * 256;
-         for (int t = 0; t < 256; t++) {
-            if (y > job.tops[t]) {
-               continue;
-            }
-
-            int at = row + t;
-            int code = out[at];
-            if (code >= 0) {
-               BlockState state = table[code];
-               if (kinds[at] == 2 && state == defaultBlock || kinds[at] == 0 && state == air) {
+      // Forward section-by-section scan reads out[] and kinds[] sequentially and lets write() skip 0-change sections.
+      for (int sec = 0; sec < count; sec++) {
+         int yStart = job.minY + (sec << 4);
+         int yEnd = Math.min(job.minY + job.height, yStart + 16);
+         int secChanges = 0;
+         boolean secToAir = false;
+         for (int y = yStart; y < yEnd; y++) {
+            int row = (y - job.minY) * 256;
+            for (int t = 0; t < 256; t++) {
+               if (y > job.tops[t]) {
                   continue;
                }
 
-               int section = (y - job.minY) >> 4;
-               changes[section]++;
-               toAir[section] |= state.is(Blocks.AIR);
+               int at = row + t;
+               int code = out[at];
+               if (code >= 0) {
+                  BlockState state = table[code];
+                  if (kinds[at] == 2 && state == defaultBlock || kinds[at] == 0 && state == air) {
+                     continue;
+                  }
+
+                  secChanges++;
+                  secToAir |= (state == air || state.getBlock() == Blocks.AIR);
+               }
             }
          }
+         changes[sec] = secChanges;
+         toAir[sec] = secToAir;
       }
 
       BlockState[][] bulk = null;
+      BlockState[][] pool = current.bulkPool;
       for (int i = 0; i < count; i++) {
          // Any job height (it ends one above the highest column, a multiple of 16 in about one chunk of 16, which alone
          // got sections at once until 0.9.48): a top section the job covers in part keeps its blocks above it, as each
@@ -1220,12 +1446,17 @@ public final class GpuSurface {
             }
 
             LevelChunkSection section = sections[lowSection + i];
-            BlockState[] blocks = new BlockState[4096];
-            // A section of one block (the fill's stone under the strata, most of them): no palette entry other than its
-            // first block means every block is that one (an unused entry only sends it the long way). 0.50.1's profile:
-            // the block-by-block read was 2.3% of the generation threads' time.
-            BlockState first = section.getBlockState(0, 0, 0);
-            if (!section.getStates().maybeHas(state -> state != first)) {
+            if (i >= pool.length) {
+               pool = java.util.Arrays.copyOf(pool, Math.max(count, pool.length + 8));
+               current.bulkPool = pool;
+            }
+            BlockState[] blocks = pool[i];
+            if (blocks == null) {
+               blocks = new BlockState[4096];
+               pool[i] = blocks;
+            }
+            BlockState first = section.hasOnlyAir() ? air : section.getBlockState(0, 0, 0);
+            if ((first == air && section.hasOnlyAir()) || !section.getStates().maybeHas(state -> state != first)) {
                java.util.Arrays.fill(blocks, first);
             } else {
                // Block by block (0.9.51's one pass, PalettedContainer.getAll, threw "No value with id -1" with Lithium's
@@ -1280,6 +1511,12 @@ public final class GpuSurface {
    public static boolean skipping(ChunkAccess chunk) {
       Current current = CURRENT.get();
       return current.skipLoop && current.chunk == chunk;
+   }
+
+   /** Whether this thread's chunk is currently running CPU verification for a GPU CHECK comparison. */
+   public static boolean checking(ChunkAccess chunk) {
+      Current current = CURRENT.get();
+      return current.checkReady && current.chunk == chunk;
    }
 
    /** At the end of buildSurface: a checked chunk's blocks compared with the GPU's. */
@@ -1370,6 +1607,8 @@ public final class GpuSurface {
          SET_BLOCKS.add(set);
          if (differ > 0) {
             DIFFERENT.increment();
+            failed = true;
+            com.wgaccel.WgaChat.warnOff("WGA GPU surface off: chunk {} differs from the CPU in {} blocks; future surfaces use the CPU", chunk.getPos(), differ);
             if (LOGGED_DIFFERENCES.incrementAndGet() <= LOGGED_MAX) {
                WorldgenAccelerator.LOG.warn("WGA GPU surface check: chunk {} differs: {} blocks, {}", chunk.getPos(), differ, first);
             }
@@ -1641,6 +1880,23 @@ public final class GpuSurface {
                   : String.format(Locale.ROOT, ", %,d DIFFER (%,d only FreeTerraForged's river step: air in the codes, water, stone or ice in the chunk; %,d otherwise)", CODES_DIFFERENT.sum(), CODES_WATER.sum(), CODES_DIFFERENT.sum() - CODES_WATER.sum()),
                SurfaceAhead.FROM_CODES.sum()) + (AHEAD_DIFFERENT.sum() == 0 ? "" : String.format(Locale.ROOT,
             ", %,d chunks' inputs made ahead DIFFER", AHEAD_DIFFERENT.sum())));
+   }
+
+   /** Releases world-owned surface batchers, GPU lane allocations, program references and diagnostic tables after server stop. */
+   public static void stopWorld() {
+      Program old = program;
+      program = null;
+      columns = null;
+      if (old != null) {
+         if (old.batcher() != null) {
+            old.batcher().stop();
+         }
+         old.gpu().close();
+      }
+
+      TRACED.clear();
+      FOREIGN.clear();
+      MARK_CALLERS.clear();
    }
 
    /** For the memory report: chunks the surface check still holds. */

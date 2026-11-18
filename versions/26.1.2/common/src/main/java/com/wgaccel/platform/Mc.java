@@ -167,6 +167,11 @@ public final class Mc {
       return new PalettedContainer<>(fill, States.STRATEGY);
    }
 
+   /** The current development pass targets 1.21.1; other versions retain the existing builder. */
+   public static PalettedContainer<BlockState> packedBlockStates(BlockState[] palette, int size, int bits, long[] data) {
+      return null;
+   }
+
    /** A section's block states as saved. */
    public static PalettedContainerRO.PackedData<BlockState> pack(PalettedContainerRO<BlockState> states) {
       return states.pack(States.STRATEGY);
@@ -210,5 +215,15 @@ public final class Mc {
    /** A features step's region was made, before any feature is placed (the Lithos noise table is queued for its chunk). */
    public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
       com.wgaccel.gen.LithosNoise.featuresStart(region);
+   }
+
+   /** Block light attenuation (0..15). */
+   public static int lightBlock(BlockState state) {
+      return state.getLightDampening();
+   }
+
+   /** Directional face occlusion shape for lighting checks. */
+   public static net.minecraft.world.phys.shapes.VoxelShape occlusionShape(BlockState state, net.minecraft.core.Direction dir) {
+      return net.minecraft.world.level.lighting.LightEngine.getOcclusionShape(state, dir);
    }
 }

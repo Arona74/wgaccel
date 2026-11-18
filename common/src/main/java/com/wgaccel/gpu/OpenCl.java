@@ -482,12 +482,36 @@ public final class OpenCl {
       }
    }
 
+   /** Releases a dedicated (unpooled) OpenCL queue when its owning lane closes on world stop. */
+   static void destroyQueue(long stream) {
+      if (stream == 0L || stream == defaultQueue) {
+         return;
+      }
+
+      if (QUEUES.remove(stream)) {
+         clFinish(stream);
+         clReleaseCommandQueue(stream);
+      }
+   }
+
    private static long queue(long stream) {
       return stream == 0L ? defaultQueue : stream;
    }
 
    static int synchronize(long stream) {
-      return failed(clFinish(queue(stream)), "a wait for a queue's work");
+      if (!GpuStreams.pooled() || Boolean.getBoolean("wgaccel.openclQueueFinish")) {
+         return failed(clFinish(queue(stream)), "a wait for a queue's work");
+      }
+      // A pooled queue can receive other lanes' work while this caller waits. A marker covers the work preceding
+      // this point; clFinish can also keep this caller behind work submitted later by another lane.
+      try (MemoryStack stack = MemoryStack.stackPush()) {
+         PointerBuffer event = stack.mallocPointer(1);
+         int submitted = CL12.clEnqueueMarkerWithWaitList(queue(stream), null, event);
+         if (submitted != CL_SUCCESS) return failed(clFinish(queue(stream)), "a wait for a queue's work (marker unavailable)");
+         long marker = event.get(0);
+         try { return failed(clWaitForEvents(marker), "a wait for a queue marker"); }
+         finally { clReleaseEvent(marker); }
+      }
    }
 
    /** Waits for every queue (before memory is freed: CUDA's cuMemFree waits for the work that may use it, clSVMFree does not). */
@@ -552,16 +576,21 @@ public final class OpenCl {
          }
 
          long address = value.getLong(0);
-         BUFFERS.put(address, new long[] {memory, size});
+         BUFFERS.put(address, new long[] {memory, size, address});
          pointer.put(pointer.position(), address);
          return CL_SUCCESS;
       }
    }
 
-   /** The plain buffer an address is in and the offset there ({cl_mem, offset}), or null for host memory. */
+   /** The plain buffer an address is in ({cl_mem, size, baseAddress}), or null for host memory. */
    private static long[] buffer(long address) {
       java.util.Map.Entry<Long, long[]> entry = BUFFERS.floorEntry(address);
-      return entry != null && address < entry.getKey() + entry.getValue()[1] ? new long[] {entry.getValue()[0], address - entry.getKey()} : null;
+      if (entry == null) {
+         return null;
+      }
+
+      long[] value = entry.getValue();
+      return address < entry.getKey() + value[1] ? value : null;
    }
 
    static int allocate(PointerBuffer pointer, long bytes) {
@@ -611,9 +640,32 @@ public final class OpenCl {
       return CL_SUCCESS;
    }
 
-   /** Host memory for copies (OpenCL has no page-locked allocation of its own; an aligned block copies as well). */
+   /** Host memory for copies: mapped CL_MEM_ALLOC_HOST_PTR pinned buffers in buffers mode, else page-aligned host RAM. */
+   private static final Map<Long, Long> PINNED_HOSTS = new ConcurrentHashMap<>();
+   private static final Object HOST_LOCK = new Object();
+
    static int allocateHost(PointerBuffer pointer, long bytes) {
-      long address = MemoryUtil.nmemAlignedAlloc(4096L, Math.max(4096L, bytes));
+      long size = Math.max(4096L, bytes);
+      if (buffers && context != 0L && defaultQueue != 0L) {
+         try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer error = stack.mallocInt(1);
+            long buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, size, error);
+            if (buffer != 0L && error.get(0) == CL_SUCCESS) {
+               long mapped;
+               synchronized (HOST_LOCK) {
+                  mapped = nclEnqueueMapBuffer(defaultQueue, buffer, 1, CL_MAP_READ | CL_MAP_WRITE, 0L, size, 0, 0L, 0L, MemoryUtil.memAddress(error));
+               }
+               if (mapped != 0L && error.get(0) == CL_SUCCESS) {
+                  PINNED_HOSTS.put(mapped, buffer);
+                  pointer.put(pointer.position(), mapped);
+                  return CL_SUCCESS;
+               }
+               clReleaseMemObject(buffer);
+            }
+         }
+      }
+
+      long address = MemoryUtil.nmemAlignedAlloc(4096L, size);
       if (address == 0L) {
          return CL_OUT_OF_HOST_MEMORY;
       }
@@ -625,6 +677,15 @@ public final class OpenCl {
    static int freeHost(long address) {
       if (address != 0L) {
          finishAll();
+         Long buffer = PINNED_HOSTS.remove(address);
+         if (buffer != null) {
+            synchronized (HOST_LOCK) {
+               nclEnqueueUnmapMemObject(defaultQueue, buffer, address, 0, 0L, 0L);
+               clFinish(defaultQueue);
+            }
+            clReleaseMemObject(buffer);
+            return CL_SUCCESS;
+         }
          MemoryUtil.nmemAlignedFree(address);
       }
 
@@ -647,9 +708,11 @@ public final class OpenCl {
             return CL_SUCCESS;
          }
 
-         result = into == null ? nclEnqueueReadBuffer(queue, out[0], blocking ? 1 : 0, out[1], bytes, to, 0, 0L, 0L)
-            : out == null ? nclEnqueueWriteBuffer(queue, into[0], blocking ? 1 : 0, into[1], bytes, from, 0, 0L, 0L)
-            : nclEnqueueCopyBuffer(queue, out[0], into[0], out[1], into[1], bytes, 0, 0L, 0L);
+         long intoOffset = into == null ? 0L : to - into[2];
+         long outOffset = out == null ? 0L : from - out[2];
+         result = into == null ? nclEnqueueReadBuffer(queue, out[0], blocking ? 1 : 0, outOffset, bytes, to, 0, 0L, 0L)
+            : out == null ? nclEnqueueWriteBuffer(queue, into[0], blocking ? 1 : 0, intoOffset, bytes, from, 0, 0L, 0L)
+            : nclEnqueueCopyBuffer(queue, out[0], into[0], outOffset, intoOffset, bytes, 0, 0L, 0L);
          if (result == CL_SUCCESS && blocking && into != null && out != null) {
             result = clFinish(queue);
          }
@@ -658,10 +721,6 @@ public final class OpenCl {
       }
 
       failed(result, "a copy of " + bytes + " bytes");
-      if (result == CL_SUCCESS && !blocking) {
-         clFlush(queue);
-      }
-
       return result;
    }
 
@@ -950,8 +1009,8 @@ public final class OpenCl {
          }
       }
 
-      // Started at once, as CUDA's launches are (OpenCL may hold queued work until a flush or a wait).
-      return clFlush(queue);
+      // On dedicated per-lane queues, omit clFlush per kernel so back-to-back launches and copies submit together at synchronize.
+      return GpuStreams.pooled() ? clFlush(queue) : CL_SUCCESS;
    }
 
    // ---- Events (for the timings only, which are off under OpenCL; recorded and queried as CUDA's) ----
@@ -1014,6 +1073,22 @@ public final class OpenCl {
 
    static int eventElapsedTime() {
       return UNSUPPORTED;
+   }
+
+   static int eventDestroy(long id) {
+      long[] slot = EVENTS.remove(id);
+      if (slot == null) {
+         return CL_SUCCESS;
+      }
+
+      synchronized (slot) {
+         if (slot[0] != 0L) {
+            clReleaseEvent(slot[0]);
+            slot[0] = 0L;
+         }
+      }
+
+      return CL_SUCCESS;
    }
 
    // ---- Errors ----

@@ -45,6 +45,15 @@ public final class Stats {
       }
    }
 
+   /** Records a sampled timing (1-in-weight chunks) while keeping per-chunk, per-call, and max accurate. */
+   public static void recordSampled(Stage stage, long nanos, int weight) {
+      int i = stage.ordinal();
+      NANOS[i].add(nanos * weight);
+      CALLS[i].add(weight);
+      WINDOW_MAX[i].accumulate(nanos);
+      RUN_MAX[i].accumulate(nanos);
+   }
+
    /**
     * Runs a chunk step and records its time: at once when the step finished on this thread, else when the result
     * arrives. The step's own future is returned untouched.

@@ -168,6 +168,11 @@ public final class GpuBiomes {
          return;
       }
 
+      if (com.wgaccel.ftf.FtfSlowPaths.isTilelessTerraForged(overworld) && !Config.GPU_BIOMES.overriddenNow()) {
+         WorldgenAccelerator.LOG.info("WGA GPU biomes: off on FreeTerraForged tileless preset");
+         return;
+      }
+
       if (!Names.className(overworld.getChunkSource().getGenerator().getClass()).contains("TerraForged") && !Config.GPU_BIOMES_VANILLA.get() && !com.wgaccel.c2me.AreaStep.on()) {
          WorldgenAccelerator.LOG.info("WGA GPU biomes: off in this world (not FreeTerraForged's; gpuBiomesVanilla is false)");
          return;
@@ -1154,6 +1159,13 @@ public final class GpuBiomes {
       job.add21875 = inputs.add21875;
       job.add03125 = inputs.add03125;
       System.arraycopy(inputs.minimumSurface, 0, job.minimumSurface, 0, 16);
+   }
+
+   /** Releases world-owned biome GPU program and FTF decor context after server stop. */
+   public static void stopWorld() {
+      BiomesAhead.shutdown();
+      program = null;
+      decorContext = null;
    }
 
    private static void report() {

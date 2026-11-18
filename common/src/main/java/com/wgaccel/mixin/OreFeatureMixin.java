@@ -59,6 +59,19 @@ public abstract class OreFeatureMixin {
    }
 
    /** Asked for every block of an ore: a redirect (a @WrapOperation made an Operation per call: 44% of doPlace, 31 Oct 2026). */
+   @WrapOperation(method = "place", at = @At(value = "INVOKE",
+      target = "Lnet/minecraft/world/level/levelgen/feature/OreFeature;doPlace(Lnet/minecraft/world/level/WorldGenLevel;Lnet/minecraft/util/RandomSource;Lnet/minecraft/world/level/levelgen/feature/configurations/OreConfiguration;DDDDDDIIIII)Z"))
+   private boolean wgaccel$fastDoPlace(net.minecraft.world.level.levelgen.feature.OreFeature instance, WorldGenLevel level,
+         net.minecraft.util.RandomSource random, net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration config,
+         double minX, double maxX, double minZ, double maxZ, double minY, double maxY,
+         int xStart, int yStart, int zStart, int sizeXZ, int sizeY, Operation<Boolean> original) {
+      if (FastOres.on() && instance.getClass() == net.minecraft.world.level.levelgen.feature.OreFeature.class) {
+         return com.wgaccel.gen.FastOreDoPlace.doPlace(level, random, config, minX, maxX, minZ, maxZ, minY, maxY, xStart, yStart, zStart, sizeXZ, sizeY);
+      }
+
+      return original.call(instance, level, random, config, minX, maxX, minZ, maxZ, minY, maxY, xStart, yStart, zStart, sizeXZ, sizeY);
+   }
+
    @Redirect(method = "doPlace", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/WorldGenLevel;isOutsideBuildHeight(I)Z"))
    private boolean wgaccel$outside(WorldGenLevel level, int y) {
       return FastOres.on() ? FastOres.outside(level, y) : level.isOutsideBuildHeight(y);

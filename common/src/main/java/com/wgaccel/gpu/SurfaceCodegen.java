@@ -57,6 +57,8 @@ public final class SurfaceCodegen {
    private final boolean strata23 = ftfAtLeast("1.0.0023");
    /** The prepass's flags of the column's first stone's biome (2 badlands, 4 desert): its expression of fb, or none. */
    private String firstFlags = null;
+   /** Early surfaceBlocks fast-path when root is FastStrataSequenceRule$Source (runs before steep/slope/biome lookup). */
+   private String earlyStrataFastPath = null;
 
    private final ColumnConditions columns;
 
@@ -74,8 +76,9 @@ public final class SurfaceCodegen {
       boolean fast;
       try {
          Names.forName("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
-         fast = true;
-      } catch (ClassNotFoundException | LinkageError absent) {
+         Class<?> ftfRandom = Names.forName("etcodehome.freeterraforged.world.worldgen.FTFRandomState");
+         fast = ftfRandom.isInstance(random) && Names.method(ftfRandom, "generatorContext").invoke(random) != null;
+      } catch (ReflectiveOperationException | LinkageError absent) {
          fast = false;
       }
 
@@ -120,7 +123,82 @@ public final class SurfaceCodegen {
       }
 
       this.root = this.rule(ruleSource);
+      this.earlyStrataFastPath = this.buildEarlyStrataFastPath(ruleSource);
       return this.root;
+   }
+
+   private String buildEarlyStrataFastPath(Object ruleSource) throws ReflectiveOperationException {
+      if (!this.fastStrata) {
+         return null;
+      }
+
+      Object node = ruleSource;
+      while (node != null && kind(node).equals("AcquiredSurfaceRule")) {
+         node = field(node, "root");
+      }
+      if (node == null || !kind(node).equals("FastStrataSequenceRule$Source")) {
+         return null;
+      }
+
+      Object strataSource = field(node, "strata");
+      if (strataSource != null && !kind(strataSource).equals("StrataRule")) {
+         return null;
+      }
+
+      int deepslate = this.state(net.minecraft.world.level.block.Blocks.DEEPSLATE.defaultBlockState());
+      int stoneState = strataSource == null ? -1 : this.state(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+      String svEval = strataSource == null
+         ? "int sv = -1;"
+         : String.format(Locale.ROOT,
+            "int sv = -1; int sc = strataCount[t]; int sOff = t * strataMax; "
+               + "for (int si = 0; si < sc; si++) { sv = strataState[sOff + si]; if ((float)fastY > strataDepth[sOff + si]) break; } "
+               + "if (sv == %d) sv = -1;",
+            stoneState);
+      if (this.strata14) {
+         int bedrockY = this.strata23 ? this.context.getMinGenY() + 5 : -59;
+         return """
+                 {
+                     int fastFlags = special[t] >> 1;
+                     if ((fastFlags & 1) == 0) {
+                         int fastY = minY + ly;
+                         int sb = below[i];
+                         if (fastY <= 0 && fastY > %d && stone > 10 && (sb <= 0 || sb > 4)) {
+                             %s
+                             int fastRes = sv >= 0 ? sv : %d;
+                             out[i] = (short)fastRes;
+                             return;
+                         }
+                         if (fastY > 8 && stone > 20 && (sb <= 0 || sb > 4)) {
+                             %s
+                             int fastRes = sv < 0 && kinds[i] == 6 && WGA_DEFAULT_CODE >= 0 ? WGA_DEFAULT_CODE : sv;
+                             out[i] = (short)fastRes;
+                             return;
+                         }
+                     }
+                 }
+            """.formatted(bedrockY, svEval, deepslate, svEval);
+      }
+
+      return """
+              {
+                  int fastFlags = special[t] >> 1;
+                  if ((fastFlags & 1) == 0) {
+                      int fastY = minY + ly;
+                      int sb = below[i];
+                      if (fastY <= 0 && fastY > -59 && stone > 2 && (sb <= 0 || sb > 1)) {
+                          out[i] = (short)%d;
+                          return;
+                      }
+                      int minAbove = (fastFlags & 2) != 0 ? 12 : 5;
+                      if (fastY > 8 && stone > minAbove && (sb <= 0 || sb > 3)) {
+                          %s
+                          int fastRes = sv < 0 && kinds[i] == 6 && WGA_DEFAULT_CODE >= 0 ? WGA_DEFAULT_CODE : sv;
+                          out[i] = (short)fastRes;
+                          return;
+                      }
+                  }
+              }
+         """.formatted(deepslate, svEval);
    }
 
    /** A block state's index (the GPU's output codes); states met only at run time (strata materials) are added too. */
@@ -160,7 +238,7 @@ public final class SurfaceCodegen {
              if (t >= count) return;
              const int* r = calls + t * 13;
              SCtx c;
-             c.fastFlags = 0;
+             c.fastFlags = ((unsigned int)r[11]) >> 24;
              c.x = r[0];
              c.y = r[1];
              c.z = r[2];
@@ -173,9 +251,9 @@ public final class SurfaceCodegen {
              c.steep = r[9];
              c.slope = r[12];
              c.minSurface = r[10];
-             // The column, with ColumnConditions' bits above its 8 bits.
+             // The column (bits 0..7), ColumnConditions' bits (bits 8..23), and fastFlags (bits 24..31).
              int column = r[11] & 255;
-             c.colFlags = ((unsigned int)r[11]) >> 8;
+             c.colFlags = (((unsigned int)r[11]) >> 8) & 65535u;
              c.secondary = secondary[column];
              c.strataDepth = strataDepth + column * strataMax;
              c.strataState = strataState + column * strataMax;
@@ -197,13 +275,38 @@ public final class SurfaceCodegen {
     * top is eroded badlands or a frozen ocean (vanilla's extensions, left to the CPU).
     */
    public String loopSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean) {
-      return loopSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean);
+      return loopSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean,
+         this.firstFlags, -1);
+   }
+
+   /** Overload including {@code defaultBlockCode} (>= 0) for NS pillar writeback. */
+   public String loopSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean, int defaultBlockCode) {
+      return loopSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean,
+         this.firstFlags, defaultBlockCode);
    }
 
    /** As {@link #loopSource(SurfaceInputs, int, int, int, int)} from its parts (the standalone check passes stand-ins). */
    public static String loopSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
          int frozenOcean, int deepFrozenOcean) {
+      return loopSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, null, -1);
+   }
+
+   /** As {@link #loopSource(SurfaceInputs, int, int, int, int)} from its parts with optional FastStrataSequenceRule first-stone flags. */
+   public static String loopSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean, String firstFlags) {
+      return loopSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, firstFlags, -1);
+   }
+
+   public static String loopSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean, String firstFlags, int defaultBlockCode) {
       String depthCode = surfaceDepthCode.replace("(nd + ", "(ind + ").replace(", np + ", ", inp + ");
+      String loopFastFlags = firstFlags == null ? "" : """
+                         if (!firstStoneSet) {
+                             firstStoneSet = 1;
+                             int fb = c.biome;
+                             c.fastFlags = (%s) >> 1;
+                         }
+         """.formatted(firstFlags);
       return SurfaceInputs.steep(VanillaKernels.NOISE + VanillaKernels.RANDOM + inputHelpers + HELPERS + ruleCode + """
          extern "C" __global__ void surfaceLoop(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* heights,
                                                 const int* minBase, const float* strataDepth, const int* strataState, const int* strataCount, int strataMax,
@@ -262,6 +365,7 @@ public final class SurfaceCodegen {
              int i2 = 0;
              int j2 = (-2147483647 - 1);
              int k2 = 2147483647;
+             int firstStoneSet = 0;
              for (int i3 = top; i3 >= minY; i3--) {
                  int k = i3 >= minY && i3 < minY + height ? kind[i3 - minY] : 0;
                  if (k == 0) {
@@ -274,7 +378,7 @@ public final class SurfaceCodegen {
                          k2 = %d;
                          for (int j3 = i3 - 1; j3 >= minY - 1; j3--) {
                              int kk = j3 >= minY && j3 < minY + height ? kind[j3 - minY] : 0;
-                             if (kk < 2) {
+                             if ((kk & 3) < 2) {
                                  k2 = j3 + 1;
                                  break;
                              }
@@ -282,19 +386,22 @@ public final class SurfaceCodegen {
                      }
                      i2++;
                      int k3 = i3 - k2 + 1;
-                     if (k == 2) {
+                     if ((k & 3) == 2) {
                          c.y = i3;
                          c.stoneAbove = i2;
                          c.stoneBelow = k3;
                          c.water = j2;
                          c.biome = bm_biome(grid, g, zoomSeed, x, i3, z);
                          c.cold = c.biome >= 0 ? bm_cold(sx, temperature, modifier, c.biome, x, i3, z) : 0;
-                         result[i3 - minY] = %s(c);
+%s
+                         int r = %s(c);
+                         if (r < 0 && k == 6 && %d >= 0) r = %d;
+                         result[i3 - minY] = r;
                      }
                  }
              }
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, root));
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, loopFastFlags, root, defaultBlockCode, defaultBlockCode));
    }
 
    /**
@@ -305,9 +412,28 @@ public final class SurfaceCodegen {
     * kernels in their own module. Layout per block (y - minY) * 256 + column, so neighbouring threads read neighbouring
     * memory.
     */
+   public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean) {
+      return productionSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, null, -1, -1, null);
+   }
+
+   /** Overload preserving backward compatibility without NS pillar defaultBlock writeback. */
    public String productionSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean) {
       return productionSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean,
-         deepFrozenOcean, this.firstFlags);
+         deepFrozenOcean, this.firstFlags, -1, -1, this.earlyStrataFastPath);
+   }
+
+   /** Overload specifying {@code defaultBlockCode} (>= 0) so pillar-placed stone ({@code kind == 6}) writes out. */
+   public String productionSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean, int defaultBlockCode) {
+      return productionSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean,
+         deepFrozenOcean, this.firstFlags, defaultBlockCode, -1, this.earlyStrataFastPath);
+   }
+
+   /** Overload including {@code skipDefaultCode} (>= 0) to skip redundant defaultBlock writes on kinds==2 voxels. */
+   public String productionSource(SurfaceInputs inputs, int wayBelowMinY, int erodedBadlands, int frozenOcean, int deepFrozenOcean, int defaultBlockCode,
+         int skipDefaultCode) {
+      return productionSource(inputs.helpers(), inputs.surfaceDepthCode(), this.code.toString(), this.root, wayBelowMinY, erodedBadlands, frozenOcean,
+         deepFrozenOcean, this.firstFlags, defaultBlockCode, skipDefaultCode, this.earlyStrataFastPath);
    }
 
    /**
@@ -328,10 +454,10 @@ public final class SurfaceCodegen {
           for (int base = minY; base <= high; base += 32) {
               int y = base + lane;
               int k = y <= high ? kinds[(y - minY) * 256 + t] : 0;
-              unsigned int solid = __ballot_sync(all, k >= 2);
+              unsigned int solid = __ballot_sync(all, (k & 3) >= 2);
               unsigned int breaks = ~solid & ((2u << lane) - 1u);
               int r = breaks != 0u ? lane - (31 - __clz(breaks)) : run + lane + 1;
-              if (k == 2) below[(y - minY) * 256 + t] = r;
+              if ((k & 3) == 2) below[(y - minY) * 256 + t] = r;
               run = __shfl_sync(all, r, 31);
           }
           int i2 = 0;
@@ -340,7 +466,7 @@ public final class SurfaceCodegen {
               int y = base - lane;
               int k = y >= minY ? kinds[(y - minY) * 256 + t] : 0;
               unsigned int air = __ballot_sync(all, k == 0);
-              unsigned int solid = __ballot_sync(all, k >= 2);
+              unsigned int solid = __ballot_sync(all, (k & 3) >= 2);
               unsigned int fluid = __ballot_sync(all, k == 1);
               unsigned int upTo = (2u << lane) - 1u;
               unsigned int airs = air & upTo;
@@ -359,7 +485,7 @@ public final class SurfaceCodegen {
               }
               if (y >= minY) {
                   int at = (y - minY) * 256 + t;
-                  if (k == 2) {
+                  if ((k & 3) == 2) {
                       above[at] = count;
                       water[at] = w;
                   } else {
@@ -372,8 +498,116 @@ public final class SurfaceCodegen {
       }
       """;
 
+   /** OpenCL-portable 32-lane per-column scan using workgroup shared memory instead of 32-wide warp shuffles. */
+   public static final String PREPASS_SHARED_BODY = """
+          __shared__ unsigned int sm_a[256];
+          __shared__ unsigned int sm_s[256];
+          __shared__ unsigned int sm_f[256];
+          __shared__ int sm_c[24];
+          if (t < 256) {
+              int top = tops[t];
+              int last = minY + height - 1;
+              int high = min(top, last);
+              int w = threadIdx.x >> 5;
+              int idx = threadIdx.x;
+              int baseW = idx & ~31;
+              unsigned int b = 1u << lane;
+              unsigned int upTo = lane == 31 ? 0xffffffffu : (2u << lane) - 1u;
+              for (int y = max(top + 1, minY) + lane; y <= last; y += 32) above[(y - minY) * 256 + t] = 0;
+              int run = 0;
+              for (int base = minY; base <= last; base += 32) {
+                  int y = base + lane;
+                  int k = y <= high ? kinds[(y - minY) * 256 + t] : 0;
+                  sm_s[idx] = ((k & 3) >= 2) ? b : 0u;
+                  __syncthreads();
+                  if (lane < 16) sm_s[idx] |= sm_s[idx + 16];
+                  __syncthreads();
+                  if (lane < 8) sm_s[idx] |= sm_s[idx + 8];
+                  __syncthreads();
+                  if (lane < 4) sm_s[idx] |= sm_s[idx + 4];
+                  __syncthreads();
+                  if (lane < 2) sm_s[idx] |= sm_s[idx + 2];
+                  __syncthreads();
+                  unsigned int solid = sm_s[baseW] | sm_s[baseW + 1];
+                  unsigned int breaks = (~solid) & upTo;
+                  int r = breaks != 0u ? lane - (31 - __clz(breaks)) : run + lane + 1;
+                  if (y <= high && (k & 3) == 2) below[(y - minY) * 256 + t] = r;
+                  if (lane == 31) sm_c[w] = r;
+                  __syncthreads();
+                  run = sm_c[w];
+              }
+              int i2 = 0;
+              int j2 = (-2147483647 - 1);
+              const int none = (-2147483647 - 1);
+              for (int base = last; base >= minY; base -= 32) {
+                  int y = base - lane;
+                  int k = (y >= minY && y <= high) ? kinds[(y - minY) * 256 + t] : 0;
+                  sm_a[idx] = (k == 0) ? b : 0u;
+                  sm_s[idx] = ((k & 3) >= 2) ? b : 0u;
+                  sm_f[idx] = (k == 1) ? b : 0u;
+                  __syncthreads();
+                  if (lane < 16) { sm_a[idx] |= sm_a[idx + 16]; sm_s[idx] |= sm_s[idx + 16]; sm_f[idx] |= sm_f[idx + 16]; }
+                  __syncthreads();
+                  if (lane < 8) { sm_a[idx] |= sm_a[idx + 8]; sm_s[idx] |= sm_s[idx + 8]; sm_f[idx] |= sm_f[idx + 8]; }
+                  __syncthreads();
+                  if (lane < 4) { sm_a[idx] |= sm_a[idx + 4]; sm_s[idx] |= sm_s[idx + 4]; sm_f[idx] |= sm_f[idx + 4]; }
+                  __syncthreads();
+                  if (lane < 2) { sm_a[idx] |= sm_a[idx + 2]; sm_s[idx] |= sm_s[idx + 2]; sm_f[idx] |= sm_f[idx + 2]; }
+                  __syncthreads();
+                  unsigned int air = sm_a[baseW] | sm_a[baseW + 1];
+                  unsigned int solid = sm_s[baseW] | sm_s[baseW + 1];
+                  unsigned int fluid = sm_f[baseW] | sm_f[baseW + 1];
+                  unsigned int airs = air & upTo;
+                  int count;
+                  int wt;
+                  if (airs != 0u) {
+                      int a = 31 - __clz(airs);
+                      unsigned int after = a == 31 ? 0u : (upTo & ~((2u << a) - 1u));
+                      count = __popc(solid & after);
+                      unsigned int fl = fluid & after;
+                      wt = fl != 0u ? base - (__ffs(fl) - 1) + 1 : none;
+                  } else {
+                      count = i2 + __popc(solid & upTo);
+                      unsigned int fl = fluid & upTo;
+                      wt = j2 != none ? j2 : (fl != 0u ? base - (__ffs(fl) - 1) + 1 : none);
+                  }
+                  if (y >= minY && y <= high) {
+                      int at = (y - minY) * 256 + t;
+                      if ((k & 3) == 2) {
+                          above[at] = count;
+                          water[at] = wt;
+                      } else {
+                          above[at] = 0;
+                      }
+                  }
+                  if (lane == 31) {
+                      sm_c[8 + w] = count;
+                      sm_c[16 + w] = wt;
+                  }
+                  __syncthreads();
+                  i2 = sm_c[8 + w];
+                  j2 = sm_c[16 + w];
+              }
+          }
+      """;
+
    public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
          int frozenOcean, int deepFrozenOcean, String firstFlags) {
+      return productionSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, firstFlags, -1, -1, null);
+   }
+
+   public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean, String firstFlags, int defaultBlockCode) {
+      return productionSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, firstFlags, defaultBlockCode, -1, null);
+   }
+
+   public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean, String firstFlags, int defaultBlockCode, String earlyStrataFastPath) {
+      return productionSource(inputHelpers, surfaceDepthCode, ruleCode, root, wayBelowMinY, erodedBadlands, frozenOcean, deepFrozenOcean, firstFlags, defaultBlockCode, -1, earlyStrataFastPath);
+   }
+
+   public static String productionSource(String inputHelpers, String surfaceDepthCode, String ruleCode, String root, int wayBelowMinY, int erodedBadlands,
+         int frozenOcean, int deepFrozenOcean, String firstFlags, int defaultBlockCode, int skipDefaultCode, String earlyStrataFastPath) {
       String depthCode = surfaceDepthCode.replace("(nd + ", "(ind + ").replace(", np + ", ", inp + ");
       // FastStrataSequenceRule's flags (special's bits 2 and 4) from the biome at the column's first stone, top down.
       String firstSingle = firstFlags == null ? "" : """
@@ -385,7 +619,7 @@ public final class SurfaceCodegen {
       String firstWarp = firstFlags == null ? "" : """
                  int firstStone = (-2147483647 - 1);
                  for (int y = min(top, minY + height - 1); y >= minY; y--) {
-                     if (kinds[(y - minY) * 256 + t] == 2) {
+                     if ((kinds[(y - minY) * 256 + t] & 3) == 2) {
                          firstStone = y;
                          break;
                      }
@@ -426,14 +660,14 @@ public final class SurfaceCodegen {
                          k2 = %d;
                          for (int j3 = i3 - 1; j3 >= minY - 1; j3--) {
                              int kk = j3 >= minY && j3 < minY + height ? kinds[(j3 - minY) * 256 + t] : 0;
-                             if (kk < 2) {
+                             if ((kk & 3) < 2) {
                                  k2 = j3 + 1;
                                  break;
                              }
                          }
                      }
                      i2++;
-                     if (k == 2) {
+                     if ((k & 3) == 2) {
                          if (firstStone == (-2147483647 - 1)) firstStone = i3;
                          int at = (i3 - minY) * 256 + t;
                          above[at] = i2;
@@ -444,8 +678,8 @@ public final class SurfaceCodegen {
              }
          WGA_FIRST_SINGLE
          }
-         extern "C" __global__ void surfaceBlocks(int minY, int height, int minX, int minZ, const int* heights, const int* minBase, const int* above,
-                                                  const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
+         extern "C" __global__ void surfaceBlocks(const unsigned char* kinds, int minY, int height, int minX, int minZ, const int* heights, const int* minBase,
+                                                  const int* above, const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
                                                   const float* strataDepth, const int* strataState, const int* strataCount, int strataMax, const int* grid,
                                                   const int* g, long long zoomSeed, const float* temperature, const int* modifier, const double* sd,
                                                   const int* sp, const double* nd, const int* np, const int* special, short* out) {
@@ -458,6 +692,7 @@ public final class SurfaceCodegen {
                  out[i] = -1;
                  return;
              }
+         WGA_EARLY_FAST
              int lx = t / 16;
              int lz = t - lx * 16;
              int x = minX + lx;
@@ -505,29 +740,42 @@ public final class SurfaceCodegen {
              c.np = np;
              c.biome = bm_biome(grid, g, zoomSeed, x, y, z);
              c.cold = c.biome >= 0 ? bm_cold(sx, temperature, modifier, c.biome, x, y, z) : 0;
-             out[i] = (short)%s(c);
+             int r = %s(c);
+             if (r < 0 && kinds[i] == 6 && %d >= 0) r = %d;
+             if (r >= 0 && r == %d && kinds[i] == 2) r = -1;
+             out[i] = (short)r;
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, root) + PREPASS_WARP + """
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean, wayBelowMinY, root, defaultBlockCode, defaultBlockCode, skipDefaultCode) + PREPASS_WARP + """
+         __device__ void surfacePrepassWarpCols(const unsigned char* kinds, int minY, int height, int top, int t, int minX, int minZ, const int* grid,
+                                                const int* g, long long zoomSeed, const double* ind, const int* inp, int* columnDepth,
+                                                double* columnSecondary, int* special) {
+             int x = minX + t / 16;
+             int z = minZ + t %% 16;
+         %s
+             columnDepth[t] = depth;
+             columnSecondary[t] = secondary;
+             int columnBiome = bm_biome(grid, g, zoomSeed, x, top, z);
+             special[t] = columnBiome == %d || columnBiome == %d || columnBiome == %d || columnBiome < 0 ? 1 : 0;
+         WGA_FIRST_WARP
+         }
+         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean) + """
          extern "C" __global__ void surfacePrepassWarp(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* grid,
                                                        const int* g, long long zoomSeed, const double* ind, const int* inp, int* above, int* below,
                                                        int* water, int* columnDepth, double* columnSecondary, int* special) {
              int t = blockIdx.x * 8 + (threadIdx.x >> 5);
              int lane = threadIdx.x & 31;
-             if (t >= 256) return;
-             int top = tops[t];
-             if (lane == 0) {
-                 int x = minX + t / 16;
-                 int z = minZ + t %% 16;
-         %s
-                 columnDepth[t] = depth;
-                 columnSecondary[t] = secondary;
-                 int columnBiome = bm_biome(grid, g, zoomSeed, x, top, z);
-                 special[t] = columnBiome == %d || columnBiome == %d || columnBiome == %d || columnBiome < 0 ? 1 : 0;
-         WGA_FIRST_WARP
+             if (lane == 0 && t < 256) {
+                 surfacePrepassWarpCols(kinds, minY, height, tops[t], t, minX, minZ, grid, g, zoomSeed, ind, inp, columnDepth, columnSecondary, special);
              }
-             prepassWarpScan(kinds, minY, height, top, t, lane, above, below, water);
+         """ + (GpuBackend.OPENCL ? PREPASS_SHARED_BODY : """
+             if (t >= 256) return;
+             prepassWarpScan(kinds, minY, height, tops[t], t, lane, above, below, water);
+         """) + """
          }
-         """.formatted(depthCode, erodedBadlands, frozenOcean, deepFrozenOcean)).replace("WGA_FIRST_SINGLE", firstSingle).replace("WGA_FIRST_WARP", firstWarp);
+         """)
+         .replace("WGA_FIRST_SINGLE", firstSingle)
+         .replace("WGA_FIRST_WARP", firstWarp)
+         .replace("WGA_EARLY_FAST", earlyStrataFastPath == null ? "" : earlyStrataFastPath.replace("WGA_DEFAULT_CODE", Integer.toString(defaultBlockCode)));
    }
 
    /** The number of block states the rules can give (indexes fit a short while under 32,767). */

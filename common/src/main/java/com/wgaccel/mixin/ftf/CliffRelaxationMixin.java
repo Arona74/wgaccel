@@ -16,6 +16,11 @@ import org.spongepowered.asm.mixin.Pseudo;
 public abstract class CliffRelaxationMixin {
    @WrapMethod(method = "apply(Letcodehome/freeterraforged/world/worldgen/densityfunction/tile/filter/Filterable;III)V")
    private void wgaccel$gpu(Filterable map, int regionX, int regionZ, int iterationsPerChunk, Operation<Void> original) {
-      CliffRelaxationGpu.apply(this, map, () -> original.call(map, regionX, regionZ, iterationsPerChunk));
+      if (!CliffRelaxationGpu.enabled()) {
+         original.call(map, regionX, regionZ, iterationsPerChunk);
+         return;
+      }
+      CliffRelaxationGpu.applyTile(this, map.getBacking(), map.getBlockSize().total(), map.getBlockX(), map.getBlockZ(),
+         () -> original.call(map, regionX, regionZ, iterationsPerChunk));
    }
 }

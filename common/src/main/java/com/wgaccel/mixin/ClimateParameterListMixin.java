@@ -1,16 +1,15 @@
 package com.wgaccel.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.wgaccel.gen.ClimateSearch;
 import net.minecraft.world.level.biome.Climate;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * A biome table's search on the flat copy of its R-tree ({@link ClimateSearch}): its answer at HEAD; a compared call
- * runs vanilla's search and is compared at RETURN. Only for the table class itself (a subclass may search its own way).
+ * A biome table's search on the flat copy of its R-tree ({@link ClimateSearch}); compared calls run vanilla's search
+ * via Operation.call without CallbackInfoReturnable allocation.
  */
 @Mixin(Climate.ParameterList.class)
 public abstract class ClimateParameterListMixin {
@@ -33,26 +32,24 @@ public abstract class ClimateParameterListMixin {
       return search;
    }
 
-   @Inject(method = "findValueIndex(Lnet/minecraft/world/level/biome/Climate$TargetPoint;)Ljava/lang/Object;", at = @At("HEAD"), cancellable = true)
-   private void wgaccel$find(Climate.TargetPoint target, CallbackInfoReturnable<Object> info) {
+   @WrapMethod(method = "findValueIndex(Lnet/minecraft/world/level/biome/Climate$TargetPoint;)Ljava/lang/Object;")
+   private Object wgaccel$find(Climate.TargetPoint target, Operation<Object> original) {
       if (!ClimateSearch.on()) {
-         return;
+         return original.call(target);
       }
 
       ClimateSearch search = this.wgaccel$search();
       if (search != ClimateSearch.NONE) {
          Object found = search.find(target);
          if (found != null) {
-            info.setReturnValue(found);
+            return found;
          }
-      }
-   }
 
-   @Inject(method = "findValueIndex(Lnet/minecraft/world/level/biome/Climate$TargetPoint;)Ljava/lang/Object;", at = @At("RETURN"))
-   private void wgaccel$compare(Climate.TargetPoint target, CallbackInfoReturnable<Object> info) {
-      ClimateSearch search = this.wgaccel$search;
-      if (search != null && search != ClimateSearch.NONE) {
-         search.compare(info.getReturnValue());
+         Object real = original.call(target);
+         search.compare(real);
+         return real;
       }
+
+      return original.call(target);
    }
 }

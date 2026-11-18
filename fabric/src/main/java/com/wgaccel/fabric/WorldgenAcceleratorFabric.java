@@ -19,6 +19,7 @@ public final class WorldgenAcceleratorFabric implements ModInitializer {
       FabricMc.onLevelLoad(WorldgenAccelerator::onLevelLoad);
       ServerLifecycleEvents.SERVER_STARTED.register(WorldgenAccelerator::onServerStarted);
       ServerLifecycleEvents.SERVER_STOPPING.register(server -> WorldgenAccelerator.onServerStopping());
+      ServerLifecycleEvents.SERVER_STOPPED.register(server -> WorldgenAccelerator.onServerStopped());
       ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> WorldgenAccelerator.onPlayerLoggedIn(handler.player));
       CommandRegistrationCallback.EVENT.register((dispatcher, registries, environment) -> WgaCommands.register(dispatcher));
       // Around every other mod's chunk-load listener (NeoForge's priorities HIGHEST and LOWEST).

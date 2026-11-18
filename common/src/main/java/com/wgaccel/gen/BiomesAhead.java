@@ -35,7 +35,7 @@ import net.minecraft.world.level.levelgen.blending.Blender;
  */
 public final class BiomesAhead {
    private static final Object QUEUED = new Object();
-   private static final Object TAKEN = new Object();
+   private static final class Work {}
    private static final Object DONE = new Object();
    private static final int DONE_KEEP = 65_536;
    /** How long a biome step waits for its chunk still in the look-ahead's queue before doing it on the CPU. */
@@ -53,11 +53,17 @@ public final class BiomesAhead {
 
    private static volatile BiomesAhead current;
 
+   public static void shutdown() {
+      BiomesAhead old = current; current = null; policySampler = null;
+      if (old != null) old.stop();
+   }
+
    /** The 4 x 4 area step: whether this chunk's biomes are still queued or being made. */
    public static boolean pending(long key) {
       BiomesAhead look = current;
-      return look != null && look.states.get(key) == QUEUED;
+      return look != null && pending(look.states.get(key));
    }
+   private static boolean pending(Object state) { return state == QUEUED || state instanceof Work; }
 
    /** The 4 x 4 area step: the chunk queued (at the front) unless already queued or made. */
    public static void soonKey(long key) {
@@ -128,6 +134,13 @@ public final class BiomesAhead {
 
       if (!Config.GPU_BIOMES_AHEAD.get() || Config.GPU_BIOMES.get() != Config.GpuFilterMode.ON || Config.GPU_MODE.get() == Config.GpuMode.OFF
          || !com.wgaccel.gpu.Lwjgl.PRESENT || !(overworld.getChunkSource().getGenerator() instanceof NoiseBasedChunkGenerator generator)) {
+         return;
+      }
+
+      if (com.wgaccel.ftf.FtfSlowPaths.isTilelessTerraForged(overworld)
+         && !Config.GPU_BIOMES_AHEAD.overriddenNow()
+         && !Config.GPU_BIOMES.overriddenNow()) {
+         WorldgenAccelerator.LOG.info("WGA biomes ahead: off on FreeTerraForged tileless preset");
          return;
       }
 
@@ -210,6 +223,7 @@ public final class BiomesAhead {
 
    private void stop() {
       this.stopped = true;
+      this.soon.clear(); this.wanted.clear();
       for (Thread thread : this.threads) {
          thread.interrupt();
       }
@@ -218,13 +232,13 @@ public final class BiomesAhead {
    /** The chunk's ready result, or null (not noticed, not made yet, or failed): then the chunk is the CPU's. */
    Result take(ChunkPos pos) {
       long key = Mc.key(pos);
-      if (this.states.get(key) == QUEUED) {
+      if (pending(this.states.get(key))) {
          // Not made yet: to the front, and a short wait for it (the CPU's biome step costs ~20 ms; 0.9.45's run sent
          // 3,239 chunks there). Past the wait it is the CPU's: the maker skips it, as it is DONE then.
          this.soon.add(key);
          this.waited.increment();
          long until = System.nanoTime() + TAKE_WAIT_NANOS;
-         while (this.states.get(key) == QUEUED && System.nanoTime() < until) {
+         while (pending(this.states.get(key)) && System.nanoTime() < until) {
             java.util.concurrent.locks.LockSupport.parkNanos(200_000L);
          }
 
@@ -284,6 +298,7 @@ public final class BiomesAhead {
       List<BiomeGpu.Job> jobs = new ArrayList<>();
       java.util.Map<BiomeGpu.Job, int[]> providersOf = new java.util.IdentityHashMap<>();
       List<Long> keys = new ArrayList<>();
+      List<Work> claims = new ArrayList<>();
       List<int[]> heights = new ArrayList<>();
       NoiseGeneratorSettings settings = this.generator.generatorSettings().value();
       while (!this.stopped) {
@@ -304,12 +319,14 @@ public final class BiomesAhead {
          Object sampler = policySampler;
          jobs.clear();
          keys.clear();
+         claims.clear();
          heights.clear();
          boolean decorating = p != null && p.gpu().decorates();
          long start = System.nanoTime();
          while (next != null) {
             long key = next;
             Object seen = this.states.get(key);
+            Work claim = new Work();
             if (seen != QUEUED) {
                // Taken already, or made (it was in both queues).
                if (seen == DONE) {
@@ -318,7 +335,7 @@ public final class BiomesAhead {
             } else if (p == null || sampler == null) {
                this.states.remove(key, QUEUED);
                this.skipped.increment();
-            } else {
+            } else if (this.states.replace(key, QUEUED, claim)) {
                int slot = jobs.size();
                if (inputsPool.size() <= slot) {
                   inputsPool.add(new BiomeInputs());
@@ -327,12 +344,16 @@ public final class BiomesAhead {
 
                ChunkPos pos = Mc.chunk(key);
                try {
-                  ProtoChunk proto = Mc.emptyChunk(pos, this.level, this.level.registryAccess());
-                  NoiseChunk noise = NoiseChunk.forChunk(proto, p.random(), Mc.noStructures(), settings,
-                     this.fluidPicker.get(), Blender.empty());
                   BiomeInputs inputs = inputsPool.get(slot);
                   BiomeGpu.Job job = jobsPool.get(slot);
                   boolean rivers;
+                  int minY;
+                  int maxY;
+                  ProtoChunk proto = Mc.emptyChunk(pos, this.level, this.level.registryAccess());
+                  NoiseChunk noise = NoiseChunk.forChunk(proto, p.random(), Mc.noStructures(), settings,
+                     this.fluidPicker.get(), Blender.empty());
+                  minY = Mc.minY(proto);
+                  maxY = Mc.maxY(proto);
                   GpuNoiseFill.tileStage(noise, true);
                   try {
                      inputs.read(pos.getMinBlockX(), pos.getMinBlockZ(), noise, sampler, p.cellSamplers());
@@ -352,8 +373,8 @@ public final class BiomesAhead {
                      decorating = false;
                   }
 
-                  int quartY = Mc.minY(proto) >> 2;
-                  int quartHeight = (Mc.maxY(proto) >> 2) - quartY;
+                  int quartY = minY >> 2;
+                  int quartHeight = (maxY >> 2) - quartY;
                   GpuBiomes.job(job, inputs, pos.getMinBlockX() >> 2, quartY, pos.getMinBlockZ() >> 2, quartHeight);
                   if (!jobs.isEmpty() && (job.count != jobs.get(0).count || job.cells.length != jobs.get(0).cells.length)) {
                      throw new IllegalStateException("a chunk of another height");
@@ -361,9 +382,10 @@ public final class BiomesAhead {
 
                   jobs.add(job);
                   keys.add(key);
+                  claims.add(claim);
                   heights.add(new int[] {quartY, quartHeight});
                } catch (Throwable failure) {
-                  this.states.remove(key, QUEUED);
+                  this.states.remove(key, claim);
                   this.skipped.increment();
                   if (this.failures.incrementAndGet() <= 8) {
                      WorldgenAccelerator.LOG.warn("WGA GPU biomes ahead: chunk {} failed: {}", pos, failure.toString());
@@ -422,8 +444,8 @@ public final class BiomesAhead {
                extras > 0 ? extraChosenPool : null, extras > 0 ? extraDecoratedPool : null);
          } catch (Throwable failure) {
             com.wgaccel.WgaChat.warnOff("WGA GPU biomes ahead off: {}", failure.toString());
-            for (Long key : keys) {
-               this.states.remove(key, QUEUED);
+            for (int i = 0; i < keys.size(); i++) {
+               this.states.remove(keys.get(i), claims.get(i));
             }
 
             current = null;
@@ -448,15 +470,13 @@ public final class BiomesAhead {
                decorating && p.gpu().decoratesExtras() ? java.util.Arrays.copyOf(extraDecoratedPool.get(j), extras * n) : null,
                p.gpu().multi() ? providersOf.get(jobs.get(j)) : null, jobs.get(j).minimumSurface);
             if (result == null) {
-               this.states.remove(key, QUEUED);
+               this.states.remove(key, claims.get(j));
                this.skipped.increment();
-            } else if (this.states.replace(key, QUEUED, result)) {
+            } else if (!this.stopped && this.states.replace(key, claims.get(j), result)) {
                this.made.increment();
                this.readyCount.incrementAndGet();
                this.readyOrder.add(key);
-            } else {
-               this.states.remove(key, TAKEN);
-            }
+            } else this.states.remove(key, claims.get(j));
          }
 
          // Past the budget: the oldest results go (mostly the ring of chunks that only get structure starts).

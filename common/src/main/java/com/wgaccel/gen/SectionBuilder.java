@@ -88,35 +88,257 @@ public final class SectionBuilder {
    /** Sections that needed more than 256 states (written block by block), for the report. */
    public static final java.util.concurrent.atomic.LongAdder TOO_MANY = new java.util.concurrent.atomic.LongAdder();
 
-   /** The section's states, or null when they need more than a 256-entry palette. */
-   public static PalettedContainer<BlockState> build(BlockState[] blocks) {
+   private static final class Scratch {
+      private static final int HT_SIZE = 512;
+      private static final int HT_MASK = HT_SIZE - 1;
+      final BlockState[] htKeys = new BlockState[HT_SIZE];
+      final int[] htVals = new int[HT_SIZE];
+      final int[] htStamp = new int[HT_SIZE];
+      int epoch = 1;
+      final BlockState[] palette = new BlockState[256];
+      final int[] counts = new int[256];
+      final int[] index = new int[4096];
+
+      void reset() {
+         int next = ++this.epoch;
+         if (next == 0) {
+            java.util.Arrays.fill(this.htStamp, 0);
+            this.epoch = 1;
+         }
+      }
+   }
+
+   private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
+
+   /**
+    * Builds a full {@link net.minecraft.world.level.chunk.LevelChunkSection} in one pass over {@code blocks},
+    * reusing thread-local scratch buffers and counting empty/ticking/fluid blocks once per unique palette entry.
+    * Returns {@code null} when more than 256 states appear (caller writes block by block).
+    */
+   public static net.minecraft.world.level.chunk.LevelChunkSection buildSection(BlockState[] blocks,
+         net.minecraft.world.level.chunk.PalettedContainerRO<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>> biomes) {
       if (broken) {
          return null;
       }
 
-      Map<BlockState, Integer> ids = new IdentityHashMap<>();
-      BlockState[] palette = new BlockState[256];
-      int[] index = new int[4096];
+      Scratch scratch = SCRATCH.get();
+      scratch.reset();
+      BlockState[] htKeys = scratch.htKeys;
+      int[] htVals = scratch.htVals;
+      int[] htStamp = scratch.htStamp;
+      int epoch = scratch.epoch;
+      BlockState[] palette = scratch.palette;
+      int[] counts = scratch.counts;
+      int[] index = scratch.index;
       int size = 0;
       BlockState last = null;
       int lastId = 0;
+      int run = 0;
       for (int i = 0; i < 4096; i++) {
          BlockState state = blocks[i];
          if (state == last) {
-            // Runs of one state (strata layers, stone, water) skip the map.
             index[i] = lastId;
+            run++;
             continue;
          }
 
-         Integer id = ids.get(state);
-         if (id == null) {
+         if (run > 0) {
+            counts[lastId] += run;
+            run = 0;
+         }
+
+         int h = System.identityHashCode(state);
+         int slot = (h ^ (h >>> 16)) & Scratch.HT_MASK;
+         int id = -1;
+         while (htStamp[slot] == epoch) {
+            if (htKeys[slot] == state) {
+               id = htVals[slot];
+               break;
+            }
+            slot = (slot + 1) & Scratch.HT_MASK;
+         }
+         if (id < 0) {
             if (size == 256) {
                TOO_MANY.increment();
                return null;
             }
 
             id = size;
-            ids.put(state, id);
+            htStamp[slot] = epoch;
+            htKeys[slot] = state;
+            htVals[slot] = id;
+            palette[size++] = state;
+            counts[id] = 0;
+         }
+
+         index[i] = id;
+         last = state;
+         lastId = id;
+         run = 1;
+      }
+
+      if (run > 0) {
+         counts[lastId] += run;
+      }
+
+      if (size == 1) {
+         return uniform(palette[0], biomes);
+      }
+
+      PalettedContainer<BlockState> states = packStates(palette, index, size);
+      long n = BUILT.getAndIncrement();
+      if (n < 64 || n % 256 == 0) {
+         for (int i = 0; i < 4096; i++) {
+            if (states.get(i & 15, i >> 8, (i >> 4) & 15) != blocks[i]) {
+               broken = true;
+               com.wgaccel.WgaChat.warnOff("WGA bulk sections off: a built section read back {} at index {} instead of {}",
+                  states.get(i & 15, i >> 8, (i >> 4) & 15), i, blocks[i]);
+               return null;
+            }
+         }
+      }
+
+      net.minecraft.world.level.chunk.LevelChunkSection section = new net.minecraft.world.level.chunk.LevelChunkSection(states, biomes);
+      if (!Mc.SECTION_RECOUNT_EXACT) {
+         int nonEmpty = 0;
+         int ticking = 0;
+         int fluids = 0;
+         LoaderHooks hooks = LoaderHooks.get();
+         for (int i = 0; i < size; i++) {
+            BlockState state = palette[i];
+            int c = counts[i];
+            if (!hooks.isEmpty(state)) {
+               nonEmpty += c;
+               if (state.isRandomlyTicking()) {
+                  ticking += c;
+               }
+            }
+
+            if (!state.getFluidState().isEmpty()) {
+               fluids += c;
+            }
+         }
+
+         setCounts(section, nonEmpty, ticking, fluids);
+      }
+
+      return section;
+   }
+
+   private static long[] packIndexArray(int[] index, int bits) {
+      if (bits == 4) {
+         long[] data = new long[256];
+         for (int w = 0, b = 0; w < 256; w++, b += 16) {
+            data[w] = (long)index[b]
+               | ((long)index[b + 1] << 4)
+               | ((long)index[b + 2] << 8)
+               | ((long)index[b + 3] << 12)
+               | ((long)index[b + 4] << 16)
+               | ((long)index[b + 5] << 20)
+               | ((long)index[b + 6] << 24)
+               | ((long)index[b + 7] << 28)
+               | ((long)index[b + 8] << 32)
+               | ((long)index[b + 9] << 36)
+               | ((long)index[b + 10] << 40)
+               | ((long)index[b + 11] << 44)
+               | ((long)index[b + 12] << 48)
+               | ((long)index[b + 13] << 52)
+               | ((long)index[b + 14] << 56)
+               | ((long)index[b + 15] << 60);
+         }
+         return data;
+      }
+
+      int perLong = 64 / bits;
+      long[] data = new long[(4096 + perLong - 1) / perLong];
+      int word = 0, shift = 0, slot = 0;
+      long acc = 0L;
+      for (int i = 0; i < 4096; i++) {
+         acc |= (long)index[i] << shift;
+         if (++slot == perLong) {
+            data[word++] = acc;
+            acc = 0L;
+            shift = 0;
+            slot = 0;
+         } else {
+            shift += bits;
+         }
+      }
+      if (slot > 0) {
+         data[word] = acc;
+      }
+      return data;
+   }
+
+   private static PalettedContainer<BlockState> packStates(BlockState[] palette, int[] index, int size) {
+      int bits = size <= 16 ? 4 : net.minecraft.util.Mth.ceillog2(size);
+      long[] data = packIndexArray(index, bits);
+
+      PalettedContainer<BlockState> states = Mc.packedBlockStates(palette, size, bits, data);
+      if (states == null) {
+         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer(8 + 5 * size + 9 * data.length));
+         try {
+            buffer.writeByte(bits);
+            buffer.writeVarInt(size);
+            for (int i = 0; i < size; i++) {
+               buffer.writeVarInt(Block.BLOCK_STATE_REGISTRY.getId(palette[i]));
+            }
+
+            Mc.writeStateData(buffer, data);
+            states = Mc.blockStates(AIR);
+            states.read(buffer);
+         } finally {
+            buffer.release();
+         }
+      }
+
+      return states;
+   }
+
+   /** The section's states, or null when they need more than a 256-entry palette. */
+   public static PalettedContainer<BlockState> build(BlockState[] blocks) {
+      if (broken) {
+         return null;
+      }
+
+      Scratch scratch = SCRATCH.get();
+      scratch.reset();
+      BlockState[] htKeys = scratch.htKeys;
+      int[] htVals = scratch.htVals;
+      int[] htStamp = scratch.htStamp;
+      int epoch = scratch.epoch;
+      BlockState[] palette = scratch.palette;
+      int[] index = scratch.index;
+      int size = 0;
+      BlockState last = null;
+      int lastId = 0;
+      for (int i = 0; i < 4096; i++) {
+         BlockState state = blocks[i];
+         if (state == last) {
+            index[i] = lastId;
+            continue;
+         }
+
+         int h = System.identityHashCode(state);
+         int slot = (h ^ (h >>> 16)) & Scratch.HT_MASK;
+         int id = -1;
+         while (htStamp[slot] == epoch) {
+            if (htKeys[slot] == state) {
+               id = htVals[slot];
+               break;
+            }
+            slot = (slot + 1) & Scratch.HT_MASK;
+         }
+         if (id < 0) {
+            if (size == 256) {
+               TOO_MANY.increment();
+               return null;
+            }
+
+            id = size;
+            htStamp[slot] = epoch;
+            htKeys[slot] = state;
+            htVals[slot] = id;
             palette[size++] = state;
          }
 
@@ -129,16 +351,13 @@ public final class SectionBuilder {
          return Mc.blockStates(palette[0]);
       }
 
-      // SECTION_STATES: 2 to 16 entries are a linear palette with 4 bits per block, 17 to 256 a hash-map palette with 5
-      // to 8 (its entries in the order read, as the linear one's); SimpleBitStorage puts 64 / bits values in each long.
       int bits = size <= 16 ? 4 : net.minecraft.util.Mth.ceillog2(size);
-      int perLong = 64 / bits;
-      long[] data = new long[(4096 + perLong - 1) / perLong];
-      for (int i = 0; i < 4096; i++) {
-         data[i / perLong] |= (long)index[i] << ((i % perLong) * bits);
-      }
+      long[] data = packIndexArray(index, bits);
 
+      PalettedContainer<BlockState> states = Mc.packedBlockStates(palette, size, bits, data);
+      if (states == null) {
       FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer(8 + 5 * size + 9 * data.length));
+      try {
       buffer.writeByte(bits);
       buffer.writeVarInt(size);
       for (int i = 0; i < size; i++) {
@@ -146,9 +365,10 @@ public final class SectionBuilder {
       }
 
       Mc.writeStateData(buffer, data);
-      PalettedContainer<BlockState> states = Mc.blockStates(AIR);
+      states = Mc.blockStates(AIR);
       states.read(buffer);
-      buffer.release();
+      } finally { buffer.release(); }
+      }
       // The first 64 sections, then every 256th, read back block by block: any difference turns this off for good.
       long n = BUILT.getAndIncrement();
       if (n < 64 || n % 256 == 0) {
@@ -163,5 +383,54 @@ public final class SectionBuilder {
       }
 
       return states;
+   }
+
+   /** Directly materialize ordinary compact codes. Per-column sheet states keep the original resolver path. */
+   public static net.minecraft.world.level.chunk.LevelChunkSection fromCodes(byte[] codes, int from, BlockState[] table, int sheetCode,
+      net.minecraft.world.level.chunk.PalettedContainerRO<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>> biomes) {
+      if (broken) return null;
+      int[] ids = new int[16]; java.util.Arrays.fill(ids, -1);
+      int[] counts = new int[16];
+      BlockState[] palette = new BlockState[16];
+      int size = 0;
+      for (int i = 0; i < 4096; i++) {
+         int code = codes[from + i] & 15;
+         if (code == sheetCode || code >= table.length || table[code] == null) return null;
+         if (ids[code] < 0) {
+            int id = 0;
+            while (id < size && palette[id] != table[code]) id++;
+            if (id == size) palette[size++] = table[code];
+            ids[code] = id;
+         }
+         counts[ids[code]]++;
+      }
+      PalettedContainer<BlockState> states;
+      if (size == 1) states = Mc.blockStates(palette[0]);
+      else {
+         long[] packed = new long[256];
+         for (int i = 0; i < 4096; i++) packed[i >> 4] |= (long)ids[codes[from + i] & 15] << (4 * (i & 15));
+         states = Mc.packedBlockStates(palette, size, 4, packed);
+         if (states == null) return null;
+      }
+      long n = BUILT.getAndIncrement();
+      if (n < 64 || n % 256 == 0) for (int i = 0; i < 4096; i++) {
+         if (states.get(i & 15, i >> 8, i >> 4 & 15) != table[codes[from + i] & 15]) {
+            broken = true;
+            com.wgaccel.WgaChat.warnOff("WGA compact section builder off: read-back mismatch at index {}", i);
+            return null;
+         }
+      }
+      var section = new net.minecraft.world.level.chunk.LevelChunkSection(states, biomes);
+      if (!Mc.SECTION_RECOUNT_EXACT) {
+         int nonEmpty = 0, ticking = 0, fluids = 0;
+         LoaderHooks hooks = LoaderHooks.get();
+         for (int i = 0; i < size; i++) {
+            BlockState state = palette[i];
+            if (!hooks.isEmpty(state)) { nonEmpty += counts[i]; if (state.isRandomlyTicking()) ticking += counts[i]; }
+            if (!state.getFluidState().isEmpty()) fluids += counts[i];
+         }
+         setCounts(section, nonEmpty, ticking, fluids);
+      }
+      return section;
    }
 }

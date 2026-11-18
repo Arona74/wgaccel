@@ -724,6 +724,8 @@ public final class ErosionFilterGpu {
       final boolean weirdness;
       /** The chunk grids' filter of FreeTerraForged 1.0.0026 and later ({@link com.wgaccel.ftf.FtfVersion#GRID_WATER}). */
       final boolean v26;
+      /** FreeTerraForged 1.0.0027 and later ({@link com.wgaccel.ftf.FtfVersion#MOUNTAIN_FADES}) ReferenceWeirdness formula. */
+      final boolean v27;
       final FloatBuffer packed;
 
       Params(Object erosion, int algorithm) throws ReflectiveOperationException {
@@ -768,6 +770,7 @@ public final class ErosionFilterGpu {
          this.ground = levels.ground;
          this.weirdness = algorithm == 3 && com.wgaccel.ftf.FtfVersion.CLIMATE_EROSION;
          this.v26 = algorithm == 3 && com.wgaccel.ftf.FtfVersion.GRID_WATER;
+         this.v27 = algorithm == 3 && com.wgaccel.ftf.FtfVersion.MOUNTAIN_FADES;
          float minRelief = 3.0F / this.worldHeight;
          float maxRelief = 8.0F / this.worldHeight;
          float invRange = 1.0F / Math.max(1.0E-5F, maxRelief - minRelief);
@@ -833,6 +836,13 @@ public final class ErosionFilterGpu {
       if (water) {
          cell.sediment = -0.5F;
          cell.weirdness = 0.0F;
+      } else if (p.v27) {
+         float magnitude = NoiseUtil.clamp(0.35F + 0.45F * cell.sediment, 0.055F, 0.95F);
+         float macroBias = NoiseUtil.clamp((cell.macroBiomeId - 0.5F) * 2.0F, -1.0F, 1.0F);
+         float weight = Math.abs(macroBias);
+         float scaledMagnitude = NoiseUtil.lerp(0.055F, magnitude, weight);
+         float weirdness = (macroBias >= 0.0F ? scaledMagnitude : -scaledMagnitude) * 1.33334F;
+         cell.weirdness = NoiseUtil.clamp(weirdness, -1.0F, 1.0F);
       } else {
          float magnitude = NoiseUtil.clamp(cell.sediment + 0.5F, p.v26 ? 0.055F : 0.0F, 1.0F);
          cell.weirdness = cell.macroBiomeId > 0.5F ? magnitude : -magnitude;

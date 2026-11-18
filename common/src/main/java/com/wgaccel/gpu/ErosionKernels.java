@@ -606,7 +606,7 @@ public final class ErosionKernels {
           float n = (broad + 0.35f * detail) / (1.0f + 0.35f);
           return (n - 0.5f) * 2.0f;
       }
-      extern "C" __global__ void cliffVariation(int n, int seed, int worldBlockX, int worldBlockZ, float broadFreq, float detailFreq, const float* mods,
+      extern "C" __global__ void cliffVariation(int n, int seed, int worldBlockX, int worldBlockZ, float broadFreq, float detailFreq, float cellSpacing, int spaced, const float* mods,
                                                 float* rateMul, float* reliefMul) {
           int idx = blockIdx.x * blockDim.x + threadIdx.x;
           if (idx >= n * n) return;
@@ -617,8 +617,8 @@ public final class ErosionKernels {
               reliefMul[idx] = 1.0f;
               return;
           }
-          float wx = (float)(worldBlockX + x);
-          float wz = (float)(worldBlockZ + z);
+          float wx = spaced ? (float)worldBlockX + (float)x * cellSpacing : (float)(worldBlockX + x);
+          float wz = spaced ? (float)worldBlockZ + (float)z * cellSpacing : (float)(worldBlockZ + z);
           rateMul[idx] = 1.0f + 0.5f * cliff_centered(wx, wz, broadFreq, detailFreq, seed);
           reliefMul[idx] = 1.0f + 0.35f * cliff_centered(wx, wz, broadFreq, detailFreq, ftf_add(seed, 6007));
       }
@@ -747,20 +747,24 @@ public final class ErosionKernels {
     * relief), three Jacobi passes. Returns the buffer holding the relaxed heights (relaxA or relaxB).
     */
    public static long runCliff(Gpu gpu, Buffers d, int n, int seed, int blockX, int blockZ, float broadFreq, float detailFreq, float minRelief, float reliefSpan) {
+      return runCliff(gpu, d, n, seed, blockX, blockZ, broadFreq, detailFreq, minRelief, reliefSpan, 1.0F, false);
+   }
+
+   public static long runCliff(Gpu gpu, Buffers d, int n, int seed, int blockX, int blockZ, float broadFreq, float detailFreq, float minRelief,
+      float reliefSpan, float spacing, boolean spaced) {
       int count = n * n;
       int grid = (count + 255) / 256;
-      gpu.copy(d.height, d.relaxA, 4L * count);
-      gpu.run("cliffMods", grid, 1, count, d.height, d.mask, d.modifier, d.edge, d.river, d.params, d.mods);
-      gpu.run("cliffVariation", grid, 1, n, seed, blockX, blockZ, broadFreq, detailFreq, d.mods, d.tmp, d.zone);
-      long from = d.relaxA;
-      long to = d.relaxB;
+      gpu.enqueue("cliffMods", grid, 1, count, d.height, d.mask, d.modifier, d.edge, d.river, d.params, d.mods);
+      gpu.enqueue("cliffVariation", grid, 1, n, seed, blockX, blockZ, broadFreq, detailFreq, spacing, spaced ? 1 : 0, d.mods, d.tmp, d.zone);
+      long from = d.height;
+      long to = d.relaxA;
       for (int pass = 0; pass < 3; pass++) {
-         gpu.run("cliffPass", grid, 1, n, from, d.mods, d.tmp, d.zone, minRelief, reliefSpan, to);
-         long swap = from;
+         gpu.enqueue("cliffPass", grid, 1, n, from, d.mods, d.tmp, d.zone, minRelief, reliefSpan, to);
+         long swap = from == d.height ? d.relaxB : from;
          from = to;
          to = swap;
       }
-
+      gpu.finish(); // Preserve this public method's completion contract, with one wait for the whole chain.
       return from;
    }
 

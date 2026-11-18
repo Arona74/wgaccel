@@ -1,7 +1,10 @@
 package com.wgaccel.gpu;
 
 import com.wgaccel.WorldgenAccelerator;
+import com.wgaccel.Config;
 import com.wgaccel.platform.Names;
+import com.wgaccel.util.ResourcePool;
+import com.wgaccel.util.SingleFlight;
 import etcodehome.freeterraforged.world.worldgen.noise.NoiseUtil;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import java.lang.reflect.Field;
@@ -49,6 +52,8 @@ public final class TileNoiseGpu {
       final Map<Object, Integer> numbers = new IdentityHashMap<>();
       final long[] costs;
       final Gpu gpu;
+      final long epoch;
+      final ResourcePool<Evaluation> buffers;
 
       Program(float frequency, List<Object> populators, long[] costs, Gpu gpu) {
          this.frequency = frequency;
@@ -58,6 +63,8 @@ public final class TileNoiseGpu {
 
          this.costs = costs;
          this.gpu = gpu;
+         this.epoch = EPOCH.get();
+         this.buffers = gpu == null ? null : new ResourcePool<>(6, 65_536, n -> new Evaluation(gpu, n), gpu::close);
       }
    }
 
@@ -111,6 +118,14 @@ public final class TileNoiseGpu {
    }
 
    private static final Map<Object, Object> PROGRAMS = Collections.synchronizedMap(new IdentityHashMap<>());
+   private static final java.util.concurrent.atomic.AtomicLong EPOCH = new java.util.concurrent.atomic.AtomicLong();
+   private record HeightmapKey(Object heightmap, long epoch) {
+      @Override public boolean equals(Object other) {
+         return other instanceof HeightmapKey key && key.heightmap == this.heightmap && key.epoch == this.epoch;
+      }
+      @Override public int hashCode() { return 31 * System.identityHashCode(this.heightmap) + Long.hashCode(this.epoch); }
+   }
+   private static final SingleFlight<HeightmapKey, Object> COMPILING = new SingleFlight<>();
    private static final Object FAILED = new Object();
    /** Heightmaps whose program is being made (by prepare or a begin): their tiles are made on the CPU meanwhile. */
    private static final java.util.Set<Object> BUILDING = Collections.newSetFromMap(Collections.synchronizedMap(new IdentityHashMap<>()));
@@ -199,33 +214,47 @@ public final class TileNoiseGpu {
     * world-loading screen's list for all of it (given by {@link #prepare}, or begun here), done once it is there.
     */
    private static Object program(Object heightmap, GpuPrepare.Task given) {
-      Object made = PROGRAMS.get(heightmap);
-      if (made == null) {
-         synchronized (PROGRAMS) {
-            made = PROGRAMS.get(heightmap);
-            if (made == null) {
-               GpuPrepare.Task task = given != null ? given : GpuPrepare.begin("tile noise");
-               try {
-                  made = build(heightmap);
-                  task.done();
-               } catch (Throwable failure) {
-                  WorldgenAccelerator.LOG.warn("WGA GPU tile noise: no program for this world's terrain: {}", failure.toString());
-                  task.failed(failure.toString());
-                  made = FAILED;
-               }
-
-               PROGRAMS.put(heightmap, made);
-               BUILDING.remove(heightmap);
-               return made;
+      long epoch = EPOCH.get();
+      GpuPrepare.Task task = given != null ? given : GpuPrepare.begin("tile noise");
+      try {
+         Object made = PROGRAMS.get(heightmap);
+         if (made == null) made = COMPILING.get(new HeightmapKey(heightmap, epoch), () -> {
+            Object already = PROGRAMS.get(heightmap);
+            if (already != null) return already;
+            Object built;
+            try { built = build(heightmap); }
+            catch (Throwable failure) {
+               WorldgenAccelerator.LOG.warn("WGA GPU tile noise: no program for this world's terrain: {}", failure.toString());
+               built = FAILED;
             }
-         }
-      }
+            synchronized (PROGRAMS) {
+               if (epoch == EPOCH.get()) {
+                  PROGRAMS.put(heightmap, built);
+                  return built;
+               }
+            }
+            // A compile that outlived its world was never published or used by a tile.
+            if (built instanceof Program abandoned && abandoned.buffers != null) abandoned.buffers.close();
+            return FAILED;
+         });
+         if (made == FAILED) task.failed("no program for this world (see log)"); else task.done();
+         return made;
+      } finally { BUILDING.remove(heightmap); }
+   }
 
-      if (given != null) {
-         given.done();
+   /** Release world-owned tables and buffers. Active jobs own leases until their final download/disposal finishes. */
+   public static void resetWorld() {
+      List<Object> old;
+      synchronized (PROGRAMS) {
+         EPOCH.incrementAndGet();
+         old = new ArrayList<>(PROGRAMS.values());
+         PROGRAMS.clear();
       }
-
-      return made;
+      TABLES.clear(); BUILDING.clear();
+      for (Object value : old) if (value instanceof Program p && p.buffers != null) {
+         try { p.buffers.close(); }
+         catch (RuntimeException problem) { WorldgenAccelerator.LOG.warn("WGA populator buffer cleanup: {}", problem.toString()); }
+      }
    }
 
    /**
@@ -266,6 +295,7 @@ public final class TileNoiseGpu {
     */
    public static void fill(Table table, IntArrayList[] needs) {
       Program p = table.program;
+      if (p.epoch != EPOCH.get()) return;
       long start = System.nanoTime();
       try {
          for (int n = 0; n < needs.length; n++) {
@@ -305,7 +335,7 @@ public final class TileNoiseGpu {
 
          BATCHES.increment();
       } catch (Throwable failure) {
-         disable("GPU: " + failure);
+         if (p.epoch == EPOCH.get()) disable("GPU: " + failure);
       } finally {
          GPU_NANOS.add(System.nanoTime() - start);
       }
@@ -316,6 +346,7 @@ public final class TileNoiseGpu {
     * and the coordinates are the ones the GPU used; false otherwise.
     */
    public static boolean lookup(Table table, int n, int worldX, int worldZ, float x, float z, float[] out) {
+      if (table.program.epoch != EPOCH.get()) return false;
       byte[] state = table.state[n];
       if (state == null) {
          return false;
@@ -342,24 +373,26 @@ public final class TileNoiseGpu {
 
    /** Rows first..first+3 at these points into out[k * points + i] (and unsure), in launches of at most LAUNCH_SAMPLES samples. */
    private static void evaluate(Program p, float[] x, float[] z, int points, int first, float[] out, byte[] unsure) {
-      FloatBuffer xs = MemoryUtil.memAllocFloat(points);
-      FloatBuffer zs = MemoryUtil.memAllocFloat(points);
-      IntBuffer seeds = MemoryUtil.memCallocInt(points);
-      FloatBuffer values = MemoryUtil.memAllocFloat(4 * points);
-      IntBuffer flags = MemoryUtil.memAllocInt(4 * points);
-      long dx = 0;
-      long dz = 0;
-      long dseeds = 0;
-      long dout = 0;
-      long dflags = 0;
-      try {
+      try (var lease = p.buffers.borrow(points)) {
+         if (!Config.GPU_REUSE_POPULATOR_BUFFERS.get()) lease.discard();
+         Evaluation b = lease.get();
+         FloatBuffer xs = b.xs.clear().limit(points);
+         FloatBuffer zs = b.zs.clear().limit(points);
+         IntBuffer seeds = b.seeds.clear().limit(points);
+         FloatBuffer values = b.values.clear().limit(4 * points);
+         IntBuffer flags = b.flags.clear().limit(4 * points);
+         try {
          xs.put(0, x, 0, points);
          zs.put(0, z, 0, points);
-         dx = p.gpu.upload(xs);
-         dz = p.gpu.upload(zs);
-         dseeds = p.gpu.upload(seeds);
-         dout = p.gpu.allocate(16L * points);
-         dflags = p.gpu.allocate(16L * points);
+         if (GpuBackend.OPENCL) {
+            b.gpu.enqueueCopyIn(b.dx, xs);
+            b.gpu.enqueueCopyIn(b.dz, zs);
+            b.gpu.enqueueCopyIn(b.dseeds, seeds);
+         } else {
+            b.gpu.copyIn(b.dx, xs);
+            b.gpu.copyIn(b.dz, zs);
+            b.gpu.copyIn(b.dseeds, seeds);
+         }
          for (int i = 0; i < 4; ) {
             int run = 1;
             long samples = p.costs[first + i] * points;
@@ -371,30 +404,61 @@ public final class TileNoiseGpu {
             int slice = run > 1 || samples <= LAUNCH_SAMPLES ? points : (int)Math.max(256, LAUNCH_SAMPLES / Math.max(1, samples / points) / 256 * 256);
             for (int offset = 0; offset < points; offset += slice) {
                int width = Math.min(slice, points - offset);
-               p.gpu.run("treeCheck", (width + 255) / 256, run, dx, dz, dseeds, points, first + i, offset, dout + 4L * points * i, dflags + 4L * points * i);
+               b.gpu.enqueue("treeCheck", (width + 255) / 256, run, b.dx, b.dz, b.dseeds, points, first + i, offset,
+                  b.dout + 4L * points * i, b.dflags + 4L * points * i);
             }
 
             i += run;
          }
 
-         p.gpu.download(dout, values);
-         p.gpu.download(dflags, flags);
+         b.gpu.download(b.dout, values);
+         b.gpu.download(b.dflags, flags);
          values.get(0, out, 0, 4 * points);
          for (int i = 0; i < 4 * points; i++) {
             unsure[i] = (byte)(flags.get(i) != 0 ? 1 : 0);
          }
-      } finally {
-         for (long device : new long[] {dx, dz, dseeds, dout, dflags}) {
-            if (device != 0L) {
-               p.gpu.free(device);
-            }
+         } catch (Throwable failure) {
+            lease.discard(); // A failed asynchronous job must drain/free, never return writable buffers to the pool.
+            throw failure;
          }
+      }
+   }
 
-         MemoryUtil.memFree(xs);
-         MemoryUtil.memFree(zs);
-         MemoryUtil.memFree(seeds);
-         MemoryUtil.memFree(values);
-         MemoryUtil.memFree(flags);
+   private static final class Evaluation implements ResourcePool.Entry {
+      final Gpu gpu;
+      final int capacity;
+      FloatBuffer xs, zs, values;
+      IntBuffer seeds, flags;
+      long dx, dz, dseeds, dout, dflags;
+
+      Evaluation(Gpu parent, int needed) {
+         this.gpu = parent.lane();
+         this.capacity = needed <= 65_536 ? Math.max(256, Integer.highestOneBit(needed - 1) << 1) : needed;
+         try {
+            int outputs = Math.multiplyExact(4, this.capacity);
+            this.xs = MemoryUtil.memAllocFloat(this.capacity);
+            this.zs = MemoryUtil.memAllocFloat(this.capacity);
+            this.seeds = MemoryUtil.memCallocInt(this.capacity); // Kernels read this zero-seed input; they never write it.
+            this.values = MemoryUtil.memAllocFloat(outputs);
+            this.flags = MemoryUtil.memAllocInt(outputs);
+            this.dx = this.gpu.allocate(4L * this.capacity);
+            this.dz = this.gpu.allocate(4L * this.capacity);
+            this.dseeds = this.gpu.allocate(4L * this.capacity);
+            this.dout = this.gpu.allocate(16L * this.capacity);
+            this.dflags = this.gpu.allocate(16L * this.capacity);
+         } catch (Throwable failure) {
+            try { this.close(); } catch (Throwable cleanup) { failure.addSuppressed(cleanup); }
+            throw failure;
+         }
+      }
+      @Override public int capacity() { return this.capacity; }
+      @Override public void close() {
+         try { this.gpu.close(); } // The backend drains uses before freeing device allocations, including exceptional jobs.
+         finally {
+            MemoryUtil.memFree(this.xs); MemoryUtil.memFree(this.zs); MemoryUtil.memFree(this.seeds);
+            MemoryUtil.memFree(this.values); MemoryUtil.memFree(this.flags);
+            this.xs = null; this.zs = null; this.seeds = null; this.values = null; this.flags = null;
+         }
       }
    }
 
@@ -523,10 +587,16 @@ public final class TileNoiseGpu {
 
    public static String summary() {
       long batches = Math.max(1, BATCHES.sum());
+      long allocated = 0, reused = 0;
+      synchronized (PROGRAMS) {
+         for (Object value : PROGRAMS.values()) if (value instanceof Program p && p.buffers != null) {
+            allocated += p.buffers.made.sum(); reused += p.buffers.reused.sum();
+         }
+      }
       return String.format(Locale.ROOT,
-         "WGA GPU tile noise: %,d tiles, %,d batches (dry pass %.1f ms, GPU %.1f ms per batch; %,d populator columns made); populator columns from the GPU %,d, on the CPU %,d; checked %,d: %s",
+         "WGA GPU tile noise: %,d tiles, %,d batches (dry pass %.1f ms, GPU %.1f ms per batch; %,d populator columns made); populator columns from the GPU %,d, on the CPU %,d; checked %,d: %s; buffer sets allocated %,d, reused %,d",
          TILES.sum(), BATCHES.sum(), DRY_NANOS.sum() / 1.0e6 / batches, GPU_NANOS.sum() / 1.0e6 / batches, MADE.sum(), USED.sum(), CPU.sum(), CHECKED.sum(),
-         DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER");
+         DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER", allocated, reused);
    }
 
    /** For the memory report: tiles whose GPU table is still held. */

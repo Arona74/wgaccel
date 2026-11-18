@@ -80,6 +80,8 @@ public final class SurfaceTap {
       BlockState defaultBlock;
       Object steep;
       Object strata;
+      long lastXZ = Long.MIN_VALUE;
+      int fastFlags;
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
    }
 
@@ -240,6 +242,15 @@ public final class SurfaceTap {
       int z = c.wgaccel$z();
       int column = (x & 15) * 16 + (z & 15);
       Holder<Biome> biome = c.wgaccel$biome().get();
+      long updateXZ = c.wgaccel$lastUpdateXZ();
+      if (current.lastXZ != updateXZ) {
+         current.lastXZ = updateXZ;
+         boolean badlands = biome.is(net.minecraft.tags.BiomeTags.IS_BADLANDS);
+         boolean desert = biome.is(net.minecraft.world.level.biome.Biomes.DESERT)
+            || biome.unwrapKey().map(k -> Mc.path(k).contains("desert")).orElse(false);
+         current.fastFlags = (badlands ? 1 : 0) | (desert ? 2 : 0);
+      }
+
       int at = tap.count * FIELDS;
       tap.calls[at] = x;
       tap.calls[at + 1] = y;
@@ -252,9 +263,10 @@ public final class SurfaceTap {
       tap.calls[at + 8] = Mc.coldEnoughToSnow(biome.value(), current.pos.set(x, y, z), c) ? 1 : 0;
       tap.calls[at + 9] = test(current.steep) ? 1 : 0;
       tap.calls[at + 10] = c.wgaccel$minSurface();
-      // The column, with the codegen's column conditions' bits above its 8 bits (the check kernel splits them).
+      // The column, ColumnConditions' 16 bits above byte 0, and FastStrataSequenceRule's 2 fastFlags in bits 24..31.
       com.wgaccel.gpu.ColumnConditions columns = codegen.columns();
-      tap.calls[at + 11] = columns == null ? column : column | columns.flags(x, z) << 8;
+      int packed = columns == null ? column : column | (columns.flags(x, z) & 65535) << 8;
+      tap.calls[at + 11] = packed | (current.fastFlags << 24);
       tap.calls[at + 12] = slope(current.chunk, x & 15, z & 15);
       tap.secondary[column] = c.wgaccel$secondary();
       tap.results[tap.count] = state == null ? -1 : codegen.state(state);
@@ -383,7 +395,9 @@ public final class SurfaceTap {
          return null;
       }
 
-      if (!Names.className(node.getClass()).contains("SurfaceRules$") || Names.className(node.getClass()).contains("Context")) {
+      String name = Names.className(node.getClass());
+      boolean ftfWrapper = name.equals("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
+      if ((!name.contains("SurfaceRules$") && !ftfWrapper) || name.contains("Context")) {
          return null;
       }
 

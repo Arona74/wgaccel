@@ -65,15 +65,7 @@ public final class FtfRiverSkip {
          return Float.POSITIVE_INFINITY;
       }
 
-      float biased = 1.0F * WIDTH_MAX * SIDE_MAX;
-      float lakeMax = 1.0F;
-      if (lake != null) {
-         float largest = Math.max(lake.sizeMin / 100.0F, lake.sizeMax / 100.0F);
-         lakeMax = Math.max(1.0F, 1.0F + largest * 1.45F);
-      }
-
-      float zone1 = (float)Math.sqrt(scaledBed * biased) * lakeMax;
-      float zone2 = zone1 + zone2WidthFactor * biased;
+      float zone2 = zone2Upper(scaledBed, zone2WidthFactor, lake);
       float unshrunk = bankWidth * WIDTH_MAX * PINCH_MAX;
       float shrink = Math.max(0.0F, Math.min(1.0F, currT * fadeInv));
       float zone3 = zone2 + unshrunk * shrink * shrink;
@@ -85,6 +77,40 @@ public final class FtfRiverSkip {
       }
 
       return (zone3 + unshrunk * fadeOut) * 1.001F + 1.0F;
+   }
+
+   /**
+    * FreeTerraForged 1.0.0027+ upper bound on UpliftRiverCarver's mountain fadeRadius ({@code leadoutRadius + fadeWidth},
+    * capped by {@code maxZone4Radius}).
+    */
+   public static float bound27(Cell cell, float currT, float scaledBed, float fadeInv, float zone2WidthFactor, int bankWidth,
+         LakeConfig lake, Levels levels, float maxZone4Radius) {
+      if (zone2WidthFactor < 0.0F || bankWidth < 0 || scaledBed < 0.0F || levels.unit <= 0.0F) {
+         return Float.POSITIVE_INFINITY;
+      }
+
+      float zone2 = zone2Upper(scaledBed, zone2WidthFactor, lake);
+      float maxLeadout = bankWidth * 0.80F;
+      float shrink = Math.max(0.0F, Math.min(1.0F, currT * fadeInv));
+      float maxBaseBankRun = bankWidth * WIDTH_MAX * PINCH_MAX * shrink;
+      float target = ContinentalHydrology.getComplexWaterHeight(cell.waterTable, cell.globalContinentScale, cell.continentSizeModifier) + levels.water;
+      float heightDiff = Math.max(0.0F, cell.height - target);
+      float heightBasedRun = (heightDiff / levels.unit) * 2.2F;
+      float fadeWidth = Math.max(maxBaseBankRun, heightBasedRun);
+      float bound = Math.min(zone2 + maxLeadout + fadeWidth, maxZone4Radius);
+      return bound * 1.001F + 1.0F;
+   }
+
+   private static float zone2Upper(float scaledBed, float zone2WidthFactor, LakeConfig lake) {
+      float biased = 1.0F * WIDTH_MAX * SIDE_MAX;
+      float lakeMax = 1.0F;
+      if (lake != null) {
+         float largest = Math.max(lake.sizeMin / 100.0F, lake.sizeMax / 100.0F);
+         lakeMax = Math.max(1.0F, 1.0F + largest * 1.45F);
+      }
+
+      float zone1 = (float)Math.sqrt(scaledBed * biased) * lakeMax;
+      return zone1 + zone2WidthFactor * biased;
    }
 
    /** A checked skip: carve ran on cell; expected is what the skip would have left. */

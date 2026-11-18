@@ -3,7 +3,11 @@ package com.wgaccel.gen;
 import com.wgaccel.mixin.access.ChunkAccessAccessor;
 import com.wgaccel.mixin.access.NoiseChunkAccessor;
 import com.wgaccel.platform.Names;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
@@ -38,8 +42,10 @@ public class BiomeInputs {
 
    private static volatile Method endDepthMethod;
    private static volatile Method minimumMethod;
+   private static volatile MethodHandle minimumHandle;
+   private final MutablePointContext point = new MutablePointContext();
    /** ClimateDepthFunction.deferredLookup, CellSampler.getCachedOrLookup, WorldLookup.getContext (FreeTerraForged 1.0.0023). */
-   private static volatile Method[] climateDepthMethods;
+   private static volatile MethodHandle[] climateDepthHandles;
    /** Whether FreeTerraForged's climate sampler still changes a target's depth (UndergroundBiomeBanding.allowsCaveBiome, before 1.0.0023). */
    private static volatile Boolean depthPolicy;
    /** The surface context's envelope and the context, from the last read with banding (for {@link #minimumSurfaces}). */
@@ -74,19 +80,20 @@ public class BiomeInputs {
       }
 
       for (int k = 0; k < samplers.size(); k++) {
-         if (Names.simpleName(samplers.get(k).getClass()).equals("ClimateDepthFunction")) {
-            this.surfaceHeights(samplers.get(k), k);
+         Object raw = samplers.get(k);
+         if (Names.simpleName(raw.getClass()).equals("ClimateDepthFunction")) {
+            this.surfaceHeights(raw, k);
             continue;
          }
 
-         DensityFunction wrapped = ((NoiseChunkAccessor)noise).wgaccel$wrapped().get((DensityFunction)samplers.get(k));
-         if (wrapped == null) {
-            throw new IllegalStateException("the noise chunk has no wrapped form of CellSampler " + samplers.get(k));
+         DensityFunction fn = ((NoiseChunkAccessor)noise).wgaccel$wrapped().get((DensityFunction)raw);
+         if (fn == null) {
+            throw new IllegalStateException("the noise chunk has no wrapped form of CellSampler " + raw);
          }
 
          for (int lx = 0; lx < 16; lx += 4) {
             for (int lz = 0; lz < 16; lz += 4) {
-               this.cells[k * 289 + lx * 17 + lz] = wrapped.compute(new DensityFunction.SinglePointContext(this.chunkX + lx, 0, this.chunkZ + lz));
+               this.cells[k * 289 + lx * 17 + lz] = fn.compute(this.point.at(this.chunkX + lx, 0, this.chunkZ + lz));
             }
          }
       }
@@ -113,17 +120,32 @@ public class BiomeInputs {
     * cell when its chunk is in the filtered chunk cache, else the raw one, kept per thread: another answer by timing.
     */
    private static void surfaceHeights(Object climateDepth, int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
-      Method[] methods = climateDepthMethods;
-      if (methods == null) {
+      MethodHandle[] handles = climateDepthHandles;
+      if (handles == null) {
+         MethodHandles.Lookup mhLookup = MethodHandles.lookup();
          Class<?> cellSampler = Class.forName("etcodehome.freeterraforged.world.worldgen.densityfunction.CellSampler", false, climateDepth.getClass().getClassLoader());
          Class<?> lookup = Class.forName("etcodehome.freeterraforged.world.worldgen.cell.heightmap.WorldLookup", false, climateDepth.getClass().getClassLoader());
-         methods = new Method[] {climateDepth.getClass().getMethod("deferredLookup"), cellSampler.getMethod("getCachedOrLookup", lookup, int.class, int.class, boolean.class),
-            lookup.getMethod("getContext")};
-         climateDepthMethods = methods;
+         handles = new MethodHandle[] {
+            mhLookup.unreflect(climateDepth.getClass().getMethod("deferredLookup"))
+               .asType(MethodType.methodType(java.util.function.Supplier.class, Object.class)),
+            mhLookup.unreflect(cellSampler.getMethod("getCachedOrLookup", lookup, int.class, int.class, boolean.class))
+               .asType(MethodType.methodType(etcodehome.freeterraforged.world.worldgen.cell.Cell.class, Object.class, int.class, int.class, boolean.class)),
+            mhLookup.unreflect(lookup.getMethod("getContext"))
+               .asType(MethodType.methodType(Object.class, Object.class))
+         };
+         climateDepthHandles = handles;
       }
 
-      Object lookup = ((java.util.function.Supplier<?>)methods[0].invoke(climateDepth)).get();
-      Object context = lookup == null ? null : methods[2].invoke(lookup);
+      Object lookup;
+      Object context;
+      try {
+         lookup = ((java.util.function.Supplier<?>)handles[0].invokeExact(climateDepth)).get();
+         context = lookup == null ? null : (Object)handles[2].invokeExact(lookup);
+      } catch (RuntimeException | Error | ReflectiveOperationException ex) {
+         throw ex;
+      } catch (Throwable ex) {
+         throw new InvocationTargetException(ex);
+      }
       Object levels = context == null ? null : field(context, "levels");
       if (levels == null) {
          // Its compute gives 0 everywhere then, which the GPU's version does not.
@@ -131,12 +153,20 @@ public class BiomeInputs {
       }
 
       etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels scale = (etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels)levels;
-      for (int qx = 0; qx < 4; qx++) {
-         for (int qz = 0; qz < 4; qz++) {
-            etcodehome.freeterraforged.world.worldgen.cell.Cell cell = (etcodehome.freeterraforged.world.worldgen.cell.Cell)methods[1].invoke(null, lookup, chunkX + qx * 4,
-               chunkZ + qz * 4, false);
-            out[qx * 4 + qz] = scale.scale(cell.height);
+      MethodHandle cachedOrLookup = handles[1];
+      try {
+         for (int qx = 0; qx < 4; qx++) {
+            for (int qz = 0; qz < 4; qz++) {
+               etcodehome.freeterraforged.world.worldgen.cell.Cell cell =
+                     (etcodehome.freeterraforged.world.worldgen.cell.Cell)cachedOrLookup.invokeExact(
+                           lookup, chunkX + qx * 4, chunkZ + qz * 4, false);
+               out[qx * 4 + qz] = scale.scale(cell.height);
+            }
          }
+      } catch (RuntimeException | Error | ReflectiveOperationException ex) {
+         throw ex;
+      } catch (Throwable ex) {
+         throw new InvocationTargetException(ex);
       }
    }
 
@@ -225,13 +255,36 @@ public class BiomeInputs {
       return known;
    }
 
+   private static volatile Method lastBoundMinimum;
+
+   private static MethodHandle minimumHandleFor(Method minimum) throws IllegalAccessException {
+      MethodHandle handle = minimumHandle;
+      if (handle != null && lastBoundMinimum == minimum) {
+         return handle;
+      }
+
+      handle = MethodHandles.lookup()
+            .unreflect(minimum)
+            .asType(MethodType.methodType(int.class, Object.class, Object.class, int.class, int.class));
+      minimumHandle = handle;
+      lastBoundMinimum = minimum;
+      return handle;
+   }
+
    private static void minimumSurfaces(Object envelope, Object context, Method minimum, int chunkX, int chunkZ, int[] out) throws ReflectiveOperationException {
       int quartX = chunkX >> 2;
       int quartZ = chunkZ >> 2;
-      for (int qx = 0; qx < 4; qx++) {
-         for (int qz = 0; qz < 4; qz++) {
-            out[qx * 4 + qz] = (Integer)minimum.invoke(envelope, context, quartX + qx, quartZ + qz);
+      MethodHandle handle = minimumHandleFor(minimum);
+      try {
+         for (int qx = 0; qx < 4; qx++) {
+            for (int qz = 0; qz < 4; qz++) {
+               out[qx * 4 + qz] = (int)handle.invokeExact(envelope, context, quartX + qx, quartZ + qz);
+            }
          }
+      } catch (RuntimeException | Error runtime) {
+         throw runtime;
+      } catch (Throwable failure) {
+         throw new InvocationTargetException(failure);
       }
    }
 

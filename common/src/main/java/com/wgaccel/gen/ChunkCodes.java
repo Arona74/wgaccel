@@ -1,6 +1,6 @@
 package com.wgaccel.gen;
 
-/** A proto chunk's fill codes kept for its surface step (a mixin on ProtoChunk; {@link SurfaceAhead#takeCodes}), or null. */
+/** A proto chunk's fill codes kept for its surface step (a mixin on ProtoChunk; {@link SurfaceAhead#takeCodes}). */
 public interface ChunkCodes {
    Object wgaccel$codes();
 

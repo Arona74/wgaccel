@@ -160,4 +160,16 @@ public final class GpuApi {
 
       return GpuBackend.HIP ? Hip.hipEventElapsedTime(milliseconds, start, stop) : CU.cuEventElapsedTime(milliseconds, start, stop);
    }
+
+   public static int cuEventDestroy(long event) {
+      if (event == 0L) {
+         return CUDA_SUCCESS;
+      }
+
+      if (GpuBackend.OPENCL) {
+         return OpenCl.eventDestroy(event);
+      }
+
+      return GpuBackend.HIP ? CUDA_SUCCESS : CU.cuEventDestroy(event);
+   }
 }

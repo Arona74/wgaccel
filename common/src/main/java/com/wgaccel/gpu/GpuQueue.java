@@ -47,10 +47,11 @@ public final class GpuQueue {
 
    /** When a world loads: the limit (0: no limit), and whether it follows the measured times. */
    public static void configure(int limit, boolean adapt, double below) {
-      places = limit <= 0 ? null : new Places(limit);
+      int initial = limit <= 0 ? 0 : adapt ? Math.min(MAX, Math.max(limit, 16)) : limit;
+      places = initial <= 0 ? null : new Places(initial);
       openBelow = below;
       adaptive = adapt && limit > 0;
-      LIMIT.set(limit);
+      LIMIT.set(initial);
       GPU_SUM.set(0);
       CPU_SUM.set(0);
       GPU_COUNT.set(0);
@@ -102,7 +103,7 @@ public final class GpuQueue {
          CPU_COUNT.incrementAndGet();
       }
 
-      if (SAMPLES.incrementAndGet() % 32 != 0) {
+      if (SAMPLES.incrementAndGet() % 8 != 0) {
          return;
       }
 
@@ -126,8 +127,11 @@ public final class GpuQueue {
       }
 
       int limit = LIMIT.get();
-      if (gpuAverage < openBelow * cpuAverage && busy > 0 && limit < MAX && LIMIT.compareAndSet(limit, limit + 1)) {
-         s.release();
+      if (gpuAverage < openBelow * cpuAverage && busy > 0 && limit < MAX) {
+         int step = Math.min(Math.max(1, busy / 4), Math.min(4, MAX - limit));
+         if (LIMIT.compareAndSet(limit, limit + step)) {
+            s.release(step);
+         }
       } else if (gpuAverage > cpuAverage && limit > MIN && LIMIT.compareAndSet(limit, limit - 1)) {
          s.shrink();
       }

@@ -1,5 +1,7 @@
 package com.wgaccel.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.LevelAccessor;
@@ -9,16 +11,10 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * MultifaceSpreader.spreadAll (sculk veins spreading over every face, the deep dark's sculk patches) as two plain loops
- * instead of its streams: a stream over the faces, and for each a stream over the six directions, with lambdas, Optionals
- * and pipelines made at every call (1 Nov 2026 Conquest profile: sculk patches 5% of all samples, 40% of it spreadAll's
- * stream machinery). The same calls in the same order: the faces in Direction order that canSpreadFrom passes, then for
- * each every direction through spreadFromFaceTowardDirection itself (its own Optional), the successes counted.
+ * instead of its streams: pre-filters matching axes and missing/present faces before invoking spreadFromFaceTowardDirection.
  */
 @Mixin(MultifaceSpreader.class)
 public abstract class MultifaceSpreaderMixin {
@@ -32,16 +28,24 @@ public abstract class MultifaceSpreaderMixin {
    public abstract java.util.Optional<MultifaceSpreader.SpreadPos> spreadFromFaceTowardDirection(BlockState state, LevelAccessor level, BlockPos pos, Direction fromFace,
       Direction spreadDirection, boolean postProcess);
 
-   @Inject(method = "spreadAll", at = @At("HEAD"), cancellable = true, require = 0)
-   private void wgaccel$spreadAll(BlockState state, LevelAccessor level, BlockPos pos, boolean postProcess, CallbackInfoReturnable<Long> info) {
+   @WrapMethod(method = "spreadAll", require = 0)
+   private long wgaccel$spreadAll(BlockState state, LevelAccessor level, BlockPos pos, boolean postProcess, Operation<Long> original) {
       if (!com.wgaccel.Config.FAST_MULTIFACE_SPREAD.get()) {
-         return;
+         return original.call(state, level, pos, postProcess);
       }
 
+      boolean otherValid = this.config.isOtherBlockValidAsSource(state);
       long spread = 0L;
       for (Direction face : wgaccel$DIRECTIONS) {
-         if (this.config.canSpreadFrom(state, face)) {
+         if (this.config.canSpreadFrom(state, face) && (otherValid || this.config.hasFace(state, face))) {
+            Direction.Axis faceAxis = face.getAxis();
             for (Direction direction : wgaccel$DIRECTIONS) {
+               if (direction.getAxis() == faceAxis) {
+                  continue;
+               }
+               if (!otherValid && this.config.hasFace(state, direction)) {
+                  continue;
+               }
                if (this.spreadFromFaceTowardDirection(state, level, pos, face, direction, postProcess).isPresent()) {
                   spread++;
                }
@@ -49,6 +53,6 @@ public abstract class MultifaceSpreaderMixin {
          }
       }
 
-      info.setReturnValue(spread);
+      return spread;
    }
 }

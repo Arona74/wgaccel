@@ -58,6 +58,8 @@ final class OpenClSource {
       #define hypotf(a, b) hypot(a, b)
       #define copysignf(a, b) copysign(a, b)
       #define nextafterf(a, b) nextafter(a, b)
+      #define __shared__ __local
+      #define __syncthreads() barrier(CLK_LOCAL_MEM_FENCE)
       #define __popc(x) ((int)popcount((uint)(x)))
       #define __popcll(x) ((int)popcount((ulong)(x)))
       #define __clz(x) ((int)clz((int)(x)))

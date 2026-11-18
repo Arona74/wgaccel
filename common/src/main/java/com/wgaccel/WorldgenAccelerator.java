@@ -145,6 +145,7 @@ public final class WorldgenAccelerator {
       com.wgaccel.gen.GpuSurface.start(level);
       com.wgaccel.gen.SurfaceAhead.start();
       com.wgaccel.gen.GpuBiomes.start(level);
+      com.wgaccel.gen.GpuLight.start(level);
       com.wgaccel.ftf.FtfRawBlocks.prepare(level);
       try {
          com.wgaccel.gpu.GpuPrepare.await(180_000L);
@@ -157,6 +158,7 @@ public final class WorldgenAccelerator {
 
    /** A line for each player joining a world: the GPU and the API (compiler) the GPU parts use. Config gpuTestedWarning. */
    public static void onPlayerLoggedIn(Player player) {
+      VersionSupport.warnPlayer(player);
       if (!Config.GPU_TESTED_WARNING.get() || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
          return;
       }
@@ -170,6 +172,7 @@ public final class WorldgenAccelerator {
    public static void onServerStarted(MinecraftServer started) {
       server = started;
       Environment.log(started);
+      VersionSupport.logWarnings();
       DensityInventory.log(started.overworld());
       com.wgaccel.gen.BiomePlanInventory.log(started.overworld());
       Reporter.start();
@@ -198,6 +201,23 @@ public final class WorldgenAccelerator {
 
    public static void onServerStopping() {
       Reporter.stop();
+      GpuNoiseFill.stopLookAhead();
+      com.wgaccel.gen.BiomesAhead.shutdown();
+      com.wgaccel.gen.SurfaceAhead.stop();
+      com.wgaccel.c2me.AreaStep.stop();
       server = null;
+   }
+
+   /** After the server has drained world generation: release world-owned populator tables and leased buffers. */
+   public static void onServerStopped() {
+      com.wgaccel.ftf.FtfRawBlocks.clearWorld();
+      com.wgaccel.ftf.FtfChunkCells.clearWorld();
+      com.wgaccel.ftf.FtfRegionsAhead.clearWorld();
+      com.wgaccel.ftf.FtfSurfaceEnvelope.clearWorld();
+      com.wgaccel.gpu.TileNoiseGpu.resetWorld();
+      GpuNoiseFill.stopWorld();
+      com.wgaccel.gen.GpuSurface.stopWorld();
+      com.wgaccel.gen.GpuBiomes.stopWorld();
+      com.wgaccel.gen.GpuLight.stopWorld();
    }
 }

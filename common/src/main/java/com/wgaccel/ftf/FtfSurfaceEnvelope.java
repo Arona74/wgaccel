@@ -20,7 +20,7 @@ import java.util.function.IntSupplier;
  */
 public final class FtfSurfaceEnvelope {
    private static final int SLOTS = 1 << 17;
-   private static final AtomicReferenceArray<Entry> TABLE = new AtomicReferenceArray<>(SLOTS);
+   private static volatile AtomicReferenceArray<Entry> table;
    private static final LongAdder MADE = new LongAdder();
    private static final LongAdder SHARED = new LongAdder();
    private static final LongAdder CHECKED = new LongAdder();
@@ -34,14 +34,49 @@ public final class FtfSurfaceEnvelope {
    private FtfSurfaceEnvelope() {
    }
 
+   private static AtomicReferenceArray<Entry> table() {
+      AtomicReferenceArray<Entry> current = table;
+      if (current == null) {
+         synchronized (FtfSurfaceEnvelope.class) {
+            current = table;
+            if (current == null) {
+               table = current = new AtomicReferenceArray<>(SLOTS);
+            }
+         }
+      }
+      return current;
+   }
+
+   private static AtomicReferenceArray<Block> blocks() {
+      AtomicReferenceArray<Block> current = blocks;
+      if (current == null) {
+         synchronized (FtfSurfaceEnvelope.class) {
+            current = blocks;
+            if (current == null) {
+               blocks = current = new AtomicReferenceArray<>(BLOCK_SLOTS);
+            }
+         }
+      }
+      return current;
+   }
+
+   /** Releases shared envelope tables and strong WorldLookup/GeneratorContext references on world stop. */
+   public static void clearWorld() {
+      synchronized (FtfSurfaceEnvelope.class) {
+         table = null;
+         blocks = null;
+      }
+   }
+
    public static int minimumSurfaceY(Object lookup, boolean accurate, int quartX, int quartZ, IntSupplier make) {
       if (off || !Config.FTF_SHARED_CHUNK_CELLS.get() || !FtfSlowPaths.surfaceEnvelope()) {
          return make.getAsInt();
       }
 
+      AtomicReferenceArray<Entry> current = table();
       int hash = (quartX * 0x9E3779B1 + quartZ * 0x85EBCA6B) ^ (accurate ? 0x5bd1e995 : 0) ^ System.identityHashCode(lookup);
       int slot = (hash ^ (hash >>> 15)) & (SLOTS - 1);
-      Entry entry = TABLE.get(slot);
+      Entry entry = current.get(slot);
       if (entry != null && entry.lookup == lookup && entry.accurate == accurate && entry.quartX == quartX && entry.quartZ == quartZ) {
          SHARED.increment();
          if (ThreadLocalRandom.current().nextInt(256) == 0) {
@@ -64,7 +99,7 @@ public final class FtfSurfaceEnvelope {
 
       int height = make.getAsInt();
       MADE.increment();
-      TABLE.set(slot, new Entry(lookup, accurate, quartX, quartZ, height));
+      current.set(slot, new Entry(lookup, accurate, quartX, quartZ, height));
       return height;
    }
 
@@ -72,7 +107,7 @@ public final class FtfSurfaceEnvelope {
    // the 1.0.0010 version read a cached tile), 100 per answer, and neighbouring answers' 10 x 10 windows overlap (about 6
    // times over). Shared the same way, by context and block; 1 in 256 worked out again and compared.
    private static final int BLOCK_SLOTS = 1 << 20;
-   private static final AtomicReferenceArray<Block> BLOCKS = new AtomicReferenceArray<>(BLOCK_SLOTS);
+   private static volatile AtomicReferenceArray<Block> blocks;
    private static final LongAdder BLOCKS_MADE = new LongAdder();
    private static final LongAdder BLOCKS_SHARED = new LongAdder();
 
@@ -84,9 +119,10 @@ public final class FtfSurfaceEnvelope {
          return make.getAsInt();
       }
 
+      AtomicReferenceArray<Block> current = blocks();
       int hash = (x * 0x9E3779B1) ^ (z * 0x85EBCA6B) ^ System.identityHashCode(context);
       int slot = (hash ^ (hash >>> 16)) & (BLOCK_SLOTS - 1);
-      Block block = BLOCKS.get(slot);
+      Block block = current.get(slot);
       if (block != null && block.context == context && block.x == x && block.z == z) {
          BLOCKS_SHARED.increment();
          if (ThreadLocalRandom.current().nextInt(256) == 0) {
@@ -105,7 +141,7 @@ public final class FtfSurfaceEnvelope {
 
       int height = make.getAsInt();
       BLOCKS_MADE.increment();
-      BLOCKS.set(slot, new Block(context, x, z, height));
+      current.set(slot, new Block(context, x, z, height));
       return height;
    }
 

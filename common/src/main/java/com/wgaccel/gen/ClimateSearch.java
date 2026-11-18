@@ -41,16 +41,63 @@ public final class ClimateSearch {
    private final Map<Object, Integer> leafNodes;
    private final ThreadLocal<Object> lastResult;
    private final ThreadLocal<State> state;
+   private final int globalMinDepth;
+   private final int globalMaxDepth;
+   private final boolean allSameMaxDepth;
+   private final int uniformMinDepth;
+   private final int uniformMaxDepth;
 
    /** Per thread: the last answer's node (matched with vanilla's last answer), the target and the running best. */
    private static final class State {
+      static final int CACHE_SIZE = 1024;
+      static final int CACHE_MASK = CACHE_SIZE - 1;
+      static final int COL_SIZE = 64;
+      static final int COL_MASK = COL_SIZE - 1;
+      static final int MRU_SIZE = 16;
+      static final int MRU_MASK = MRU_SIZE - 1;
       Object lastLeaf;
       int lastNode = -1;
       long t0, t1, t2, t3, t4, t5;
       int best;
       long bestDistance;
+      boolean zeroExact;
+      long zeroMinT4, zeroMaxT4;
+      long safeLo, safeHi;
       Object compared;
       int calls;
+      final Object[] cLast = new Object[CACHE_SIZE];
+      final long[] ct0 = new long[CACHE_SIZE];
+      final long[] ct1 = new long[CACHE_SIZE];
+      final long[] ct2 = new long[CACHE_SIZE];
+      final long[] ct3 = new long[CACHE_SIZE];
+      final long[] ct4 = new long[CACHE_SIZE];
+      final long[] ct5 = new long[CACHE_SIZE];
+      final int[] cNode = new int[CACHE_SIZE];
+      final long[] colT0 = new long[COL_SIZE];
+      final long[] colT1 = new long[COL_SIZE];
+      final long[] colT2 = new long[COL_SIZE];
+      final long[] colT3 = new long[COL_SIZE];
+      final long[] colT5 = new long[COL_SIZE];
+      final long[] colMaxT4 = new long[COL_SIZE];
+      final int[] colNode = new int[COL_SIZE];
+      final Object[] colLeaf = new Object[COL_SIZE];
+      final Object[] colOtherLast = new Object[COL_SIZE];
+      final long[] mruT0 = new long[MRU_SIZE];
+      final long[] mruT1 = new long[MRU_SIZE];
+      final long[] mruT2 = new long[MRU_SIZE];
+      final long[] mruT3 = new long[MRU_SIZE];
+      final long[] mruT5 = new long[MRU_SIZE];
+      final long[] mruMinT4 = new long[MRU_SIZE];
+      final long[] mruMaxT4 = new long[MRU_SIZE];
+      final int[] mruNode = new int[MRU_SIZE];
+      final Object[] mruLeaf = new Object[MRU_SIZE];
+      final Object[] mruOtherLast = new Object[MRU_SIZE];
+
+      State() {
+         java.util.Arrays.fill(this.cNode, -1);
+         java.util.Arrays.fill(this.colNode, -1);
+         java.util.Arrays.fill(this.mruNode, -1);
+      }
    }
 
    private ClimateSearch() {
@@ -62,6 +109,11 @@ public final class ClimateSearch {
       this.leafNodes = null;
       this.lastResult = null;
       this.state = null;
+      this.globalMinDepth = Integer.MIN_VALUE;
+      this.globalMaxDepth = Integer.MAX_VALUE;
+      this.allSameMaxDepth = false;
+      this.uniformMinDepth = Integer.MAX_VALUE;
+      this.uniformMaxDepth = Integer.MIN_VALUE;
    }
 
    private ClimateSearch(int[] bounds, int[] first, int[] count, Object[] leaves, Object[] values, Map<Object, Integer> leafNodes, ThreadLocal<Object> lastResult) {
@@ -73,6 +125,25 @@ public final class ClimateSearch {
       this.leafNodes = leafNodes;
       this.lastResult = lastResult;
       this.state = ThreadLocal.withInitial(State::new);
+      int minDepth = Integer.MAX_VALUE;
+      int maxMinDepth = Integer.MIN_VALUE;
+      int minMaxDepth = Integer.MAX_VALUE;
+      int maxMaxDepth = Integer.MIN_VALUE;
+      for (int i = 0; i < count.length; i++) {
+         if (count[i] == 0) {
+            int lo = bounds[i * 14 + 8];
+            int hi = bounds[i * 14 + 9];
+            minDepth = Math.min(minDepth, lo);
+            maxMinDepth = Math.max(maxMinDepth, lo);
+            minMaxDepth = Math.min(minMaxDepth, hi);
+            maxMaxDepth = Math.max(maxMaxDepth, hi);
+         }
+      }
+      this.globalMinDepth = minDepth;
+      this.globalMaxDepth = maxMaxDepth;
+      this.allSameMaxDepth = minMaxDepth == maxMaxDepth;
+      this.uniformMinDepth = maxMinDepth;
+      this.uniformMaxDepth = minMaxDepth;
    }
 
    public static boolean on() {
@@ -150,6 +221,17 @@ public final class ClimateSearch {
       }
    }
 
+   /** Returns the vanilla RTree's per-thread last-result holder for tie-breaking preservation, or null if unavailable. */
+   @SuppressWarnings("unchecked")
+   public static ThreadLocal<Object> lastResultOf(Climate.ParameterList<?> table) {
+      try {
+         Object index = field(table, "index");
+         return (ThreadLocal<Object>)field(index, "lastResult");
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return null;
+      }
+   }
+
    private static Object field(Object target, String name) throws ReflectiveOperationException {
       for (Class<?> type = target.getClass(); type != null; type = type.getSuperclass()) {
          try {
@@ -192,19 +274,70 @@ public final class ClimateSearch {
       return d + axis(s.t4, b[at + 8], b[at + 9]) + axis(s.t5, b[at + 10], b[at + 11]) + axis(0L, b[at + 12], b[at + 13]);
    }
 
-   /** SubTree.search over this node's children, the running best in the state. */
+   private void clampDepth(State s, int node, long dh, long bestDist) {
+      if (dh >= bestDist) {
+         return;
+      }
+
+      int[] b = this.bounds;
+      int at = node * 14;
+      int minT4 = b[at + 8];
+      int maxT4 = b[at + 9];
+      if (s.t4 < minT4) {
+         long gap = (long)Math.sqrt((double)(bestDist - dh)) + 1L;
+         long hi = minT4 - gap;
+         if (hi < s.safeHi) {
+            s.safeHi = hi;
+         }
+      } else if (s.t4 > maxT4) {
+         long gap = (long)Math.sqrt((double)(bestDist - dh)) + 1L;
+         long lo = maxT4 + gap;
+         if (lo > s.safeLo) {
+            s.safeLo = lo;
+         }
+      } else {
+         s.safeLo = s.t4;
+         s.safeHi = s.t4;
+      }
+   }
+
+   /** SubTree.search over this node's children, the running best in the state, tracking exact valid depth interval. */
    private void search(State s, int node) {
+      int[] b = this.bounds;
       int start = this.first[node];
       int end = start + this.count[node];
       for (int child = start; child < end; child++) {
-         long d = distance(s, child, s.bestDistance);
+         int at = child * 14;
+         long dh = axis(s.t0, b[at], b[at + 1]) + axis(s.t1, b[at + 2], b[at + 3]);
+         if (dh >= s.bestDistance) {
+            continue;
+         }
+         dh += axis(s.t2, b[at + 4], b[at + 5]) + axis(s.t3, b[at + 6], b[at + 7]);
+         if (dh >= s.bestDistance) {
+            continue;
+         }
+         dh += axis(s.t5, b[at + 10], b[at + 11]) + axis(0L, b[at + 12], b[at + 13]);
+         if (dh >= s.bestDistance) {
+            continue;
+         }
+
+         long d = dh + axis(s.t4, b[at + 8], b[at + 9]);
          if (s.bestDistance > d) {
             if (this.count[child] == 0) {
+               if (s.best >= 0 && s.safeLo <= s.safeHi) {
+                  int pa = s.best * 14;
+                  long oldDh = axis(s.t0, b[pa], b[pa + 1]) + axis(s.t1, b[pa + 2], b[pa + 3])
+                     + axis(s.t2, b[pa + 4], b[pa + 5]) + axis(s.t3, b[pa + 6], b[pa + 7])
+                     + axis(s.t5, b[pa + 10], b[pa + 11]) + axis(0L, b[pa + 12], b[pa + 13]);
+                  clampDepth(s, s.best, oldDh, d);
+               }
                s.bestDistance = d;
                s.best = child;
             } else {
                search(s, child);
             }
+         } else if (s.safeLo <= s.safeHi) {
+            clampDepth(s, child, dh, s.bestDistance);
          }
       }
    }
@@ -221,13 +354,132 @@ public final class ClimateSearch {
          return null;
       }
 
+      Object last = this.lastResult.get();
+      if (s.lastNode >= 0 && last == s.lastLeaf && t0 == s.t0 && t1 == s.t1 && t2 == s.t2 && t3 == s.t3 && t5 == s.t5
+            && (t4 == s.t4 || (s.zeroExact && t4 >= s.zeroMinT4 && t4 <= s.zeroMaxT4))) {
+         s.t4 = t4;
+         if ((++s.calls & 255) == 0) {
+            // Compared: vanilla searches from the same last answer and sets it itself.
+            s.compared = this.values[s.lastNode];
+            return null;
+         }
+
+         return this.values[s.lastNode];
+      }
+
+      int cSlot = -1;
+      long colHash = t0 * 0x9E3779B97F4A7C15L ^ t1 * 0xBF58476D1CE4E5B9L ^ t2 * 0x94D049BB133111EBL
+            ^ t3 * 0xD6E8FEB86659FD93L ^ t5 * 0xE7037ED1A0B428DBL;
+      boolean inUniform = t4 >= this.uniformMinDepth && t4 <= this.uniformMaxDepth;
+      boolean inGlobalMax = !inUniform && this.allSameMaxDepth && t4 >= this.globalMaxDepth;
+      boolean inGlobalMin = !inUniform && !inGlobalMax && t4 <= this.globalMinDepth;
+      if (inUniform || inGlobalMin || inGlobalMax) {
+         cSlot = (int)(colHash ^ (colHash >>> 32)) & State.COL_MASK;
+         int colNode = s.colNode[cSlot];
+         long maxT4 = s.colMaxT4[cSlot];
+         boolean depthMatch = inUniform ? maxT4 == Long.MAX_VALUE
+               : (inGlobalMax ? maxT4 == Long.MAX_VALUE - 1L : (maxT4 < Long.MAX_VALUE - 1L && t4 <= maxT4));
+         if (colNode >= 0 && depthMatch
+               && s.colT0[cSlot] == t0 && s.colT1[cSlot] == t1 && s.colT2[cSlot] == t2
+               && s.colT3[cSlot] == t3 && s.colT5[cSlot] == t5
+               && (last == s.colLeaf[cSlot] || last == s.colOtherLast[cSlot])) {
+            Object leaf = s.colLeaf[cSlot];
+            s.lastLeaf = leaf;
+            s.lastNode = colNode;
+            if (inUniform) {
+               s.zeroExact = true;
+               s.zeroMinT4 = this.uniformMinDepth;
+               s.zeroMaxT4 = this.uniformMaxDepth;
+            } else if (inGlobalMax) {
+               s.zeroExact = true;
+               s.zeroMinT4 = this.globalMaxDepth;
+               s.zeroMaxT4 = Integer.MAX_VALUE;
+            } else {
+               s.zeroExact = false;
+            }
+            s.t0 = t0;
+            s.t1 = t1;
+            s.t2 = t2;
+            s.t3 = t3;
+            s.t4 = t4;
+            s.t5 = t5;
+            if ((++s.calls & 255) == 0) {
+               s.compared = this.values[colNode];
+               return null;
+            }
+
+            if (last != leaf) {
+               this.lastResult.set(leaf);
+            }
+
+            return this.values[colNode];
+         }
+      }
+
+      int mSlot = (int)(colHash ^ (colHash >>> 32)) & State.MRU_MASK;
+      int mNode = s.mruNode[mSlot];
+      if (mNode >= 0 && t4 >= s.mruMinT4[mSlot] && t4 <= s.mruMaxT4[mSlot]
+            && s.mruT0[mSlot] == t0 && s.mruT1[mSlot] == t1 && s.mruT2[mSlot] == t2
+            && s.mruT3[mSlot] == t3 && s.mruT5[mSlot] == t5
+            && (last == s.mruLeaf[mSlot] || last == s.mruOtherLast[mSlot])) {
+         Object leaf = s.mruLeaf[mSlot];
+         s.lastLeaf = leaf;
+         s.lastNode = mNode;
+         s.zeroExact = true;
+         s.zeroMinT4 = s.mruMinT4[mSlot];
+         s.zeroMaxT4 = s.mruMaxT4[mSlot];
+         s.t0 = t0;
+         s.t1 = t1;
+         s.t2 = t2;
+         s.t3 = t3;
+         s.t4 = t4;
+         s.t5 = t5;
+         if ((++s.calls & 255) == 0) {
+            s.compared = this.values[mNode];
+            return null;
+         }
+
+         if (last != leaf) {
+            this.lastResult.set(leaf);
+         }
+
+         return this.values[mNode];
+      }
+
+      long h = colHash ^ t4 * 0xA0761D6478BD642FL ^ System.identityHashCode(last);
+      int slot = (int)(h ^ (h >>> 32)) & State.CACHE_MASK;
+      int cachedNode = s.cNode[slot];
+      if (cachedNode >= 0 && s.cLast[slot] == last
+            && s.ct0[slot] == t0 && s.ct1[slot] == t1 && s.ct2[slot] == t2
+            && s.ct3[slot] == t3 && s.ct4[slot] == t4 && s.ct5[slot] == t5) {
+         Object leaf = this.leaves[cachedNode];
+         s.lastLeaf = leaf;
+         s.lastNode = cachedNode;
+         s.zeroExact = false;
+         s.t0 = t0;
+         s.t1 = t1;
+         s.t2 = t2;
+         s.t3 = t3;
+         s.t4 = t4;
+         s.t5 = t5;
+         if ((++s.calls & 255) == 0) {
+            s.compared = this.values[cachedNode];
+            return null;
+         }
+
+         if (last != leaf) {
+            this.lastResult.set(leaf);
+         }
+
+         return this.values[cachedNode];
+      }
+
       s.t0 = t0;
       s.t1 = t1;
       s.t2 = t2;
       s.t3 = t3;
       s.t4 = t4;
       s.t5 = t5;
-      Object last = this.lastResult.get();
       int lastNode;
       if (last == null) {
          lastNode = -1;
@@ -244,17 +496,97 @@ public final class ClimateSearch {
 
       s.best = lastNode;
       s.bestDistance = lastNode < 0 ? Long.MAX_VALUE : distance(s, lastNode, Long.MAX_VALUE);
-      search(s, 0);
+      s.safeLo = Integer.MIN_VALUE;
+      s.safeHi = Integer.MAX_VALUE;
+      if (s.bestDistance > 0L) {
+         search(s, 0);
+      }
+
+      s.cLast[slot] = last;
+      s.ct0[slot] = t0;
+      s.ct1[slot] = t1;
+      s.ct2[slot] = t2;
+      s.ct3[slot] = t3;
+      s.ct4[slot] = t4;
+      s.ct5[slot] = t5;
+      s.cNode[slot] = s.best;
       Object leaf = this.leaves[s.best];
+      if (cSlot >= 0 && (inUniform || inGlobalMax || (inGlobalMin && this.bounds[s.best * 14 + 8] <= this.globalMinDepth))) {
+         long cachedMax = inUniform ? Long.MAX_VALUE : (inGlobalMax ? Long.MAX_VALUE - 1L : t4);
+         if (s.colNode[cSlot] == s.best && s.colMaxT4[cSlot] == cachedMax
+               && s.colT0[cSlot] == t0 && s.colT1[cSlot] == t1 && s.colT2[cSlot] == t2
+               && s.colT3[cSlot] == t3 && s.colT5[cSlot] == t5) {
+            if (last != leaf) {
+               s.colOtherLast[cSlot] = last;
+            }
+         } else {
+            s.colT0[cSlot] = t0;
+            s.colT1[cSlot] = t1;
+            s.colT2[cSlot] = t2;
+            s.colT3[cSlot] = t3;
+            s.colT5[cSlot] = t5;
+            s.colMaxT4[cSlot] = cachedMax;
+            s.colNode[cSlot] = s.best;
+            s.colLeaf[cSlot] = leaf;
+            s.colOtherLast[cSlot] = last;
+         }
+      }
       s.lastLeaf = leaf;
       s.lastNode = s.best;
+      if (inUniform) {
+         s.zeroExact = true;
+         s.zeroMinT4 = this.uniformMinDepth;
+         s.zeroMaxT4 = this.uniformMaxDepth;
+      } else if (inGlobalMax) {
+         s.zeroExact = true;
+         s.zeroMinT4 = this.globalMaxDepth;
+         s.zeroMaxT4 = Integer.MAX_VALUE;
+      } else {
+         int base = s.best * 14;
+         long winLo = this.bounds[base + 8];
+         long winHi = this.bounds[base + 9];
+         if (s.bestDistance == 0L) {
+            s.zeroExact = true;
+            s.zeroMinT4 = winLo;
+            s.zeroMaxT4 = winHi;
+         } else if (t4 >= winLo && t4 <= winHi && s.safeLo <= t4 && t4 <= s.safeHi) {
+            s.zeroExact = true;
+            s.zeroMinT4 = Math.max(winLo, s.safeLo);
+            s.zeroMaxT4 = Math.min(winHi, s.safeHi);
+         } else {
+            s.zeroExact = false;
+         }
+      }
+      if (s.zeroExact) {
+         if (s.mruNode[mSlot] == s.best && s.mruMinT4[mSlot] == s.zeroMinT4 && s.mruMaxT4[mSlot] == s.zeroMaxT4
+               && s.mruT0[mSlot] == t0 && s.mruT1[mSlot] == t1 && s.mruT2[mSlot] == t2
+               && s.mruT3[mSlot] == t3 && s.mruT5[mSlot] == t5) {
+            if (last != leaf) {
+               s.mruOtherLast[mSlot] = last;
+            }
+         } else {
+            s.mruT0[mSlot] = t0;
+            s.mruT1[mSlot] = t1;
+            s.mruT2[mSlot] = t2;
+            s.mruT3[mSlot] = t3;
+            s.mruT5[mSlot] = t5;
+            s.mruMinT4[mSlot] = s.zeroMinT4;
+            s.mruMaxT4[mSlot] = s.zeroMaxT4;
+            s.mruNode[mSlot] = s.best;
+            s.mruLeaf[mSlot] = leaf;
+            s.mruOtherLast[mSlot] = last;
+         }
+      }
       if ((++s.calls & 255) == 0) {
          // Compared: vanilla searches from the same last answer and sets it itself.
          s.compared = this.values[s.best];
          return null;
       }
 
-      this.lastResult.set(leaf);
+      if (last != leaf) {
+         this.lastResult.set(leaf);
+      }
+
       return this.values[s.best];
    }
 

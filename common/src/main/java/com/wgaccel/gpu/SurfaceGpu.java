@@ -6,6 +6,7 @@ import com.wgaccel.Config;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.nio.ShortBuffer;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.LongAdder;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -93,6 +94,41 @@ public final class SurfaceGpu {
          this.columnSecondary = device(8L * 256);
          this.specialDevice = device(4L * 256);
          this.flagsHost = host(4L * 512);
+         SurfaceGpu.this.allLanes.add(this);
+      }
+
+      private synchronized void free() {
+         if (GpuBackend.OPENCL && this.stream != 0L) {
+            cuStreamSynchronize(this.stream);
+         }
+         long[] devices = {this.kindsDevice, this.intsDevice, this.quartsDevice, this.strataDepth, this.strataState, this.strataCount, this.unsureDevice,
+            this.indexDevice, this.unsureLayer, this.above, this.below, this.water, this.columnDepth, this.columnSecondary, this.specialDevice, this.outDevice};
+         for (long device : devices) {
+            if (device != 0L) {
+               cuMemFree(device);
+            }
+         }
+         this.kindsDevice = this.intsDevice = this.quartsDevice = this.strataDepth = this.strataState = this.strataCount = 0L;
+         this.unsureDevice = this.indexDevice = this.unsureLayer = this.above = this.below = this.water = 0L;
+         this.columnDepth = this.columnSecondary = this.specialDevice = this.outDevice = 0L;
+
+         long[] hosts = {this.kindsHost, this.intsHost, this.quartsHost, this.outHost, this.flagsHost};
+         for (long host : hosts) {
+            if (host != 0L) {
+               ncuMemFreeHost(host);
+            }
+         }
+         this.kindsHost = this.intsHost = this.quartsHost = this.outHost = this.flagsHost = 0L;
+         this.capacity = 0;
+         this.quartCapacity = 0;
+
+         for (int i = 0; i < this.events.length; i++) {
+            if (this.events[i] != 0L) {
+               cuEventDestroy(this.events[i]);
+               this.events[i] = 0L;
+            }
+         }
+         GpuStreams.destroy(this.stream);
       }
 
       /** Buffers for at least this many blocks per column (they only grow: the height worked on changes per chunk). */
@@ -152,6 +188,8 @@ public final class SurfaceGpu {
    private final long modifier;
    private final ThreadLocal<Lane> lanes = ThreadLocal.withInitial(Lane::new);
    private final ThreadLocal<BatchLane> batchLanes = ThreadLocal.withInitial(BatchLane::new);
+   private final ConcurrentLinkedQueue<Lane> allLanes = new ConcurrentLinkedQueue<>();
+   private final ConcurrentLinkedQueue<BatchLane> allBatchLanes = new ConcurrentLinkedQueue<>();
    private final long strataSelectBatch;
    private final long strataLayersBatch;
    private final long strataFinishBatch;
@@ -164,11 +202,11 @@ public final class SurfaceGpu {
    public final LongAdder batchChunks = new LongAdder();
 
    /**
-    * Config gpuSurfaceWarpPrepass, except under OpenCL: the warp prepass takes 32 threads to vote and shuffle together,
-    * and an OpenCL sub-group is not 32 threads on every card (8, 16 or 32 on Intel's).
+    * Config gpuSurfaceWarpPrepass: CUDA uses warp ballot/shuffle; OpenCL uses workgroup shared memory ({@code PREPASS_SHARED_BODY})
+    * so all GPUs run 32 threads per column safely regardless of hardware sub-group width.
     */
    private static boolean warpPrepass() {
-      return Config.GPU_SURFACE_WARP_PREPASS.get() && !GpuBackend.OPENCL;
+      return Config.GPU_SURFACE_WARP_PREPASS.get();
    }
 
    private static String bodies(String source, String... names) {
@@ -220,18 +258,22 @@ public final class SurfaceGpu {
 
    /** G6b: the production source with batch entries for surfacePrepass and surfaceBlocks (as {@link #strataBatchSource}). */
    public static String productionBatchSource(String source) {
-      return bodies(source, "surfacePrepass", "surfacePrepassWarp", "surfaceBlocks") + """
+      String warpScan = GpuBackend.OPENCL ? SurfaceCodegen.PREPASS_SHARED_BODY : """
+             if (t >= 256) return;
+             prepassWarpScan(kinds, minY, height, tops[t], t, lane, above, below, water);
+         """;
+      return bodies(source, "surfacePrepass", "surfaceBlocks") + """
          extern "C" __global__ void surfacePrepass(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* grid,
                                                    const int* g, long long zoomSeed, const double* ind, const int* inp, int* above, int* below,
                                                    int* water, int* columnDepth, double* columnSecondary, int* special) {
              surfacePrepass_body(kinds, minY, height, tops, minX, minZ, grid, g, zoomSeed, ind, inp, above, below, water, columnDepth, columnSecondary, special);
          }
-         extern "C" __global__ void surfaceBlocks(int minY, int height, int minX, int minZ, const int* heights, const int* minBase, const int* above,
-                                                  const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
+         extern "C" __global__ void surfaceBlocks(const unsigned char* kinds, int minY, int height, int minX, int minZ, const int* heights, const int* minBase,
+                                                  const int* above, const int* below, const int* water, const int* columnDepth, const double* columnSecondary,
                                                   const float* strataDepth, const int* strataState, const int* strataCount, int strataMax, const int* grid,
                                                   const int* g, long long zoomSeed, const float* temperature, const int* modifier, const double* sd,
                                                   const int* sp, const double* nd, const int* np, const int* special, short* out) {
-             surfaceBlocks_body(minY, height, minX, minZ, heights, minBase, above, below, water, columnDepth, columnSecondary, strataDepth, strataState,
+             surfaceBlocks_body(kinds, minY, height, minX, minZ, heights, minBase, above, below, water, columnDepth, columnSecondary, strataDepth, strataState,
                                 strataCount, strataMax, grid, g, zoomSeed, temperature, modifier, sd, sp, nd, np, special, out);
          }
          extern "C" __global__ void surfacePrepassBatch(const long long* jobs, const double* ind, const int* inp) {
@@ -239,25 +281,36 @@ public final class SurfaceGpu {
              surfacePrepass_body((const unsigned char*)p[11], (int)p[2], (int)p[3], (const int*)p[12], (int)p[0], (int)p[1], (const int*)p[16],
                                  (const int*)p[15], p[4], ind, inp, (int*)p[17], (int*)p[18], (int*)p[19], (int*)p[20], (double*)p[21], (int*)p[22]);
          }
-         extern "C" __global__ void surfacePrepassWarp(const unsigned char* kinds, int minY, int height, const int* tops, int minX, int minZ, const int* grid,
-                                                       const int* g, long long zoomSeed, const double* ind, const int* inp, int* above, int* below,
-                                                       int* water, int* columnDepth, double* columnSecondary, int* special) {
-             surfacePrepassWarp_body(kinds, minY, height, tops, minX, minZ, grid, g, zoomSeed, ind, inp, above, below, water, columnDepth, columnSecondary,
-                                     special);
-         }
          extern "C" __global__ void surfacePrepassWarpBatch(const long long* jobs, const double* ind, const int* inp) {
              const long long* p = jobs + blockIdx.y * 24;
-             surfacePrepassWarp_body((const unsigned char*)p[11], (int)p[2], (int)p[3], (const int*)p[12], (int)p[0], (int)p[1], (const int*)p[16],
-                                     (const int*)p[15], p[4], ind, inp, (int*)p[17], (int*)p[18], (int*)p[19], (int*)p[20], (double*)p[21], (int*)p[22]);
+             const unsigned char* kinds = (const unsigned char*)p[11];
+             int minY = (int)p[2];
+             int height = (int)p[3];
+             const int* tops = (const int*)p[12];
+             int* above = (int*)p[17];
+             int* below = (int*)p[18];
+             int* water = (int*)p[19];
+             int t = blockIdx.x * 8 + (threadIdx.x >> 5);
+             int lane = threadIdx.x & 31;
+             if (lane == 0 && t < 256) {
+                 surfacePrepassWarpCols(kinds, minY, height, tops[t], t, (int)p[0], (int)p[1], (const int*)p[16],
+                                        (const int*)p[15], p[4], ind, inp, (int*)p[20], (double*)p[21], (int*)p[22]);
+             }
+         """ + warpScan + """
          }
          extern "C" __global__ void surfaceBlocksBatch(const long long* jobs, int strataMax, const float* temperature, const int* modifier, const double* sd,
                                                        const int* sp, const double* nd, const int* np) {
              const long long* p = jobs + blockIdx.y * 24;
-             surfaceBlocks_body((int)p[2], (int)p[3], (int)p[0], (int)p[1], (const int*)p[13], (const int*)p[14], (const int*)p[17], (const int*)p[18],
-                                (const int*)p[19], (const int*)p[20], (const double*)p[21], (const float*)p[8], (const int*)p[9], (const int*)p[6], strataMax,
-                                (const int*)p[16], (const int*)p[15], p[4], temperature, modifier, sd, sp, nd, np, (const int*)p[22], (short*)p[23]);
+             surfaceBlocks_body((const unsigned char*)p[11], (int)p[2], (int)p[3], (int)p[0], (int)p[1], (const int*)p[13], (const int*)p[14], (const int*)p[17],
+                                (const int*)p[18], (const int*)p[19], (const int*)p[20], (const double*)p[21], (const float*)p[8], (const int*)p[9],
+                                (const int*)p[6], strataMax, (const int*)p[16], (const int*)p[15], p[4], temperature, modifier, sd, sp, nd, np,
+                                (const int*)p[22], (short*)p[23]);
          }
          """;
+   }
+
+   private static long align16(long bytes) {
+      return (bytes + 15L) & ~15L;
    }
 
    /** A lane for batches (the surface look-ahead): per buffer one region per chunk at a fixed stride, grow-only. */
@@ -266,17 +319,12 @@ public final class SurfaceGpu {
       private int chunks;
       private int height;
       private int quarts;
-      private long params;
-      private long paramsHost;
-      private long kinds;
-      private long kindsHost;
-      private long ints;
-      private long intsHost;
-      private long quartsDevice;
-      private long quartsHost;
+      private long inSlabDevice;
+      private long inSlabHost;
+      private long outSlabDevice;
+      private long outSlabHost;
       private long index;
       private long count;
-      private long unsure;
       private long strataDepth;
       private long strataState;
       private long unsureLayer;
@@ -285,10 +333,6 @@ public final class SurfaceGpu {
       private long water;
       private long columnDepth;
       private long columnSecondary;
-      private long special;
-      private long out;
-      private long outHost;
-      private long flagsHost;
       /** Every 16th batch timed: before the copies in, after them, after strata, prepass, blocks, the copies out. */
       private final long[] events = new long[6];
       private int batches;
@@ -303,23 +347,45 @@ public final class SurfaceGpu {
                this.events[i] = pointer.get(0);
             }
          }
+         SurfaceGpu.this.allBatchLanes.add(this);
       }
 
       private void free() {
-         long[] devices = {this.params, this.kinds, this.ints, this.quartsDevice, this.index, this.count, this.unsure, this.strataDepth, this.strataState,
-            this.unsureLayer, this.above, this.below, this.water, this.columnDepth, this.columnSecondary, this.special, this.out};
+         if (GpuBackend.OPENCL && this.stream != 0L) {
+            cuStreamSynchronize(this.stream);
+         }
+         long[] devices = {this.inSlabDevice, this.outSlabDevice, this.index, this.count, this.strataDepth, this.strataState,
+            this.unsureLayer, this.above, this.below, this.water, this.columnDepth, this.columnSecondary};
          for (long device : devices) {
             if (device != 0L) {
                cuMemFree(device);
             }
          }
+         this.inSlabDevice = this.outSlabDevice = this.index = this.count = 0L;
+         this.strataDepth = this.strataState = this.unsureLayer = this.above = this.below = this.water = 0L;
+         this.columnDepth = this.columnSecondary = 0L;
 
-         long[] hosts = {this.paramsHost, this.kindsHost, this.intsHost, this.quartsHost, this.outHost, this.flagsHost};
+         long[] hosts = {this.inSlabHost, this.outSlabHost};
          for (long host : hosts) {
             if (host != 0L) {
                ncuMemFreeHost(host);
             }
          }
+         this.inSlabHost = this.outSlabHost = 0L;
+         this.chunks = 0;
+         this.height = 0;
+         this.quarts = 0;
+      }
+
+      private synchronized void destroy() {
+         this.free();
+         for (int i = 0; i < this.events.length; i++) {
+            if (this.events[i] != 0L) {
+               cuEventDestroy(this.events[i]);
+               this.events[i] = 0L;
+            }
+         }
+         GpuStreams.destroy(this.stream);
       }
 
       /** Room for this many chunks of at most this many blocks per column and quarts. */
@@ -335,17 +401,14 @@ public final class SurfaceGpu {
          long c = this.chunks;
          long blocks = 256L * this.height;
          int max = SurfaceGpu.this.strataMax;
-         this.params = device(8L * PARAMS * c);
-         this.paramsHost = host(8L * PARAMS * c);
-         this.kinds = device(blocks * c);
-         this.kindsHost = host(blocks * c);
-         this.ints = device(4L * (3 * 256 + 6) * c);
-         this.intsHost = host(4L * (3 * 256 + 6) * c);
-         this.quartsDevice = device(4L * this.quarts * c);
-         this.quartsHost = host(4L * this.quarts * c);
+         long inCap = align16(8L * PARAMS * c) + align16(blocks * c) + align16(4L * (3 * 256 + 6) * c) + align16(4L * this.quarts * c);
+         long outCap = align16(4L * 256 * c) + align16(4L * 256 * c) + align16(2L * blocks * c);
+         this.inSlabDevice = device(inCap);
+         this.inSlabHost = host(inCap);
+         this.outSlabDevice = device(outCap);
+         this.outSlabHost = host(outCap);
          this.index = device(4L * 256 * c);
          this.count = device(4L * 256 * c);
-         this.unsure = device(4L * 256 * c);
          this.strataDepth = device(4L * 256 * max * c);
          this.strataState = device(4L * 256 * max * c);
          this.unsureLayer = device(4L * 256 * max * c);
@@ -354,10 +417,6 @@ public final class SurfaceGpu {
          this.water = device(4L * blocks * c);
          this.columnDepth = device(4L * 256 * c);
          this.columnSecondary = device(8L * 256 * c);
-         this.special = device(4L * 256 * c);
-         this.out = device(2L * blocks * c);
-         this.outHost = host(2L * blocks * c);
-         this.flagsHost = host(4L * 512 * c);
       }
    }
 
@@ -395,23 +454,50 @@ public final class SurfaceGpu {
       BatchLane lane = this.batchLanes.get();
       GpuSelfTest.check(cuCtxSetCurrent(this.context), "cuCtxSetCurrent");
       lane.ensure(chunks, maxHeight, maxQuarts);
-      long blocks = 256L * lane.height;
+      long blocks = 256L * maxHeight;
+      int quartsStride = Math.max(1, maxQuarts);
       int max = this.strataMax;
-      java.nio.LongBuffer params = MemoryUtil.memLongBuffer(lane.paramsHost, PARAMS * chunks);
+      long offKinds = align16(8L * PARAMS * chunks);
+      long offInts = align16(offKinds + blocks * chunks);
+      long offQuarts = align16(offInts + 4L * (3 * 256 + 6) * chunks);
+      long inBytes = offQuarts + 4L * quartsStride * chunks;
+      long offUnsure = align16(4L * 256 * chunks);
+      long offOut = align16(offUnsure + 4L * 256 * chunks);
+      long outBytes = offOut + 2L * blocks * chunks;
+      java.nio.LongBuffer params = MemoryUtil.memLongBuffer(lane.inSlabHost, PARAMS * chunks);
       for (int c = 0; c < chunks; c++) {
          Job job = jobs.get(c);
          int n = 256 * job.height;
-         MemoryUtil.memByteBuffer(lane.kindsHost + blocks * c, n).put(0, job.kinds, 0, n);
-         IntBuffer ints = MemoryUtil.memIntBuffer(lane.intsHost + 4L * (3 * 256 + 6) * c, 3 * 256 + 6);
+         MemoryUtil.memByteBuffer(lane.inSlabHost + offKinds + blocks * c, n).put(0, job.kinds, 0, n);
+         IntBuffer ints = MemoryUtil.memIntBuffer(lane.inSlabHost + offInts + 4L * (3 * 256 + 6) * c, 3 * 256 + 6);
          ints.put(0, job.tops).put(256, job.heights).put(512, job.minBase).put(768, job.grid);
-         MemoryUtil.memIntBuffer(lane.quartsHost + 4L * lane.quarts * c, Math.max(1, job.quartCount)).put(0, job.quarts, 0, job.quartCount);
-         long intsAt = lane.ints + 4L * (3 * 256 + 6) * c;
-         long[] p = {job.minX, job.minZ, job.minY, job.height, job.zoomSeed, lane.index + 4L * 256 * c, lane.count + 4L * 256 * c, lane.unsure + 4L * 256 * c,
-            lane.strataDepth + 4L * 256 * max * c, lane.strataState + 4L * 256 * max * c, lane.unsureLayer + 4L * 256 * max * c, lane.kinds + blocks * c, intsAt,
-            intsAt + 4L * 256, intsAt + 4L * 512, intsAt + 4L * 768, lane.quartsDevice + 4L * lane.quarts * c, lane.above + 4L * blocks * c,
-            lane.below + 4L * blocks * c, lane.water + 4L * blocks * c, lane.columnDepth + 4L * 256 * c, lane.columnSecondary + 8L * 256 * c,
-            lane.special + 4L * 256 * c, lane.out + 2L * blocks * c};
-         params.put(PARAMS * c, p);
+         MemoryUtil.memIntBuffer(lane.inSlabHost + offQuarts + 4L * quartsStride * c, Math.max(1, job.quartCount)).put(0, job.quarts, 0, job.quartCount);
+         long intsAt = lane.inSlabDevice + offInts + 4L * (3 * 256 + 6) * c;
+         int base = PARAMS * c;
+         params.put(base, job.minX);
+         params.put(base + 1, job.minZ);
+         params.put(base + 2, job.minY);
+         params.put(base + 3, job.height);
+         params.put(base + 4, job.zoomSeed);
+         params.put(base + 5, lane.index + 4L * 256 * c);
+         params.put(base + 6, lane.count + 4L * 256 * c);
+         params.put(base + 7, lane.outSlabDevice + offUnsure + 4L * 256 * c);
+         params.put(base + 8, lane.strataDepth + 4L * 256 * max * c);
+         params.put(base + 9, lane.strataState + 4L * 256 * max * c);
+         params.put(base + 10, lane.unsureLayer + 4L * 256 * max * c);
+         params.put(base + 11, lane.inSlabDevice + offKinds + blocks * c);
+         params.put(base + 12, intsAt);
+         params.put(base + 13, intsAt + 4L * 256);
+         params.put(base + 14, intsAt + 4L * 512);
+         params.put(base + 15, intsAt + 4L * 768);
+         params.put(base + 16, lane.inSlabDevice + offQuarts + 4L * quartsStride * c);
+         params.put(base + 17, lane.above + 4L * blocks * c);
+         params.put(base + 18, lane.below + 4L * blocks * c);
+         params.put(base + 19, lane.water + 4L * blocks * c);
+         params.put(base + 20, lane.columnDepth + 4L * 256 * c);
+         params.put(base + 21, lane.columnSecondary + 8L * 256 * c);
+         params.put(base + 22, lane.outSlabDevice + 4L * 256 * c);
+         params.put(base + 23, lane.outSlabDevice + offOut + 2L * blocks * c);
       }
 
       boolean sampled = lane.batches++ % 16 == 0;
@@ -423,15 +509,12 @@ public final class SurfaceGpu {
       long submitted = System.nanoTime();
       this.mark(lane.stream, lane.events, 0, timed, at);
 
-      GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.params, lane.paramsHost, 8L * PARAMS * chunks, lane.stream), "copy in");
-      GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.kinds, lane.kindsHost, blocks * chunks, lane.stream), "copy in");
-      GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.ints, lane.intsHost, 4L * (3 * 256 + 6) * chunks, lane.stream), "copy in");
-      GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.quartsDevice, lane.quartsHost, 4L * lane.quarts * chunks, lane.stream), "copy in");
+      GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.inSlabDevice, lane.inSlabHost, inBytes, lane.stream), "copy in");
       this.mark(lane.stream, lane.events, 1, timed, at);
 
       try (MemoryStack stack = MemoryStack.stackPush()) {
          PointerBuffer jobsArg = stack.mallocPointer(1);
-         jobsArg.put(0, stack.pointers(lane.params).address());
+         jobsArg.put(0, stack.pointers(lane.inSlabDevice).address());
          // I3: the strata kernels in blocks of 32 threads (more, smaller blocks start sooner on a busy card; the same work).
          int columnThreads = Config.GPU_SURFACE_SMALL_BLOCKS.get() ? 32 : 256;
          int layerThreads = Config.GPU_SURFACE_SMALL_BLOCKS.get() ? 32 : 128;
@@ -442,7 +525,7 @@ public final class SurfaceGpu {
          this.mark(lane.stream, lane.events, 2, timed, at);
 
          PointerBuffer pre = stack.mallocPointer(3);
-         pre.put(0, stack.pointers(lane.params).address());
+         pre.put(0, stack.pointers(lane.inSlabDevice).address());
          pre.put(1, stack.pointers(this.ind).address());
          pre.put(2, stack.pointers(this.inp).address());
          if (warpPrepass()) {
@@ -454,7 +537,7 @@ public final class SurfaceGpu {
          this.mark(lane.stream, lane.events, 3, timed, at);
 
          PointerBuffer block = stack.mallocPointer(8);
-         block.put(0, stack.pointers(lane.params).address());
+         block.put(0, stack.pointers(lane.inSlabDevice).address());
          block.put(1, MemoryUtil.memAddress(stack.ints(max)));
          block.put(2, stack.pointers(this.temperature).address());
          block.put(3, stack.pointers(this.modifier).address());
@@ -467,9 +550,7 @@ public final class SurfaceGpu {
          this.mark(lane.stream, lane.events, 4, timed, at);
       }
 
-      GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.flagsHost, lane.special, 4L * 256 * chunks, lane.stream), "copy out");
-      GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.flagsHost + 4L * 256 * chunks, lane.unsure, 4L * 256 * chunks, lane.stream), "copy out");
-      GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.outHost, lane.out, 2L * blocks * chunks, lane.stream), "copy out");
+      GpuSelfTest.check(ncuMemcpyDtoHAsync(lane.outSlabHost, lane.outSlabDevice, outBytes, lane.stream), "copy out");
       this.mark(lane.stream, lane.events, 5, timed, at);
 
       long started = 0L;
@@ -518,8 +599,8 @@ public final class SurfaceGpu {
       }
       this.batches.increment();
       this.batchChunks.add(chunks);
-      IntBuffer special = MemoryUtil.memIntBuffer(lane.flagsHost, 256 * chunks);
-      IntBuffer unsure = MemoryUtil.memIntBuffer(lane.flagsHost + 4L * 256 * chunks, 256 * chunks);
+      IntBuffer special = MemoryUtil.memIntBuffer(lane.outSlabHost, 256 * chunks);
+      IntBuffer unsure = MemoryUtil.memIntBuffer(lane.outSlabHost + offUnsure, 256 * chunks);
       for (int c = 0; c < chunks; c++) {
          boolean ok = true;
          for (int t = 0; t < 256 && ok; t++) {
@@ -529,7 +610,7 @@ public final class SurfaceGpu {
          done[c] = ok;
          if (ok) {
             int n = 256 * jobs.get(c).height;
-            MemoryUtil.memShortBuffer(lane.outHost + 2L * blocks * c, n).get(0, outs.get(c), 0, n);
+            MemoryUtil.memShortBuffer(lane.outSlabHost + offOut + 2L * blocks * c, n).get(0, outs.get(c), 0, n);
          }
       }
 
@@ -706,33 +787,34 @@ public final class SurfaceGpu {
             GpuSelfTest.check(cuEventRecord(lane.events[2], lane.stream), "cuEventRecord");
          }
 
-         PointerBuffer block = stack.mallocPointer(26);
-         block.put(0, MemoryUtil.memAddress(stack.ints(job.minY)));
-         block.put(1, MemoryUtil.memAddress(stack.ints(job.height)));
-         block.put(2, MemoryUtil.memAddress(stack.ints(job.minX)));
-         block.put(3, MemoryUtil.memAddress(stack.ints(job.minZ)));
-         block.put(4, stack.pointers(heights).address());
-         block.put(5, stack.pointers(minBase).address());
-         block.put(6, stack.pointers(lane.above).address());
-         block.put(7, stack.pointers(lane.below).address());
-         block.put(8, stack.pointers(lane.water).address());
-         block.put(9, stack.pointers(lane.columnDepth).address());
-         block.put(10, stack.pointers(lane.columnSecondary).address());
-         block.put(11, stack.pointers(lane.strataDepth).address());
-         block.put(12, stack.pointers(lane.strataState).address());
-         block.put(13, stack.pointers(lane.strataCount).address());
-         block.put(14, MemoryUtil.memAddress(stack.ints(this.strataMax)));
-         block.put(15, stack.pointers(lane.quartsDevice).address());
-         block.put(16, stack.pointers(grid).address());
-         block.put(17, MemoryUtil.memAddress(stack.longs(job.zoomSeed)));
-         block.put(18, stack.pointers(this.temperature).address());
-         block.put(19, stack.pointers(this.modifier).address());
-         block.put(20, stack.pointers(this.sd).address());
-         block.put(21, stack.pointers(this.sp).address());
-         block.put(22, stack.pointers(this.nd).address());
-         block.put(23, stack.pointers(this.np).address());
-         block.put(24, stack.pointers(lane.specialDevice).address());
-         block.put(25, stack.pointers(lane.outDevice).address());
+         PointerBuffer block = stack.mallocPointer(27);
+         block.put(0, stack.pointers(lane.kindsDevice).address());
+         block.put(1, MemoryUtil.memAddress(stack.ints(job.minY)));
+         block.put(2, MemoryUtil.memAddress(stack.ints(job.height)));
+         block.put(3, MemoryUtil.memAddress(stack.ints(job.minX)));
+         block.put(4, MemoryUtil.memAddress(stack.ints(job.minZ)));
+         block.put(5, stack.pointers(heights).address());
+         block.put(6, stack.pointers(minBase).address());
+         block.put(7, stack.pointers(lane.above).address());
+         block.put(8, stack.pointers(lane.below).address());
+         block.put(9, stack.pointers(lane.water).address());
+         block.put(10, stack.pointers(lane.columnDepth).address());
+         block.put(11, stack.pointers(lane.columnSecondary).address());
+         block.put(12, stack.pointers(lane.strataDepth).address());
+         block.put(13, stack.pointers(lane.strataState).address());
+         block.put(14, stack.pointers(lane.strataCount).address());
+         block.put(15, MemoryUtil.memAddress(stack.ints(this.strataMax)));
+         block.put(16, stack.pointers(lane.quartsDevice).address());
+         block.put(17, stack.pointers(grid).address());
+         block.put(18, MemoryUtil.memAddress(stack.longs(job.zoomSeed)));
+         block.put(19, stack.pointers(this.temperature).address());
+         block.put(20, stack.pointers(this.modifier).address());
+         block.put(21, stack.pointers(this.sd).address());
+         block.put(22, stack.pointers(this.sp).address());
+         block.put(23, stack.pointers(this.nd).address());
+         block.put(24, stack.pointers(this.np).address());
+         block.put(25, stack.pointers(lane.specialDevice).address());
+         block.put(26, stack.pointers(lane.outDevice).address());
          GpuSelfTest.check(cuLaunchKernel(this.blocks, (n + 255) / 256, 1, 1, 256, 1, 1, 0, lane.stream, block, null), "cuLaunchKernel surfaceBlocks");
          if (timed) {
             GpuSelfTest.check(cuEventRecord(lane.events[3], lane.stream), "cuEventRecord");
@@ -828,6 +910,24 @@ public final class SurfaceGpu {
          return device;
       } finally {
          MemoryUtil.memFree(buffer);
+      }
+   }
+
+   /** Releases all Lane and BatchLane device/host allocations and CUDA/OpenCL events on world stop. */
+   public void close() {
+      try {
+         cuCtxSetCurrent(this.context);
+      } catch (Throwable ignored) {
+      }
+
+      Lane lane;
+      while ((lane = this.allLanes.poll()) != null) {
+         lane.free();
+      }
+
+      BatchLane batch;
+      while ((batch = this.allBatchLanes.poll()) != null) {
+         batch.destroy();
       }
    }
 }

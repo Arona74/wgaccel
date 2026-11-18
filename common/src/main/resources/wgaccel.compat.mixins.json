@@ -6,7 +6,9 @@
   "mixins": [
     "VanillaBackportRulesOnceMixin",
     "OreVeinTestMixin",
-    "InterpolatedNoiseFieldMixin"
+    "InterpolatedNoiseFieldMixin",
+    "AllTheLeaksTrackableMixin",
+    "AllTheLeaksReportManagerMixin"
   ],
   "injectors": {
     "defaultRequire": 0

@@ -19,6 +19,7 @@ import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import org.spongepowered.asm.mixin.Mixin;
@@ -27,8 +28,10 @@ import org.spongepowered.asm.mixin.Mixin;
  * Times the real work of the biome and noise steps (the steps themselves run these on a background thread), and
  * counts how many noise cell layers each chunk fills against how many its highest block needs: FreeTerraForged fills
  * its whole configured height, and the difference is what filling only up to the ground would save (plan item B1).
+ * Priority 500 places WGAccel inner to FreeTerraForged's {@code freeterraforged$wrapDoFill} (priority 1000) so both GPU
+ * and CPU fallback receive FTF's already-trimmed {@code cellCountY}.
  */
-@Mixin(NoiseBasedChunkGenerator.class)
+@Mixin(value = NoiseBasedChunkGenerator.class, priority = 500)
 public abstract class NoiseBasedChunkGeneratorMixin {
    /** S8 C1: the carvers' biome of each chunk within 8 read from the chunk when it holds its biomes ({@link com.wgaccel.gen.CarverBiomes}). */
    @WrapOperation(method = "applyCarvers", at = @At(value = "INVOKE",
@@ -43,9 +46,14 @@ public abstract class NoiseBasedChunkGeneratorMixin {
    private ChunkAccess wgaccel$doFill(Blender blender, StructureManager structures, RandomState random, ChunkAccess chunk, int minCellY, int cellCountY, Operation<ChunkAccess> original) {
       long start = System.nanoTime();
       // The noise chunk (usually made in the biomes step) may be cut to the ground (B1): fill only its cells.
+      // Clamp to FTF's wrapDoFill cell range even if chunk.freeterraforged$getChunkCells() was null on reload.
+      NoiseBasedChunkGenerator selfGen = (NoiseBasedChunkGenerator)(Object)this;
       NoiseBasedChunkGeneratorInvoker self = (NoiseBasedChunkGeneratorInvoker)this;
+      NoiseSettings full = selfGen.generatorSettings().value().noiseSettings().clampToHeightAccessor(chunk);
       NoiseChunk noise = chunk.getOrCreateNoiseChunk(c -> self.wgaccel$createNoiseChunk(c, structures, blender, random));
-      int cells = Math.min(cellCountY, ((NoiseChunkAccessor)noise).wgaccel$cellCountY());
+      int cells = com.wgaccel.ftf.FtfCellsGround.clampWrapCells(
+         Math.min(cellCountY, ((NoiseChunkAccessor)noise).wgaccel$cellCountY()),
+         random, chunk, selfGen.getSeaLevel(), full);
       // Blocks before the fill: Distant Horizons filling again a chunk it read from the save, trees and all.
       boolean prefilled = chunk.getHighestFilledSectionIndex() >= 0;
       // GPU step G2.5: the chunk from the GPU (ON), or worked out on the GPU and compared with the CPU's fill (CHECK).
@@ -82,7 +90,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
       Stats.record(Stage.NOISE_FILL, System.nanoTime() - start);
 
-      int cellHeight = ((NoiseBasedChunkGenerator)(Object)this).generatorSettings().value().noiseSettings().getCellHeight();
+      int cellHeight = full.getCellHeight();
       int needed = neededLayers(filled, minCellY * cellHeight, cellHeight, cellCountY);
       Stats.noiseLayers(cells, needed);
       FillToGround.check(chunk.getPos(), cells, cellCountY, needed, prefilled);

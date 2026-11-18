@@ -78,7 +78,6 @@ public interface Platform {
          } catch (java.io.IOException | RuntimeException ignored) {
          }
       }
-
       private static final String[] IMPLEMENTATIONS = {"com.wgaccel.neoforge.NeoForgePlatform", "com.wgaccel.fabric.FabricPlatform"};
       private static volatile Platform instance;
 

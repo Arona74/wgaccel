@@ -18,9 +18,14 @@ import org.spongepowered.asm.mixin.Pseudo;
 public abstract class BiomeCoverageMixin {
    @WrapMethod(method = "coverageFactor(Lnet/minecraft/world/level/biome/Climate$Sampler;Lnet/minecraft/world/level/biome/Climate$TargetPoint;III)F")
    private static float wgaccel$coverage(Climate.Sampler sampler, Climate.TargetPoint target, int quartX, int quartY, int quartZ, Operation<Float> original) {
-      long start = System.nanoTime();
+      if (target.depth() <= 0L) {
+         return 0.0F;
+      }
+      BiomeFill.State bf = BiomeFill.state();
+      boolean timed = bf.timeCells;
+      long start = timed ? System.nanoTime() : 0L;
       try {
-         BiomeFill.State memo = BiomeFill.memo();
+         BiomeFill.State memo = bf.active && bf.memo ? bf : null;
          if (memo != null && memo.coverageMatches(sampler, target, quartX, quartY, quartZ)) {
             BiomeFill.COVERAGE_HITS.increment();
             float reused = memo.coverage();
@@ -40,7 +45,9 @@ public abstract class BiomeCoverageMixin {
 
          return coverage;
       } finally {
-         Stats.record(Stage.BIOME_COVERAGE, System.nanoTime() - start);
+         if (timed) {
+            Stats.recordSampled(Stage.BIOME_COVERAGE, System.nanoTime() - start, 16);
+         }
       }
    }
 }

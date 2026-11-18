@@ -1,5 +1,7 @@
 package com.wgaccel.mixin.ftf;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.wgaccel.ftf.FtfRiverSkip;
 import etcodehome.freeterraforged.world.worldgen.cell.Cell;
 import etcodehome.freeterraforged.world.worldgen.cell.heightmap.Levels;
@@ -10,10 +12,6 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * FreeTerraForged 1.0.0026's river carving: far rivers skipped before their noise, only their valley mask done
@@ -37,10 +35,6 @@ public abstract class RiverSkip26Mixin {
    @Final
    private float zone2WidthFactor;
 
-   /** A checked skip in progress on this thread: the carver and what the skip would have left. */
-   @Unique
-   private static final ThreadLocal<Object[]> wgaccel$checking = new ThreadLocal<>();
-
    @Shadow
    private float getDistance2(float x, float y, float t) {
       throw new AssertionError();
@@ -56,9 +50,10 @@ public abstract class RiverSkip26Mixin {
       throw new AssertionError();
    }
 
-   @Inject(method = "carve", at = @At("HEAD"), cancellable = true)
-   private void wgaccel$farRiver(Cell cell, float prevX, float prevZ, float prevT, float currX, float currZ, float currT, CallbackInfo info) {
+   @WrapMethod(method = "carve")
+   private void wgaccel$farRiver(Cell cell, float prevX, float prevZ, float prevT, float currX, float currZ, float currT, Operation<Void> original) {
       if (!FtfRiverSkip.on()) {
+         original.call(cell, prevX, prevZ, prevT, currX, currZ, currT);
          return;
       }
 
@@ -69,29 +64,20 @@ public abstract class RiverSkip26Mixin {
          this.lakeConfig, this.levels);
       if (!(distance >= bound)) {
          FtfRiverSkip.CARVED.increment();
+         original.call(cell, prevX, prevZ, prevT, currX, currZ, currT);
          return;
       }
 
       if (FtfRiverSkip.sample()) {
-         // Checked: carve runs; what the skip would leave is compared at its return.
          Cell expected = new Cell();
          expected.copyFrom(cell);
          this.updateValleyMask(currT, distSqToCurr, 1.0F, expected);
-         wgaccel$checking.set(new Object[] {this, expected});
+         original.call(cell, prevX, prevZ, prevT, currX, currZ, currT);
+         FtfRiverSkip.check(cell, expected);
          return;
       }
 
       this.updateValleyMask(currT, distSqToCurr, 1.0F, cell);
       FtfRiverSkip.skipped();
-      info.cancel();
-   }
-
-   @Inject(method = "carve", at = @At("RETURN"))
-   private void wgaccel$checkFarRiver(Cell cell, float prevX, float prevZ, float prevT, float currX, float currZ, float currT, CallbackInfo info) {
-      Object[] checking = wgaccel$checking.get();
-      if (checking != null && checking[0] == this) {
-         wgaccel$checking.remove();
-         FtfRiverSkip.check(cell, (Cell)checking[1]);
-      }
    }
 }

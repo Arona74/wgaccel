@@ -6,6 +6,7 @@ import etcodehome.freeterraforged.world.worldgen.GeneratorContext;
 import etcodehome.freeterraforged.world.worldgen.cell.Cell;
 import java.lang.reflect.Method;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.levelgen.NoiseSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 
 /**
@@ -60,6 +61,51 @@ public final class FtfCellsGround {
       }
 
       return Math.max((int)Math.ceil(256.0 * max), context.levels.scale(max));
+   }
+
+   /** Exact effective {@code cellCountY} trimmed by FTF's {@code wrapDoFill}, or {@code Integer.MAX_VALUE} if unavailable. */
+   public static int ftfWrapCells(RandomState random, ChunkAccess chunk, int seaLevel, int minY, int cellHeight, int fullCells) {
+      if (!((Object)random instanceof FTFRandomState ftf) || !ftf.isTerraForged()) {
+         return Integer.MAX_VALUE;
+      }
+
+      GeneratorContext context = ftf.generatorContext();
+      Method method = method(chunk);
+      if (context == null || method == null) {
+         return Integer.MAX_VALUE;
+      }
+
+      try {
+         Object cells = method.invoke(chunk, context);
+         if (!(cells instanceof Cell[] array) || array.length == 0) {
+            return Integer.MAX_VALUE;
+         }
+
+         float maxHeight = array[0].height;
+         for (int i = 1; i < array.length; i++) {
+            if (array[i].height > maxHeight) {
+               maxHeight = array[i].height;
+            }
+         }
+
+         int maxTerrainY = context.levels.scale(maxHeight);
+         int targetMaxY = Math.max(maxTerrainY, seaLevel) + 16;
+         int neededCells = Math.floorDiv(targetMaxY - minY + cellHeight - 1, cellHeight);
+         return Math.min(fullCells, Math.max(1, neededCells));
+      } catch (ReflectiveOperationException ignored) {
+         return Integer.MAX_VALUE;
+      }
+   }
+
+   /** Clamps {@code cells} to the exact cell count FTF's {@code wrapDoFill} uses when FTF cells apply. */
+   public static int clampWrapCells(int cells, RandomState random, ChunkAccess chunk, int seaLevel, NoiseSettings full) {
+      if (!available(chunk)) {
+         return cells;
+      }
+
+      int cellHeight = full.getCellHeight();
+      int fullCells = Math.floorDiv(full.height(), cellHeight);
+      return Math.min(cells, ftfWrapCells(random, chunk, seaLevel, full.minY(), cellHeight, fullCells));
    }
 
    private static Method method(ChunkAccess chunk) {

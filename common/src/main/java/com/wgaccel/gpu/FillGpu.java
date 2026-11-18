@@ -5,6 +5,7 @@ import static com.wgaccel.gpu.GpuApi.*;
 import java.nio.ByteBuffer;
 import java.nio.DoubleBuffer;
 import java.nio.IntBuffer;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -118,6 +119,7 @@ public final class FillGpu {
                this.events[i] = pointer.get(0);
             }
          }
+         FillGpu.this.allLanes.add(this);
       }
 
       void ensure(long cells, long ints, long corners, long codes) {
@@ -186,6 +188,8 @@ public final class FillGpu {
          if (this.cellsDevice != 0L) {
             cuMemFree(this.cellsDevice);
             ncuMemFreeHost(this.cellsHost);
+            this.cellsDevice = 0L;
+            this.cellsHost = 0L;
          }
       }
 
@@ -193,7 +197,49 @@ public final class FillGpu {
          if (this.intsDevice != 0L) {
             cuMemFree(this.intsDevice);
             ncuMemFreeHost(this.intsHost);
+            this.intsDevice = 0L;
+            this.intsHost = 0L;
          }
+      }
+
+      private synchronized void free() {
+         if (GpuBackend.OPENCL && this.stream != 0L) {
+            cuStreamSynchronize(this.stream);
+         }
+         this.freeCells();
+         this.freeInts();
+         if (this.cornersDevice != 0L) {
+            cuMemFree(this.cornersDevice);
+            this.cornersDevice = 0L;
+         }
+         if (this.columnsDevice != 0L) {
+            cuMemFree(this.columnsDevice);
+            this.columnsDevice = 0L;
+         }
+         if (this.codesDevice != 0L) {
+            cuMemFree(this.codesDevice);
+            ncuMemFreeHost(this.codesHost);
+            this.codesDevice = 0L;
+            this.codesHost = 0L;
+         }
+         if (this.paramsDevice != 0L) {
+            cuMemFree(this.paramsDevice);
+            ncuMemFreeHost(this.paramsHost);
+            this.paramsDevice = 0L;
+            this.paramsHost = 0L;
+         }
+         if (this.batchColumnsDevice != 0L) {
+            cuMemFree(this.batchColumnsDevice);
+            this.batchColumnsDevice = 0L;
+         }
+         this.cellsBytes = this.intsBytes = this.cornersBytes = this.codesBytes = this.paramsBytes = this.batchColumnsBytes = 0L;
+         for (int i = 0; i < this.events.length; i++) {
+            if (this.events[i] != 0L) {
+               cuEventDestroy(this.events[i]);
+               this.events[i] = 0L;
+            }
+         }
+         GpuStreams.destroy(this.stream);
       }
    }
 
@@ -215,6 +261,7 @@ public final class FillGpu {
    private final int interpolators;
    private long beardKernel;
    private final ThreadLocal<Lane> lanes = ThreadLocal.withInitial(Lane::new);
+   private final ConcurrentLinkedQueue<Lane> allLanes = new ConcurrentLinkedQueue<>();
    /**
     * The standalone fill bench's vein debug only (FillBench, -Dwgaccel.veinDebug): a device buffer passed to fillStates as
     * a 26th argument, for a source patched to take it. 0 in the game: the kernel keeps its 25.
@@ -717,6 +764,19 @@ public final class FillGpu {
 
       for (int i = 0; i < n; i++) {
          this.checkCodes(codes.get(i), blockCounts[i], "chunk " + (i + 1) + " of a launch of " + n);
+      }
+   }
+
+   /** Releases all Lane device/host allocations and CUDA/OpenCL events on world stop. */
+   public void close() {
+      try {
+         cuCtxSetCurrent(this.context);
+      } catch (Throwable ignored) {
+      }
+
+      Lane lane;
+      while ((lane = this.allLanes.poll()) != null) {
+         lane.free();
       }
    }
 }

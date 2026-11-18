@@ -16,6 +16,11 @@ public final class FtfVersion {
     * least 0.055; UpliftRiverCarver.updateValleyMask takes only the distance to the current point.
     */
    public static final boolean GRID_WATER = atLeast("1.0.0026");
+   /**
+    * FreeTerraForged 1.0.0027 and later: ReferenceWeirdness.fromSediment scales magnitude from [0.35 + 0.45 * sediment] and
+    * macroBiomeId bias * 1.33334F, and UpliftRiverCarver adds maxZone4RadiusSq early exit plus mountain vertical fadeout.
+    */
+   public static final boolean MOUNTAIN_FADES = atLeast("1.0.0027");
 
    private FtfVersion() {
    }

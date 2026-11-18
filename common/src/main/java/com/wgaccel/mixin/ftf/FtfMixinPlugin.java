@@ -12,8 +12,10 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
    private boolean present;
    /** FreeTerraForged 1.0.0024 or later (its continents' PlateUpliftBridge, which ContinentCoastMixin reads). */
    private boolean continents24;
-   /** FreeTerraForged 1.0.0026 or later (UpliftRiverCarver.updateValleyMask's new arguments: RiverSkip26Mixin, not RiverSkipMixin). */
+   /** FreeTerraForged 1.0.0026 or later (UpliftRiverCarver.updateValleyMask's new arguments and CliffRelaxationGrid). */
    private boolean rivers26;
+   /** FreeTerraForged 1.0.0027 or later (UpliftRiverCarver maxZone4RadiusSq + mountain fadeout: RiverSkip27Mixin). */
+   private boolean rivers27;
 
    @Override
    public void onLoad(String mixinPackage) {
@@ -21,6 +23,7 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
          this.present = Platform.get().isModLoaded("freeterraforged");
          this.continents24 = this.present && Platform.get().modAtLeast("freeterraforged", "1.0.0024");
          this.rivers26 = this.present && Platform.get().modAtLeast("freeterraforged", "1.0.0026");
+         this.rivers27 = this.present && Platform.get().modAtLeast("freeterraforged", "1.0.0027");
       } catch (RuntimeException | LinkageError failure) {
          this.present = false;
       }
@@ -33,11 +36,14 @@ public final class FtfMixinPlugin implements IMixinConfigPlugin {
 
    @Override
    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+      if (mixinClassName.endsWith(".CliffRelaxationGridMixin") && !this.rivers26) return false;
       if (mixinClassName.endsWith(".ContinentCoastMixin") && !this.continents24) {
          return false;
       }
 
-      if (mixinClassName.endsWith(".RiverSkipMixin") && this.rivers26 || mixinClassName.endsWith(".RiverSkip26Mixin") && !this.rivers26) {
+      if (mixinClassName.endsWith(".RiverSkipMixin") && this.rivers26
+            || mixinClassName.endsWith(".RiverSkip26Mixin") && (!this.rivers26 || this.rivers27)
+            || mixinClassName.endsWith(".RiverSkip27Mixin") && !this.rivers27) {
          return false;
       }
 

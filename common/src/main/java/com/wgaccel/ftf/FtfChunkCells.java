@@ -175,6 +175,13 @@ public final class FtfChunkCells {
       return list;
    }
 
+   /** Clears world-owned chunk-cell references on server shutdown. */
+   public static void clearWorld() {
+      KEPT.clear();
+      ORDER.clear();
+      SIZE.set(0);
+   }
+
    public static String summary() {
       return String.format(Locale.ROOT, "WGA shared FTF chunk cells: %,d worked out, %,d shared (%,d kept now), checked %,d: %s", MADE.sum(), SHARED.sum(),
          SIZE.get(), CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)");
