@@ -108,8 +108,12 @@ ext.relocateLwjgl = { File file, Collection<File> shaded, Map<String, byte[]> ad
     } finally {
         output.close()
     }
-    file.delete()
-    moved.renameTo(file)
+    // Checked: on Windows a jar a running game or server has open can be neither deleted nor replaced, and unchecked the
+    // build went on with the unrelocated jar (no LWJGL OpenCL in it: "org/lwjgl/opencl/CL10" not found, no GPU; 0.64.2).
+    if (!file.delete() || !moved.renameTo(file)) {
+        moved.delete()
+        throw new GradleException("relocateLwjgl: could not replace ${file} (open in a running game or server?)")
+    }
 }
 
 /**
