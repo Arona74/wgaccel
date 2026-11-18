@@ -18,13 +18,15 @@ import net.minecraft.world.level.levelgen.RandomState;
 public final class FtfCellsGround {
    private static volatile Method getOrCreate;
    private static volatile boolean absent;
+   /** Callers outside FTF worlds (0.64.1's doFill clamp) must not touch FTF's classes: without FTF they do not load. */
+   private static final boolean FTF = com.wgaccel.platform.Platform.get().isModLoaded("freeterraforged");
 
    private FtfCellsGround() {
    }
 
    /** Whether this FreeTerraForged keeps cells on its chunks. */
    public static boolean available(ChunkAccess chunk) {
-      return !absent && method(chunk) != null;
+      return FTF && !absent && method(chunk) != null;
    }
 
    /** The highest ground block of the chunk, or {@link FtfGround#UNKNOWN}. */

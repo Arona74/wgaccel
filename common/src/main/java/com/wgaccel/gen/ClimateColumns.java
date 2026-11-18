@@ -41,7 +41,6 @@ public final class ClimateColumns {
    private static final LongAdder CHECKED = new LongAdder();
    private static final AtomicLong CHECK_COUNT = new AtomicLong();
    private static final LongAdder DIFFERENT = new LongAdder();
-   private static final WorldgenPlans.SamplerDecoratorStage[] EMPTY_STAGES = new WorldgenPlans.SamplerDecoratorStage[0];
    private static final MethodHandle STILL_LIFE_APPLY = findStillLifeApply();
 
    private ClimateColumns() {
@@ -219,7 +218,8 @@ public final class ClimateColumns {
          stages = s.lastStages;
       } else {
          List<WorldgenPlans.SamplerDecoratorStage> stageList = decoration.stages();
-         stages = stageList.isEmpty() ? EMPTY_STAGES : stageList.toArray(WorldgenPlans.SamplerDecoratorStage[]::new);
+         // No static field of FTF's types: this class loads in every world, FreeTerraForged or not (0.64.1 crashed without it).
+         stages = stageList.toArray(WorldgenPlans.SamplerDecoratorStage[]::new);
          s.lastDecoration = decoration;
          s.lastStages = stages;
       }
