@@ -48,6 +48,12 @@ public final class Mc {
    /** gpuNoiseFillVanilla's default: off (vanilla radius 2000: 2:15 without the mod, 2:29 with the GPU fill). */
    public static final boolean GPU_FILL_VANILLA_DEFAULT = false;
 
+   /**
+    * The default of 0.64.1's rewrites that have no live check (they use a feature's random or write blocks: fastPlacementStreams,
+    * fastGeodes, fastCarvers, fastOreBlocks, fastSculkMoves, fastNoiseInterpolation): on here, where upstream measured them (FreeTerraForged worlds).
+    */
+   public static final boolean UNCHECKED_REWRITES = true;
+
    private Mc() {
    }
 

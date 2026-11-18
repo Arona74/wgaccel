@@ -21,6 +21,15 @@ import net.minecraft.world.level.levelgen.Column;
  * holding world or chunk references across calls.
  */
 public final class RegionSectionCache {
+   /** The sampled checks of the dripstone block tests and column scans that read sections directly (0.64.2). */
+   public static final FastCheck DRIPSTONE_CHECK = new FastCheck("fast dripstone tests", 64);
+   public static final FastCheck COLUMN_CHECK = new FastCheck("fast column scans", 64);
+
+   /** A column scan's answer as text (Column has no equals): its kind, floor and ceiling. */
+   public static String columnKey(java.util.Optional<net.minecraft.world.level.levelgen.Column> column) {
+      return column.map(c -> c.getClass().getSimpleName() + " " + c.getFloor() + " " + c.getCeiling()).orElse("none");
+   }
+
    private static final ThreadLocal<BlockPos.MutableBlockPos> MUTABLE_POS =
       ThreadLocal.withInitial(BlockPos.MutableBlockPos::new);
 

@@ -65,7 +65,7 @@ public abstract class OreFeatureMixin {
          net.minecraft.util.RandomSource random, net.minecraft.world.level.levelgen.feature.configurations.OreConfiguration config,
          double minX, double maxX, double minZ, double maxZ, double minY, double maxY,
          int xStart, int yStart, int zStart, int sizeXZ, int sizeY, Operation<Boolean> original) {
-      if (FastOres.on() && instance.getClass() == net.minecraft.world.level.levelgen.feature.OreFeature.class) {
+      if (FastOres.on() && com.wgaccel.Config.FAST_ORE_BLOCKS.get() && instance.getClass() == net.minecraft.world.level.levelgen.feature.OreFeature.class) {
          return com.wgaccel.gen.FastOreDoPlace.doPlace(level, random, config, minX, maxX, minZ, maxZ, minY, maxY, xStart, yStart, zStart, sizeXZ, sizeY);
       }
 

@@ -46,6 +46,9 @@ public abstract class WorldCarverMixin<C extends CarverConfiguration> {
    protected static FluidState LAVA;
 
    @Unique
+   private static final com.wgaccel.gen.FastCheck wgaccel$CARVE_STATE = new com.wgaccel.gen.FastCheck("fast carve states", 64);
+
+   @Unique
    private static final ThreadLocal<MutablePointContext> wgaccel$POINT_CONTEXT =
       ThreadLocal.withInitial(MutablePointContext::new);
 
@@ -76,15 +79,15 @@ public abstract class WorldCarverMixin<C extends CarverConfiguration> {
          BlockPos pos,
          Aquifer aquifer,
          Operation<BlockState> original) {
-      if (!Config.FAST_CARVERS.get() || isDebugEnabled(config)) {
+      if (!Config.FAST_CARVERS.get() || isDebugEnabled(config) || !wgaccel$CARVE_STATE.on()) {
          return original.call(context, config, pos, aquifer);
       }
 
-      if (pos.getY() <= config.lavaLevel.resolveY(context)) {
-         return LAVA.createLegacyBlock();
-      }
-
-      return aquifer.computeSubstance(wgaccel$POINT_CONTEXT.get().at(pos.getX(), pos.getY(), pos.getZ()), 0.0);
+      BlockState fast = pos.getY() <= config.lavaLevel.resolveY(context)
+         ? LAVA.createLegacyBlock()
+         : aquifer.computeSubstance(wgaccel$POINT_CONTEXT.get().at(pos.getX(), pos.getY(), pos.getZ()), 0.0);
+      // The aquifer gives the same answer (and fluid-update flag) for the same position however often it is asked.
+      return wgaccel$CARVE_STATE.sample() ? wgaccel$CARVE_STATE.sameValue(fast, original.call(context, config, pos, aquifer), pos) : fast;
    }
 
    @WrapMethod(method = "carveEllipsoid", require = 0)

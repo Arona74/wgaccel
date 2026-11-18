@@ -25,8 +25,16 @@ public abstract class ColumnScanMixin {
          Predicate<BlockState> stopTest,
          Operation<Optional<Column>> original) {
       if (level instanceof WorldGenRegion region && Config.FAST_REGION_CHUNKS.get()) {
-         Optional<Column> fast = RegionSectionCache.scanColumn(region, pos, range, insideTest, stopTest);
+         Optional<Column> fast = com.wgaccel.gen.RegionSectionCache.COLUMN_CHECK.on()
+            ? RegionSectionCache.scanColumn(region, pos, range, insideTest, stopTest) : null;
          if (fast != null) {
+            if (com.wgaccel.gen.RegionSectionCache.COLUMN_CHECK.sample()) {
+               // A read-only scan (its tests are block tests): asking the game's own as well changes nothing.
+               Optional<Column> real = original.call(level, pos, range, insideTest, stopTest);
+               com.wgaccel.gen.RegionSectionCache.COLUMN_CHECK.sameValue(com.wgaccel.gen.RegionSectionCache.columnKey(fast),
+                  com.wgaccel.gen.RegionSectionCache.columnKey(real), pos);
+               return real;
+            }
             return fast;
          }
       }

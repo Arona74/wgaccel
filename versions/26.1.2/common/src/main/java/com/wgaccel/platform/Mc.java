@@ -55,6 +55,12 @@ public final class Mc {
     */
    public static final boolean GPU_FILL_VANILLA_DEFAULT = true;
 
+   /**
+    * The default of 0.64.1's rewrites that have no live check (they use a feature's random or write blocks: fastPlacementStreams,
+    * fastGeodes, fastCarvers, fastOreBlocks, fastSculkMoves, fastNoiseInterpolation): off here: the 0.64.2 A/B (Conquest ReTerraForged, seed 0, r500, 18 Nov 2026) found no gain from them, 33-35 s either way.
+    */
+   public static final boolean UNCHECKED_REWRITES = false;
+
    private Mc() {
    }
 

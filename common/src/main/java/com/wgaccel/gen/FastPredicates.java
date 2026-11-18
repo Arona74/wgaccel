@@ -77,15 +77,23 @@ public final class FastPredicates {
       final BlockStateProvider fallback;
       public final boolean pureDirect;
       final IndexedDispatch indexed;
+      /** All the provider's own predicates (also the trimmed trailing ones), for the sampled check of the chosen rule. */
+      final BlockPredicate[] raw;
 
-      RulePlan(Node[] conditions, BlockStateProvider[] thenProviders, BlockStateProvider fallback, boolean pureDirect, IndexedDispatch indexed) {
+      RulePlan(Node[] conditions, BlockStateProvider[] thenProviders, BlockStateProvider fallback, boolean pureDirect, IndexedDispatch indexed,
+            BlockPredicate[] raw) {
          this.conditions = conditions;
          this.thenProviders = thenProviders;
          this.fallback = fallback;
          this.pureDirect = pureDirect;
          this.indexed = indexed;
+         this.raw = raw;
       }
    }
+
+   /** The sampled checks of the compiled predicates: a block test against BlockPredicate.test, a rule choice against the rules' own tests. */
+   public static final FastCheck CHECK = new FastCheck("compiled block predicates", 64);
+   public static final FastCheck RULE_CHECK = new FastCheck("compiled block rules", 64);
 
    /** Offset-grouped rule lookup table for large providers of single-offset static block-match rules (e.g. Still Life's 119-rule stone_cliff). */
    private static final class IndexedDispatch {
@@ -127,7 +135,26 @@ public final class FastPredicates {
 
       BlockStateProvider[] effectiveProviders = effectiveLen == thenProviders.length ? thenProviders : Arrays.copyOf(thenProviders, effectiveLen);
       IndexedDispatch indexed = buildIndexedDispatch(conditions, effectiveLen);
-      return new RulePlan(conditions, effectiveProviders, fallback, pureDirect, indexed);
+      return new RulePlan(conditions, effectiveProviders, fallback, pureDirect, indexed, predicates.toArray(new BlockPredicate[0]));
+   }
+
+   /** Whether the rule plans may be used (the predicates switch on, no difference found by the rule check). */
+   public static boolean rulesOn() {
+      return on() && RULE_CHECK.on();
+   }
+
+   /** The rule the game's own tests choose (raw.length: none, the fallback), counted as the plan's (trimmed rules are the fallback's). */
+   private static int vanillaRule(RulePlan plan, WorldGenLevel level, BlockPos pos) {
+      int n = plan.raw.length;
+      int chosen = n;
+      for (int i = 0; i < n; i++) {
+         if (plan.raw[i].test(level, pos)) {
+            chosen = i;
+            break;
+         }
+      }
+
+      return Math.min(chosen, plan.thenProviders.length);
    }
 
    /** Evaluates all rules of a compiled RulePlan under a single shared EvalContext epoch. */
@@ -140,7 +167,27 @@ public final class FastPredicates {
          ctx.depth++;
       }
 
+      int chosen;
       try {
+         chosen = chooseRule(plan, ctx, pos);
+         if (RULE_CHECK.sample()) {
+            chosen = RULE_CHECK.sameValue(chosen, vanillaRule(plan, level, pos), pos).intValue();
+         }
+      } finally {
+         if (alreadyOpen) {
+            ctx.depth--;
+         } else {
+            ctx.end();
+         }
+      }
+
+      // The provider asked after the rule is chosen, outside the evaluation (as before: it was the last call inside it).
+      return Mc.state(chosen < plan.thenProviders.length ? plan.thenProviders[chosen] : plan.fallback, level, random, pos);
+   }
+
+   /** The index of the first rule whose condition holds at pos, thenProviders.length for the fallback. */
+   private static int chooseRule(RulePlan plan, EvalContext ctx, BlockPos pos) {
+      {
          ctx.epoch++;
          int x = pos.getX();
          int y = pos.getY();
@@ -165,22 +212,16 @@ public final class FastPredicates {
                   }
                }
             }
-            return best < plan.thenProviders.length ? Mc.state(plan.thenProviders[best], level, random, pos) : Mc.state(plan.fallback, level, random, pos);
+            return Math.min(best, plan.thenProviders.length);
          }
 
          Node[] conditions = plan.conditions;
          for (int i = 0; i < conditions.length; i++) {
             if (conditions[i].test(ctx, x, y, z)) {
-               return Mc.state(plan.thenProviders[i], level, random, pos);
+               return i;
             }
          }
-         return Mc.state(plan.fallback, level, random, pos);
-      } finally {
-         if (alreadyOpen) {
-            ctx.depth--;
-         } else {
-            ctx.end();
-         }
+         return plan.thenProviders.length;
       }
    }
 
@@ -304,7 +345,7 @@ public final class FastPredicates {
 
    /** Evaluates a predicate at {@code pos} using a short-lived single-call {@link EvalContext}. */
    public static boolean testOnce(BlockPredicate predicate, WorldGenLevel level, BlockPos pos) {
-      if (!on()) {
+      if (!on() || !CHECK.on()) {
          return predicate.test(level, pos);
       }
 
@@ -322,7 +363,9 @@ public final class FastPredicates {
       }
 
       try {
-         return ctx.eval(node, pos.getX(), pos.getY(), pos.getZ());
+         boolean fast = ctx.eval(node, pos.getX(), pos.getY(), pos.getZ());
+         // Predicates only read the world, so asking the game's own test as well changes nothing.
+         return CHECK.sample() ? CHECK.same(fast, predicate.test(level, pos), pos) : fast;
       } finally {
          if (alreadyOpen) {
             ctx.depth--;

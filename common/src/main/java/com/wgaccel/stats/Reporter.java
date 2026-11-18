@@ -299,6 +299,11 @@ public final class Reporter {
          lines.add("WGA   " + com.wgaccel.gen.DiskColumns.summary().substring("WGA ".length()));
       }
 
+      String rewriteChecks = com.wgaccel.gen.FastCheck.report();
+      if (rewriteChecks != null) {
+         lines.add(rewriteChecks);
+      }
+
       if (runActiveSeconds > 0.0) {
          lines.add("WGA   cores by thread group: " + groups(runThreads, runActiveSeconds));
       }

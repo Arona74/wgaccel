@@ -50,7 +50,7 @@ public abstract class RuleBasedBlockStateProviderMixin {
 
    @WrapMethod(method = "getState", require = 0)
    private BlockState wgaccel$scope(WorldGenLevel level, RandomSource random, BlockPos pos, Operation<BlockState> original) {
-      if (FastPredicates.on()) {
+      if (FastPredicates.rulesOn()) {
          FastPredicates.RulePlan plan = this.wgaccel$plan();
          if (plan.pureDirect) {
             return FastPredicates.evalRulePlan(plan, level, random, pos);

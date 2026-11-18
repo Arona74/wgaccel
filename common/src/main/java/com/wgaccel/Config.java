@@ -33,6 +33,8 @@ public final class Config {
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
    public static final Setting<Boolean> FAST_CHUNK_PACK;
    public static final Setting<Boolean> FAST_MULTIFACE_SPREAD;
+   public static final Setting<Boolean> FAST_SCULK_MOVES;
+   public static final Setting<Boolean> FAST_ORE_BLOCKS;
    public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> FAST_SURFACE_READS;
@@ -322,6 +324,17 @@ public final class Config {
             "the same calls in the same order (the deep dark's sculk patches were 5% of the CPU in a Conquest profile, 40% of it the",
             "streams). The same world.")
          .define("fastMultifaceSpread", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_SCULK_MOVES = Setting.of(builder
+         .comment("Sculk charges moving through the deep dark (SculkSpreader's cursor) pick their next block with direct section reads",
+            "and a reused neighbour list (0.64.1).",
+            "No live check (it uses the feature's random or writes blocks): on by default on 1.21.1, off on 26.1.2, where the",
+            "0.64.2 A/B (Conquest, r500) found no gain from it.")
+         .define("fastSculkMoves", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
+      FAST_ORE_BLOCKS = Setting.of(builder
+         .comment("Ore blobs written with whole section runs and hoisted block reads (0.64.1's FastOreDoPlace; fastOres must be on too).",
+            "No live check (it uses the feature's random or writes blocks): on by default on 1.21.1, off on 26.1.2, where the",
+            "0.64.2 A/B (Conquest, r500) found no gain from it.")
+         .define("fastOreBlocks", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
       FAST_DISK_COLUMNS = Setting.of(builder
          .comment("Disk features (terrain fixes, crusts, cliffs) skip the columns that cannot pass their target: when the target",
             "needs the position's own block to be one of a few, a column whose chunk sections hold none of them is not tested.",
@@ -422,28 +435,37 @@ public final class Config {
             "at startup unless enabled here in wgaccel-common.toml (restart required after enabling).",
             "The presets leave this one alone (being measured): always the value written here.")
          .define("fastBlockPredicates", false)).under(CPU_IMPROVEMENTS, false);
-      FAST_PLACEMENT_STREAMS = Setting.custom(builder
+      FAST_PLACEMENT_STREAMS = Setting.of(builder
          .comment("Feature placement runs modifiers depth-first with direct sequential consumption instead of stacked Stream.flatMap",
-            "pipelines, keeping the exact modifier call order, RNG sequence and close semantics.")
-         .define("fastPlacementStreams", true)).under(CPU_IMPROVEMENTS, false);
-      FAST_GEODES = Setting.custom(builder
-         .comment("Amethyst geodes skip the outer Perlin/NormalNoise evaluation when the point sum plus the noise bound is still below the outer shell.")
-         .define("fastGeodes", true)).under(CPU_IMPROVEMENTS, false);
+            "pipelines, keeping the exact modifier call order, RNG sequence and close semantics.",
+            "No live check (it uses the feature's random or writes blocks): on by default on 1.21.1, off on 26.1.2, where the",
+            "0.64.2 A/B (Conquest, r500) found no gain from it.")
+         .define("fastPlacementStreams", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
+      FAST_GEODES = Setting.of(builder
+         .comment("Amethyst geodes skip the outer Perlin/NormalNoise evaluation when the point sum plus the noise bound is still below the outer shell.",
+            "No live check (it uses the feature's random or writes blocks): on by default on 1.21.1, off on 26.1.2, where the",
+            "0.64.2 A/B (Conquest, r500) found no gain from it.")
+         .define("fastGeodes", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
       FAST_DRIPSTONE = Setting.custom(builder
          .comment("Dripstone cluster and pointed dripstone helpers read chunk sections directly without intermediate BlockPos or",
-            "Predicate allocations, keeping identical placement logic.")
+            "Predicate allocations, keeping identical placement logic. Every 64th answer is compared with the game's own;",
+            "a difference turns it off.")
          .define("fastDripstone", true)).under(CPU_IMPROVEMENTS, false);
-      FAST_CARVERS = Setting.custom(builder
+      FAST_CARVERS = Setting.of(builder
          .comment("Cave and canyon carvers reuse section lookups and skip all-air sections when air is not replaceable, reusing",
-            "one MutablePointContext and MutableBoolean per carve instead of allocating per voxel/column.")
-         .define("fastCarvers", true)).under(CPU_IMPROVEMENTS, false);
-      FAST_NOISE_INTERPOLATION = Setting.custom(builder
+            "one MutablePointContext and MutableBoolean per carve instead of allocating per voxel/column.",
+            "No live check (it uses the feature's random or writes blocks): on by default on 1.21.1, off on 26.1.2, where the",
+            "0.64.2 A/B (Conquest, r500) found no gain from it.")
+         .define("fastCarvers", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
+      FAST_NOISE_INTERPOLATION = Setting.of(builder
          .comment("NoiseChunk cell/block interpolation uses cached arrays instead of allocating capturing Consumer lambdas",
-            "in updateForX/Y/Z and selectCellYZ on CPU worldgen.")
-         .define("fastNoiseInterpolation", true)).under(CPU_IMPROVEMENTS, false);
+            "in updateForX/Y/Z and selectCellYZ on CPU worldgen.",
+            "No live check of its own: on by default on 1.21.1, off on 26.1.2, where the GPU noise fill does this work.")
+         .define("fastNoiseInterpolation", com.wgaccel.platform.Mc.UNCHECKED_REWRITES), com.wgaccel.platform.Mc.UNCHECKED_REWRITES, com.wgaccel.platform.Mc.UNCHECKED_REWRITES).under(CPU_IMPROVEMENTS, false);
       FAST_COMPILED_PREDICATES = Setting.custom(builder
          .comment("Compiles vanilla BlockPredicate trees and placement modifier chains into allocation-free direct-section",
-            "evaluators for PlacementStreams, DiskFeature, and BlockColumnFeature (WWOO and Nature's Spirit heavy features).")
+            "evaluators for PlacementStreams, DiskFeature, and BlockColumnFeature (WWOO and Nature's Spirit heavy features).",
+            "Every 64th block test and rule choice is compared with the game's own; a difference turns it off.")
          .define("fastCompiledPredicates", true)).under(CPU_IMPROVEMENTS, false);
       NS_FAST_PILLARS = Setting.custom(builder
          .comment("Accelerates Nature's Spirit sugi and stratified-desert surface pillars directly on the GPU surface path",

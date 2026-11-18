@@ -106,7 +106,21 @@ final class Improvements {
       new Improvement(Config.FAST_BLOCK_PREDICATES, "Fast block predicates",
          "Placement filters read each block once per check. Off by default: slower in the Still Life test.", null),
       new Improvement(Config.FAST_PLACEMENT_STREAMS, "Fast placement streams",
-         "Placed features walk modifiers directly without stacked Stream.flatMap wrappers. Off by default until measured.", null));
+         "Placed features walk their placement modifiers directly instead of through stacked streams. No live check: on by default on 1.21.1, off on 26.1.2.", null),
+      new Improvement(Config.FAST_COMPILED_PREDICATES, "Compiled block predicates",
+         "Placement filters and rule-based block choices compiled once into direct block reads; every 64th answer checked.", null),
+      new Improvement(Config.FAST_DRIPSTONE, "Fast dripstone",
+         "Dripstone clusters and pointed dripstone read chunk sections directly; every 64th answer checked.", null),
+      new Improvement(Config.FAST_GEODES, "Fast geodes",
+         "Amethyst geodes skip the noise where it cannot reach the shell. No live check: on by default on 1.21.1, off on 26.1.2.", null),
+      new Improvement(Config.FAST_CARVERS, "Fast carvers",
+         "Caves and canyons skip air they cannot carve and reuse their lookups (carve states checked). No live check: on by default on 1.21.1, off on 26.1.2.", null),
+      new Improvement(Config.FAST_ORE_BLOCKS, "Fast ore blocks",
+         "Ore blobs written with whole section runs (with Fast ores on). No live check: on by default on 1.21.1, off on 26.1.2.", null),
+      new Improvement(Config.FAST_SCULK_MOVES, "Fast sculk moves",
+         "Sculk charges in the deep dark pick their next block with direct section reads. No live check: on by default on 1.21.1, off on 26.1.2.", null),
+      new Improvement(Config.FAST_NOISE_INTERPOLATION, "Fast noise interpolation",
+         "The CPU noise fill interpolates without making a lambda per cell. On by default on 1.21.1, off on 26.1.2 (the GPU fills there).", null));
 
    private Improvements() {
    }

@@ -49,12 +49,15 @@ public abstract class SculkSpreaderCursorMixin {
       ThreadLocal.withInitial(() -> new ObjectArrayList<>(NON_CORNER_NEIGHBOURS));
 
    @Unique
+   private static final com.wgaccel.gen.FastCheck wgaccel$UNOBSTRUCTED = new com.wgaccel.gen.FastCheck("fast sculk unobstructed test", 64);
+
+   @Unique
    private static final ThreadLocal<BlockPos.MutableBlockPos> wgaccel$POS =
       ThreadLocal.withInitial(BlockPos.MutableBlockPos::new);
 
    @WrapMethod(method = "getRandomizedNonCornerNeighbourOffsets", require = 0)
    private static List<Vec3i> wgaccel$neighbours(RandomSource random, Operation<List<Vec3i>> original) {
-      if (!Config.FAST_MULTIFACE_SPREAD.get()) {
+      if (!Config.FAST_SCULK_MOVES.get()) {
          return original.call(random);
       }
 
@@ -76,7 +79,7 @@ public abstract class SculkSpreaderCursorMixin {
 
    @WrapMethod(method = "getValidMovementPos", require = 0)
    private static BlockPos wgaccel$getValidMovementPos(LevelAccessor level, BlockPos pos, RandomSource random, Operation<BlockPos> original) {
-      if (!Config.FAST_MULTIFACE_SPREAD.get() || !(level instanceof WorldGenRegion region)
+      if (!Config.FAST_SCULK_MOVES.get() || !(level instanceof WorldGenRegion region)
             || (region instanceof PredicateReads.Holder holder && holder.wgaccel$predicateReads().open())) {
          return original.call(level, pos, random);
       }
@@ -197,13 +200,15 @@ public abstract class SculkSpreaderCursorMixin {
 
    @WrapMethod(method = "isUnobstructed", require = 0)
    private static boolean wgaccel$isUnobstructed(LevelAccessor level, BlockPos pos, Direction dir, Operation<Boolean> original) {
-      if (Config.FAST_MULTIFACE_SPREAD.get() && level instanceof WorldGenRegion region) {
+      if (Config.FAST_MULTIFACE_SPREAD.get() && wgaccel$UNOBSTRUCTED.on() && level instanceof WorldGenRegion region) {
          int rx = pos.getX() + dir.getStepX();
          int ry = pos.getY() + dir.getStepY();
          int rz = pos.getZ() + dir.getStepZ();
          BlockState state = RegionSectionCache.blockState(region, rx, ry, rz);
          if (state != null) {
-            return !state.isFaceSturdy(level, RegionSectionCache.mutablePos().set(rx, ry, rz), dir.getOpposite());
+            boolean fast = !state.isFaceSturdy(level, RegionSectionCache.mutablePos().set(rx, ry, rz), dir.getOpposite());
+            // A read-only test: asking the game's own as well changes nothing.
+            return wgaccel$UNOBSTRUCTED.sample() ? wgaccel$UNOBSTRUCTED.same(fast, original.call(level, pos, dir), pos) : fast;
          }
       }
 

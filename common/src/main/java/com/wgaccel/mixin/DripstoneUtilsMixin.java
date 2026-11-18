@@ -32,10 +32,11 @@ public abstract class DripstoneUtilsMixin {
 
    @WrapMethod(method = "isEmptyOrWater(Lnet/minecraft/world/level/LevelAccessor;Lnet/minecraft/core/BlockPos;)Z", require = 0)
    private static boolean wgaccel$isEmptyOrWater(LevelAccessor level, BlockPos pos, Operation<Boolean> original) {
-      if (Config.FAST_DRIPSTONE.get() && level instanceof WorldGenRegion region) {
+      if (Config.FAST_DRIPSTONE.get() && com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.on() && level instanceof WorldGenRegion region) {
          BlockState state = RegionSectionCache.blockState(region, pos.getX(), pos.getY(), pos.getZ());
          if (state != null) {
-            return isEmptyOrWater(state);
+            boolean fast = isEmptyOrWater(state);
+            return com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.sample() ? com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.same(fast, original.call(level, pos), pos) : fast;
          }
       }
 
@@ -44,10 +45,11 @@ public abstract class DripstoneUtilsMixin {
 
    @WrapMethod(method = "isEmptyOrWaterOrLava(Lnet/minecraft/world/level/LevelAccessor;Lnet/minecraft/core/BlockPos;)Z", require = 0)
    private static boolean wgaccel$isEmptyOrWaterOrLava(LevelAccessor level, BlockPos pos, Operation<Boolean> original) {
-      if (Config.FAST_DRIPSTONE.get() && level instanceof WorldGenRegion region) {
+      if (Config.FAST_DRIPSTONE.get() && com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.on() && level instanceof WorldGenRegion region) {
          BlockState state = RegionSectionCache.blockState(region, pos.getX(), pos.getY(), pos.getZ());
          if (state != null) {
-            return isEmptyOrWaterOrLava(state);
+            boolean fast = isEmptyOrWaterOrLava(state);
+            return com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.sample() ? com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.same(fast, original.call(level, pos), pos) : fast;
          }
       }
 
@@ -56,16 +58,24 @@ public abstract class DripstoneUtilsMixin {
 
    @WrapMethod(method = "isCircleMostlyEmbeddedInStone", require = 0)
    private static boolean wgaccel$isCircleEmbedded(WorldGenLevel level, BlockPos pos, int radius, Operation<Boolean> original) {
-      if (!Config.FAST_DRIPSTONE.get() || !(level instanceof WorldGenRegion region)) {
+      if (!Config.FAST_DRIPSTONE.get() || !com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.on() || !(level instanceof WorldGenRegion region)) {
          return original.call(level, pos, radius);
       }
 
+      boolean fast = wgaccel$circleEmbedded(region, pos, radius);
+      // Read-only tests: asking the game's own as well changes nothing (an unloaded chunk gives the game's answer).
+      return com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.sample() ? com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.same(fast, original.call(level, pos, radius), pos) : fast;
+   }
+
+   /** The fast circle test: sections read directly, the region's own read for a block outside them. */
+   @org.spongepowered.asm.mixin.Unique
+   private static boolean wgaccel$circleEmbedded(WorldGenRegion region, BlockPos pos, int radius) {
       int px = pos.getX();
       int py = pos.getY();
       int pz = pos.getZ();
       BlockState center = RegionSectionCache.blockState(region, px, py, pz);
       if (center == null) {
-         return original.call(level, pos, radius);
+         center = region.getBlockState(pos);
       }
       if (isEmptyOrWaterOrLava(center)) {
          return false;

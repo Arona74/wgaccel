@@ -26,10 +26,20 @@ public abstract class SculkPatchFeatureMixin {
 
    @WrapMethod(method = "canSpreadFrom", require = 0)
    private boolean wgaccel$canSpreadFrom(LevelAccessor level, BlockPos pos, Operation<Boolean> original) {
-      if (!Config.FAST_MULTIFACE_SPREAD.get()) {
+      if (!Config.FAST_MULTIFACE_SPREAD.get() || !wgaccel$CHECK.on()) {
          return original.call(level, pos);
       }
 
+      boolean fast = wgaccel$fastCanSpreadFrom(level, pos);
+      // A read-only test: asking the game's own as well changes nothing.
+      return wgaccel$CHECK.sample() ? wgaccel$CHECK.same(fast, original.call(level, pos), pos) : fast;
+   }
+
+   @Unique
+   private static final com.wgaccel.gen.FastCheck wgaccel$CHECK = new com.wgaccel.gen.FastCheck("fast sculk spread test", 64);
+
+   @Unique
+   private static boolean wgaccel$fastCanSpreadFrom(LevelAccessor level, BlockPos pos) {
       LevelChunkSection section = RegionSectionCache.interiorSection(level, pos);
       if (section != null) {
          if (section.hasOnlyAir()) {

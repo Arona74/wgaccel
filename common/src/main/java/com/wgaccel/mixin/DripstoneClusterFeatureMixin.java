@@ -15,10 +15,11 @@ import org.spongepowered.asm.mixin.Mixin;
 public abstract class DripstoneClusterFeatureMixin {
    @WrapMethod(method = "canPlacePool", require = 0)
    private boolean wgaccel$canPlacePool(WorldGenLevel level, BlockPos pos, Operation<Boolean> original) {
-      if (Config.FAST_DRIPSTONE.get() && level instanceof WorldGenRegion region) {
+      if (Config.FAST_DRIPSTONE.get() && com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.on() && level instanceof WorldGenRegion region) {
          Boolean result = RegionSectionCache.canPlaceDripstonePool(region, pos);
          if (result != null) {
-            return result;
+            // A read-only test: asking the game's own as well changes nothing.
+            return com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.sample() ? com.wgaccel.gen.RegionSectionCache.DRIPSTONE_CHECK.same(result.booleanValue(), original.call(level, pos).booleanValue(), pos) : result;
          }
       }
 
