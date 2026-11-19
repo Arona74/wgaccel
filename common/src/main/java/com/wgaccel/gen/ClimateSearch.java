@@ -31,6 +31,16 @@ public final class ClimateSearch {
    private static final LongAdder CHECKED = new LongAdder();
    private static final AtomicLong CHECK_COUNT = new AtomicLong();
    private static final LongAdder DIFFERENT = new LongAdder();
+   /**
+    * Answers asked, real searches and who asked for them (every 4096th sampled), for the summary. 19 Nov 2026, FTF +
+    * Regions Unexplored + Oh The Biomes We've Gone (9,112-entry table): 63% of 100M answers needed a search (FTF's
+    * provider selection and underground banding: each cell below the surface has its own depth), and only 0.6% of those
+    * searches were of a target this thread had searched before: no cache can help there.
+    */
+   private static final LongAdder ASKED = new LongAdder();
+   private static final LongAdder SEARCHED = new LongAdder();
+   private static final java.util.concurrent.ConcurrentHashMap<String, LongAdder> SEARCH_CALLERS = new java.util.concurrent.ConcurrentHashMap<>();
+   private static final StackWalker WALKER = StackWalker.getInstance();
    /** A table that cannot be copied (another node class, bounds too wide): searched by vanilla. */
    public static final ClimateSearch NONE = new ClimateSearch();
    private final int[] bounds;
@@ -65,6 +75,7 @@ public final class ClimateSearch {
       long safeLo, safeHi;
       Object compared;
       int calls;
+      int searches;
       final Object[] cLast = new Object[CACHE_SIZE];
       final long[] ct0 = new long[CACHE_SIZE];
       final long[] ct1 = new long[CACHE_SIZE];
@@ -349,6 +360,7 @@ public final class ClimateSearch {
    public Object find(Climate.TargetPoint target) {
       State s = this.state.get();
       s.compared = null;
+      ASKED.increment();
       long t0 = target.temperature(), t1 = target.humidity(), t2 = target.continentalness(), t3 = target.erosion(), t4 = target.depth(), t5 = target.weirdness();
       if (!fits(t0) || !fits(t1) || !fits(t2) || !fits(t3) || !fits(t4) || !fits(t5)) {
          return null;
@@ -494,6 +506,15 @@ public final class ClimateSearch {
          lastNode = known;
       }
 
+      SEARCHED.increment();
+      if ((++s.searches & 4095) == 0) {
+         String caller = WALKER.walk(frames -> frames
+            .filter(frame -> !frame.getClassName().startsWith("com.wgaccel.") && !frame.getClassName().startsWith("net.minecraft.world.level.biome.Climate"))
+            .limit(3).map(frame -> frame.getClassName().substring(frame.getClassName().lastIndexOf('.') + 1) + "." + frame.getMethodName())
+            .collect(java.util.stream.Collectors.joining(" < ")));
+         SEARCH_CALLERS.computeIfAbsent(this.values.length + " entries: " + caller, key -> new LongAdder()).increment();
+      }
+
       s.best = lastNode;
       s.bestDistance = lastNode < 0 ? Long.MAX_VALUE : distance(s, lastNode, Long.MAX_VALUE);
       s.safeLo = Integer.MIN_VALUE;
@@ -613,8 +634,17 @@ public final class ClimateSearch {
       }
    }
 
+   public static long asked() {
+      return ASKED.sum();
+   }
+
    public static String summary() {
-      return String.format(Locale.ROOT, "WGA climate search: about %,d searches, checked %,d: %s", CHECKED.sum() * 256, CHECKED.sum(),
-         DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)");
+      StringBuilder callers = new StringBuilder();
+      SEARCH_CALLERS.entrySet().stream().sorted((a, b) -> Long.compare(b.getValue().sum(), a.getValue().sum())).limit(8)
+         .forEach(entry -> callers.append(callers.isEmpty() ? "" : "; ").append(entry.getValue().sum() * 4096).append(" from ").append(entry.getKey()));
+      return String.format(Locale.ROOT,
+         "WGA climate search: about %,d searches, checked %,d: %s; asked %,d, searched %,d (%.1f%%); searches by caller: %s",
+         CHECKED.sum() * 256, CHECKED.sum(), DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)", ASKED.sum(), SEARCHED.sum(),
+         100.0 * SEARCHED.sum() / Math.max(1, ASKED.sum()), callers);
    }
 }

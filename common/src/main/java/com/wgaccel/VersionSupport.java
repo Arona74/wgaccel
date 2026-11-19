@@ -72,7 +72,6 @@ public final class VersionSupport {
       new UnsupportedMod("amplified_nether", "Amplified Nether", Category.TERRAIN),
       new UnsupportedMod("incendium", "Incendium", Category.TERRAIN),
       new UnsupportedMod("nullscape", "Nullscape", Category.TERRAIN),
-      new UnsupportedMod("biomeswevegone", "Oh The Biomes We've Gone", Category.BIOME),
       new UnsupportedMod("byg", "Oh The Biomes You'll Go", Category.BIOME),
       new UnsupportedMod("atmospheric", "Atmospheric", Category.BIOME),
       new UnsupportedMod("autumnity", "Autumnity", Category.BIOME),

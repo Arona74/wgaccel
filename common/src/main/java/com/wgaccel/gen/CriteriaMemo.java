@@ -162,6 +162,10 @@ public final class CriteriaMemo {
       return info;
    }
 
+   public static boolean used() {
+      return COMPUTED.sum() > 0;
+   }
+
    public static String summary() {
       return String.format(Locale.ROOT, "WGA Lithostitched criteria: %,d values worked out, %,d kept for the same point, %,d kept up the column; checked %,d: %s",
          COMPUTED.sum(), POINT_KEPT.sum(), COLUMN_KEPT.sum(), CHECKS.get(), disabled ? "DIFFERENT (off)" : "IDENTICAL");

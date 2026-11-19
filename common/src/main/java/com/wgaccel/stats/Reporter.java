@@ -303,6 +303,14 @@ public final class Reporter {
          lines.add("WGA   " + com.wgaccel.gen.DiskColumns.summary().substring("WGA ".length()));
       }
 
+      if (com.wgaccel.gen.ClimateSearch.asked() > 0) {
+         lines.add("WGA   " + com.wgaccel.gen.ClimateSearch.summary().substring("WGA ".length()));
+      }
+
+      if (com.wgaccel.gen.CriteriaMemo.used()) {
+         lines.add("WGA   " + com.wgaccel.gen.CriteriaMemo.summary().substring("WGA ".length()));
+      }
+
       String rewriteChecks = com.wgaccel.gen.FastCheck.report();
       if (rewriteChecks != null) {
          lines.add(rewriteChecks);
