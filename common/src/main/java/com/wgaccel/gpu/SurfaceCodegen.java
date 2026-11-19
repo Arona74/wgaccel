@@ -893,6 +893,20 @@ public final class SurfaceCodegen {
 
             body = text + line("return -1;");
          }
+         // C1: TerraBlender's NamespacedSurfaceRuleSource (terrablender:merged; NamespacedRule.tryApply): the rule of the
+         // biome's namespace when there is one (Biomes O' Plenty's for biomesoplenty:...), the base rule when that gives
+         // no block or the namespace has none. A biome is in one namespace, so: each namespace's rule behind a test of
+         // its biomes, then the base.
+         case "NamespacedSurfaceRuleSource" -> {
+            StringBuilder text = new StringBuilder();
+            int words = Math.max(1, (this.biomes.size() + 31) / 32);
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>)field(node, "sources")).entrySet()) {
+               text.append(line("if (sf_in(c.biome, %s, %d)) { int v = %s(c); if (v >= 0) return v; }", this.namespaceMask(String.valueOf(entry.getKey())), words,
+                  this.rule(entry.getValue())));
+            }
+
+            body = text + line("return %s(c);", this.rule(field(node, "base")));
+         }
          case "ConfigRuleSource" -> body = line("return %s(c);", this.rule(configBranch(node)));
          case "SurfaceRules$TestRuleSource" -> body = line("if (!%s(c)) return -1;", this.condition(field(node, "ifTrue"))) + line("return %s(c);", this.rule(field(node, "thenRun")));
          case "SurfaceRules$BlockRuleSource" -> body = line("return %d;", this.state((BlockState)field(node, "resultState")));
@@ -1153,6 +1167,21 @@ public final class SurfaceCodegen {
    private String biomeMask(List<?> keys) {
       int words = Math.max(1, (this.biomes.size() + 31) / 32);
       return line("return sf_in(c.biome, %s, %d);", this.maskTable(keys), words);
+   }
+
+   /** A biome id bit table of the registry's biomes in this namespace (TerraBlender's per-namespace rules); returns its name. */
+   private String namespaceMask(String namespace) {
+      List<Object> keys = new ArrayList<>();
+      String prefix = namespace + ":";
+      for (int id = 0; id < this.biomes.size(); id++) {
+         Biome biome = this.biomes.byId(id);
+         String name = biome == null ? null : Mc.name(this.biomes, biome);
+         if (name != null && name.startsWith(prefix)) {
+            keys.add(Mc.key(net.minecraft.core.registries.Registries.BIOME, namespace, name.substring(prefix.length())));
+         }
+      }
+
+      return this.maskTable(keys);
    }
 
    /** A biome id bit table of these keys; returns its name. */

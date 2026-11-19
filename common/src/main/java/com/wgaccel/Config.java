@@ -207,7 +207,7 @@ public final class Config {
       builder.pop();
       builder.comment("Version support: verified FreeTerraForged, terrain, and biome mod versions for Worldgen Accelerator:",
          "  Terrain / Shaping Mods:",
-         "    - FreeTerraForged (freeterraforged): 1.0.0010 to 1.0.0032 (MC 1.21.1; tested 1.0.0010, 1.0.0013, 1.0.0014, 1.0.0024-1.0.0032)",
+         "    - FreeTerraForged (freeterraforged): 1.0.0010 to 1.0.0033 (MC 1.21.1; tested 1.0.0010, 1.0.0013, 1.0.0014, 1.0.0024-1.0.0033)",
          "    - Conquest ReTerraForged (reterraforged): 0.1.0 (Fabric 26.1.2, with Conquest of Arborea & Lithos)",
          "    - Lithosphere (lithosphere): 1.8.2 (supported with Still Life 0.3 / 0.3.5 1.21.1 backport)",
          "    - RoadWeaver (roadweaver): 2.3.2",

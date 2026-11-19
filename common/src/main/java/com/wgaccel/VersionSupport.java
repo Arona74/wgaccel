@@ -38,7 +38,7 @@ public final class VersionSupport {
    }
 
    private static final List<SupportedMod> SUPPORTED = List.of(
-      new SupportedMod("freeterraforged", "FreeTerraForged", Category.FTF, "1.0.0010", "1.0.0032", "1.0.0010 - 1.0.0032"),
+      new SupportedMod("freeterraforged", "FreeTerraForged", Category.FTF, "1.0.0010", "1.0.0033", "1.0.0010 - 1.0.0033"),
       new SupportedMod("reterraforged", "Conquest ReTerraForged", Category.TERRAIN, "0.1.0", "0.1.99", "0.1.0"),
       new SupportedMod("roadweaver", "RoadWeaver", Category.TERRAIN, "2.3.0", "2.3.99", "2.3.2"),
       new SupportedMod("wwoo", "William Wythers' Overhauled Overworld (WWOO)", Category.BIOME, "2.6.0", "2.6.99", "2.6.7"),
