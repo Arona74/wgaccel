@@ -85,6 +85,8 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
    private volatile boolean closed;
    /** Sections being made; close waits for them, so none uses the GPU fill after the world releases it. */
    private final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
+   private final LongAdder fillInputNanos = new LongAdder();
+
    /** The generator registered last (for /wgaccel lod dh). */
    private static volatile DhLodGenerator active;
    private static final java.util.concurrent.atomic.AtomicBoolean BENCH_RUNNING = new java.util.concurrent.atomic.AtomicBoolean();
@@ -111,6 +113,11 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
          // DH keeps one generator per priority: the one registered last replaces the other.
          WorldgenAccelerator.LOG.warn("WGA Distant Horizons SeedGen (seedrenderer) is installed too: Distant Horizons uses whichever generator registers last;"
             + " turn one of them off");
+      }
+
+      if (Config.DH_GENERATOR.get() && com.wgaccel.platform.Platform.get().isModLoaded("horizonsreshowing")) {
+         // Its generator registers at priority 100 (its log says so), above this one's 10: DH uses it.
+         WorldgenAccelerator.LOG.warn("WGA Horizons Reshowing is installed too: Distant Horizons uses its generator (a higher priority), not the GPU LOD generator");
       }
    }
 
@@ -320,9 +327,19 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       worker.codes.clear();
       GpuSurface.Program surfaceProgram = LodSurface.program(worker.standIns.random());
       worker.standIns.prelims = surfaceProgram != null;
-      worker.standIns.fill(worker.batch, fillStride, worker.done, worker.jobs, worker.codes);
-      this.fillNanos.add(System.nanoTime() - start);
+      int fastFrom = benchExact ? -1 : Config.DH_FAST_FROM.get();
+      // fillStride * chunkStep is the section's column spacing, 2^detail.
+      worker.standIns.fastStride = fastFrom >= 0 && fillStride * chunkStep >= 1 << fastFrom ? fillStride : 0;
+      worker.standIns.prepare(worker.batch, fillStride, worker.done, worker.jobs, worker.codes);
+      long prepared = System.nanoTime();
+      this.fillInputNanos.add(prepared - start);
+      // Each thread launches its own: Distant Horizons' threads' launches overlap on the GPU. Merged into one launch
+      // (tried 19 Nov 2026), they were slower: detail 0 1,723 chunks of area/s against 2,409-2,537 apart.
+      worker.standIns.launch(worker.jobs, worker.codes);
+
+      this.fillNanos.add(System.nanoTime() - prepared);
       BlockState[] table = worker.standIns.table();
+      this.riverWater(worker, surfaceProgram);
       short[][] outs = this.surfaces(worker, surfaceProgram);
       int at = 0;
       for (ChunkPos pos : worker.batch) {
@@ -443,6 +460,27 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       return outs;
    }
 
+   /**
+    * FreeTerraForged's river water (FtfLodWater): what its surface step places before the rules (water of rivers, lakes,
+    * wetlands; stone banks), into the launch's codes, before their surface jobs and columns are made.
+    */
+   private void riverWater(Worker worker, GpuSurface.Program p) {
+      if (p == null || worker.done.isEmpty()) {
+         return;
+      }
+
+      net.minecraft.world.level.biome.BiomeSource biomeSource = this.level.getChunkSource().getGenerator().getBiomeSource();
+      net.minecraft.world.level.biome.Climate.Sampler sampler = worker.standIns.random().sampler();
+      net.minecraft.world.level.biome.BiomeManager biomes = new net.minecraft.world.level.biome.BiomeManager(
+         (qx, qy, qz) -> biomeSource.getNoiseBiome(qx, qy, qz, sampler), p.zoomSeed());
+      for (int i = 0; i < worker.done.size(); i++) {
+         if (!com.wgaccel.ftf.FtfLodWater.apply(worker.standIns.random(), p.system(), worker.standIns.proto(i), null, biomes, worker.jobs.get(i), worker.codes.get(i),
+               worker.standIns.table(), p.defaultBlock())) {
+            return;
+         }
+      }
+   }
+
    /** The surface's block at y in column t, or the fill's when the surface left it (or y is outside the job). */
    private static BlockState surfaced(GpuSurface.Program p, SurfaceGpu.Job job, short[] out, int y, int t, BlockState fill) {
       if (y == LodColumns.NONE || y < job.minY || y >= job.minY + job.height) {
@@ -471,7 +509,11 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       }
 
       if (groundRel > 0) {
-         points.add(DhApiTerrainDataPoint.create((byte)0, 0, 0, 0, groundRel, this.block(groundTop), biome));
+         // DH keeps, for each run of blocks, the light of the block above its top (LodDataBuilder.createFromChunk): the
+         // sky's 15 in the open, one less per block of water above (water dims sky light by one). With 0 the ground
+         // drew unlit, the whole LOD dark.
+         int skyLight = Math.max(0, 15 - (surfaceRel - groundRel));
+         points.add(DhApiTerrainDataPoint.create((byte)0, 0, skyLight, 0, groundRel, this.block(groundTop), biome));
       }
 
       source.setApiDataPointColumn(relX, relZ, points);
@@ -501,8 +543,9 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       }
 
       WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, String.format(Locale.ROOT,
-         "WGA Distant Horizons generator: %,d sections (by detail %s), %,d columns (%,d from the CPU); per section on its thread %.1f ms (GPU fill and its inputs %.1f ms, surface inputs %.1f ms, surface GPU %.1f ms, biomes %.1f ms); chunks with their surface %,d, without %,d",
-         this.sections.sum(), details, this.columns.sum(), this.cpuColumns.sum(), this.sectionNanos.sum() / 1.0e6 / count, this.fillNanos.sum() / 1.0e6 / count,
+         "WGA Distant Horizons generator: %,d sections (by detail %s), %,d columns (%,d from the CPU); per section on its thread %.1f ms (fill inputs %.1f ms, fill GPU %.1f ms, surface inputs %.1f ms, surface GPU %.1f ms, biomes %.1f ms); chunks with their surface %,d, without %,d",
+         this.sections.sum(), details, this.columns.sum(), this.cpuColumns.sum(), this.sectionNanos.sum() / 1.0e6 / count, this.fillInputNanos.sum() / 1.0e6 / count,
+         this.fillNanos.sum() / 1.0e6 / count,
          this.surfaceInputNanos.sum() / 1.0e6 / count, this.surfaceGpuNanos.sum() / 1.0e6 / count, this.biomeNanos.sum() / 1.0e6 / count, this.surfacedChunks.sum(),
          this.bareChunks.sum()));
    }
@@ -526,7 +569,13 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       }
 
       Thread thread = new Thread(() -> {
-         ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+         // Named as Distant Horizons' own, so /wgaccel profile samples them too.
+         java.util.concurrent.atomic.AtomicInteger names = new java.util.concurrent.atomic.AtomicInteger();
+         ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads, task -> {
+            Thread worker = new Thread(task, "DH-World Gen bench " + names.getAndIncrement());
+            worker.setDaemon(true);
+            return worker;
+         });
          try {
             generator.runBench(chunkX, chunkZ, detail, sections, threads, pool, report);
          } catch (Throwable failure) {
@@ -542,13 +591,96 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       return true;
    }
 
+   /** Set while the bench makes its exact pass after a fast one (distantHorizonsFastFrom then left out). */
+   private static volatile boolean benchExact;
+
+   /** The sections made at the detail (the bench's square), each in a checking section; seconds[0] their wall time, seconds[1] failures. */
+   private List<CheckingSource> makeSections(int baseX, int baseZ, int side, int sectionChunks, int detail, int sections, ExecutorService pool, double[] seconds) {
+      List<CheckingSource> sources = new ArrayList<>();
+      List<CompletableFuture<Void>> futures = new ArrayList<>();
+      long start = System.nanoTime();
+      for (int k = 0; k < sections; k++) {
+         int sx = (baseX + k % side) * sectionChunks;
+         int sz = (baseZ + k / side) * sectionChunks;
+         CheckingSource source = new CheckingSource(sx, sz, 1 << detail);
+         sources.add(source);
+         futures.add(this.generateLod(sx, sz, 0, 0, (byte)detail, source, EDhApiDistantGeneratorMode.SURFACE, pool, s -> {
+         }));
+      }
+
+      for (CompletableFuture<Void> future : futures) {
+         try {
+            future.join();
+         } catch (RuntimeException failure) {
+            seconds[1]++;
+         }
+      }
+
+      seconds[0] = (System.nanoTime() - start) / 1.0e9;
+      return sources;
+   }
+
    private void runBench(int chunkX, int chunkZ, int detail, int sections, int threads, ExecutorService pool, Consumer<String> report) {
+      try {
+         this.runBenchPasses(chunkX, chunkZ, detail, sections, threads, pool, report);
+      } finally {
+         benchExact = false;
+      }
+   }
+
+   private void runBenchPasses(int chunkX, int chunkZ, int detail, int sections, int threads, ExecutorService pool, Consumer<String> report) {
       int sectionChunks = 4 << detail;
       int side = (int)Math.ceil(Math.sqrt(sections));
       int baseX = Math.floorDiv(chunkX, sectionChunks) - side / 2;
       int baseZ = Math.floorDiv(chunkZ, sectionChunks) - side / 2;
       report.accept(String.format(Locale.ROOT, "WGA Distant Horizons bench: %d sections of detail %d (%d x %d chunks each, a column every %d blocks), %d threads...",
          sections, detail, sectionChunks, sectionChunks, 1 << detail, threads));
+      // With the fast FreeTerraForged stand-ins at this detail: the fast pass first (new ground for both: the exact pass
+      // builds the regions, whose filtered cells a later fast pass would read), then the same sections exact, compared.
+      int fastFrom = Config.DH_FAST_FROM.get();
+      if (fastFrom >= 0 && detail >= fastFrom && com.wgaccel.platform.Platform.get().isModLoaded("freeterraforged")) {
+         double[] fastSeconds = new double[2];
+         long fastChunks = com.wgaccel.ftf.FtfLodCells.CHUNKS.sum();
+         List<CheckingSource> fast = this.makeSections(baseX, baseZ, side, sectionChunks, detail, sections, pool, fastSeconds);
+         fastChunks = com.wgaccel.ftf.FtfLodCells.CHUNKS.sum() - fastChunks;
+         benchExact = true;
+         double[] exactSeconds = new double[2];
+         List<CheckingSource> exact = this.makeSections(baseX, baseZ, side, sectionChunks, detail, sections, pool, exactSeconds);
+         benchExact = false;
+         long columns = 0;
+         long sameGround = 0;
+         long sameTop = 0;
+         long sameBlock = 0;
+         long sumDiff = 0;
+         int maxDiff = 0;
+         int[] histogram = new int[5];
+         for (int s = 0; s < fast.size(); s++) {
+            CheckingSource f = fast.get(s);
+            CheckingSource e = exact.get(s);
+            for (int c = 0; c < 64 * 64; c++) {
+               columns++;
+               int diff = Math.abs(f.ground[c] - e.ground[c]);
+               sumDiff += diff;
+               maxDiff = Math.max(maxDiff, diff);
+               histogram[diff == 0 ? 0 : diff <= 2 ? 1 : diff <= 5 ? 2 : diff <= 10 ? 3 : 4]++;
+               sameGround += diff == 0 ? 1 : 0;
+               sameTop += f.top[c] == e.top[c] ? 1 : 0;
+               sameBlock += java.util.Objects.equals(f.topBlock[c], e.topBlock[c]) ? 1 : 0;
+            }
+         }
+
+         double area = (double)sections * sectionChunks * sectionChunks;
+         report.accept(String.format(Locale.ROOT,
+            "WGA Distant Horizons bench: fast (FreeTerraForged cells for the read columns, %,d stand-ins) %.2f s = %,.0f chunks of area/s; exact %.2f s = %,.0f chunks of area/s (%.1fx)",
+            fastChunks, fastSeconds[0], area / fastSeconds[0], exactSeconds[0], area / exactSeconds[0], exactSeconds[0] / fastSeconds[0]));
+         report.accept(String.format(Locale.ROOT,
+            "WGA Distant Horizons bench: fast against exact, %,d columns: ground the same %.1f%%, within 2 blocks %.1f%%, 3-5 %.1f%%, 6-10 %.1f%%, more %.1f%% (mean %.2f, max %d); top height the same %.1f%%, top block the same %.1f%%",
+            columns, 100.0 * histogram[0] / columns, 100.0 * histogram[1] / columns, 100.0 * histogram[2] / columns, 100.0 * histogram[3] / columns,
+            100.0 * histogram[4] / columns, (double)sumDiff / columns, maxDiff, 100.0 * sameTop / columns, 100.0 * sameBlock / columns));
+         // The checks below on the exact pass's sections.
+         benchExact = true;
+      }
+
       List<CheckingSource> sources = new ArrayList<>();
       List<CompletableFuture<Void>> futures = new ArrayList<>();
       long cpuBefore = this.cpuColumns.sum();
@@ -688,7 +820,7 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
             }
 
             top = point.bottomYBlockPos;
-            if (point.skyLightLevel == 0) {
+            if (!point.blockStateWrapper.isAir() && !point.blockStateWrapper.isLiquid() && ground == 0) {
                ground = point.topYBlockPos;
                this.groundBlock[relX * 64 + relZ] = point.blockStateWrapper.getSerialString();
             }

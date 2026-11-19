@@ -158,6 +158,8 @@ public final class GpuNoiseFill {
       final java.util.HashMap<Object, Integer> identities = new java.util.HashMap<>();
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
       final MutablePointContext point = new MutablePointContext();
+      /** The empty chunk the last stand-in was made for (its FreeTerraForged cells; LOD river water, FtfLodWater). */
+      net.minecraft.world.level.chunk.ChunkAccess lastProto;
       byte[] codes = new byte[0];
    }
 
@@ -1217,15 +1219,20 @@ public final class GpuNoiseFill {
    }
 
    private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch, FillGpu.Job job) throws ReflectiveOperationException {
-      return standIn(p, pos, minCellY, scratch, job, null);
+      return standIn(p, pos, minCellY, scratch, job, null, 0);
    }
 
    /** As above; with prelim, also the noise chunk's preliminary surface at the chunk's four cell corners (x, z; x + 16, z; x, z + 16; x + 16, z + 16). */
-   private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch, FillGpu.Job job, double[] prelim)
-         throws ReflectiveOperationException {
+   private static FillGpu.Job standIn(Program p, net.minecraft.world.level.ChunkPos pos, int minCellY, Scratch scratch, FillGpu.Job job, double[] prelim,
+         int fastStride) throws ReflectiveOperationException {
       net.minecraft.world.level.chunk.ProtoChunk proto = Mc.emptyChunk(pos, p.level, p.level.registryAccess());
+      scratch.lastProto = proto;
       net.minecraft.world.level.levelgen.NoiseGeneratorSettings settings = p.generator.generatorSettings().value();
-      com.wgaccel.ftf.FtfRegionsAhead.ensureAround(p.random, Mc.x(pos), Mc.z(pos));
+      // A fast LOD stand-in (FtfLodCells): FreeTerraForged's cells for its read columns only, no regions built around it.
+      if (fastStride <= 0 || !com.wgaccel.ftf.FtfLodCells.prepare(p.random, proto, fastStride)) {
+         com.wgaccel.ftf.FtfRegionsAhead.ensureAround(p.random, Mc.x(pos), Mc.z(pos));
+      }
+
       NoiseChunk noise = NoiseChunk.forChunk(proto, p.random, Mc.noStructures(), settings,
          p.fluidPicker.get(), Blender.empty());
       tileStage(noise, true);
@@ -1247,18 +1254,58 @@ public final class GpuNoiseFill {
          }
 
          if (prelim != null) {
-            // As the surface's inputs read them (SurfaceAhead.filled): the 16-block cell corners around the chunk.
+            // As the surface's inputs read them (SurfaceAhead.filled): the 16-block cell corners around the chunk, each
+            // shared by four chunks (PrelimCorners: one scan of the density down the world's height each).
             int cellX = pos.getMinBlockX() >> 4 << 4;
             int cellZ = pos.getMinBlockZ() >> 4 << 4;
-            prelim[0] = noise.preliminarySurfaceLevel(cellX, cellZ);
-            prelim[1] = noise.preliminarySurfaceLevel(cellX + 16, cellZ);
-            prelim[2] = noise.preliminarySurfaceLevel(cellX, cellZ + 16);
-            prelim[3] = noise.preliminarySurfaceLevel(cellX + 16, cellZ + 16);
+            boolean fast = fastStride > 0;
+            prelim[0] = PrelimCorners.get(p.random, fast, cellX, cellZ, noise);
+            prelim[1] = PrelimCorners.get(p.random, fast, cellX + 16, cellZ, noise);
+            prelim[2] = PrelimCorners.get(p.random, fast, cellX, cellZ + 16, noise);
+            prelim[3] = PrelimCorners.get(p.random, fast, cellX + 16, cellZ + 16, noise);
          }
 
          return job;
       } finally {
          tileStage(noise, false);
+      }
+   }
+
+   /**
+    * The preliminary surface at 16-block corners for the LOD stand-ins, shared: a corner is the same for the four chunks
+    * around it (the router's initialDensityWithoutJaggedness scanned down from the top; in a 768-block world it was the
+    * largest cost of a stand-in). Kept per world (its RandomState) and per kind of stand-in (fast ones read other
+    * FreeTerraForged cells); emptied when it grows past its size.
+    */
+   static final class PrelimCorners {
+      private static final int MAX = 1 << 18;
+      private static final java.util.concurrent.ConcurrentHashMap<Long, Integer> CORNERS = new java.util.concurrent.ConcurrentHashMap<>();
+      private static volatile Object owner;
+
+      static double get(Object random, boolean fast, int x, int z, NoiseChunk noise) {
+         if (owner != random) {
+            synchronized (PrelimCorners.class) {
+               if (owner != random) {
+                  CORNERS.clear();
+                  owner = random;
+               }
+            }
+         }
+
+         // x and z are multiples of 16: their block positions >> 4 fit 27 bits each.
+         long key = ((long)(x >> 4) & 0x7FFFFFFL) << 28 | ((long)(z >> 4) & 0x7FFFFFFL) << 1 | (fast ? 1L : 0L);
+         Integer known = CORNERS.get(key);
+         if (known != null) {
+            return known;
+         }
+
+         int level = (int)noise.preliminarySurfaceLevel(x, z);
+         if (CORNERS.size() >= MAX) {
+            CORNERS.clear();
+         }
+
+         CORNERS.put(key, level);
+         return level;
       }
    }
 
@@ -1272,8 +1319,12 @@ public final class GpuNoiseFill {
       private final FillGpu.Job[] pool;
       /** Per job (index for index with the fill's lists): the preliminary surface corners, made when {@link #prelims} is set. */
       private final double[][] prelim;
+      /** Per job: the empty chunk its stand-in was made for (FreeTerraForged's cells on it). */
+      private final net.minecraft.world.level.chunk.ChunkAccess[] protos;
       /** Whether the fills also make each chunk's preliminary surface corners (for its surface, LodSurface). */
       public boolean prelims;
+      /** Above 0: the stand-ins are fast ones at this stride (FtfLodCells: FreeTerraForged's cells for the read columns only). */
+      public int fastStride;
       public long inputNanos;
       public long gpuNanos;
       public int standInsFailed;
@@ -1282,6 +1333,7 @@ public final class GpuNoiseFill {
          this.p = p;
          this.pool = new FillGpu.Job[size];
          this.prelim = new double[size][4];
+         this.protos = new net.minecraft.world.level.chunk.ChunkAccess[size];
          for (int i = 0; i < size; i++) {
             this.pool[i] = new FillGpu.Job();
          }
@@ -1295,6 +1347,11 @@ public final class GpuNoiseFill {
 
       public ServerLevel level() {
          return this.p.level;
+      }
+
+      /** The i-th filled chunk's empty stand-in chunk (holding its FreeTerraForged cells). */
+      public net.minecraft.world.level.chunk.ChunkAccess proto(int i) {
+         return this.protos[i];
       }
 
       /** The i-th filled chunk's preliminary surface corners (with {@link #prelims}). */
@@ -1319,6 +1376,13 @@ public final class GpuNoiseFill {
        */
       public void fill(List<net.minecraft.world.level.ChunkPos> chunks, int stride, List<net.minecraft.world.level.ChunkPos> done, List<FillGpu.Job> jobs,
             List<byte[]> codes) {
+         this.prepare(chunks, stride, done, jobs, codes);
+         this.launch(jobs, codes);
+      }
+
+      /** The CPU half of {@link #fill}: the chunks' stand-in jobs and code arrays, not yet launched. */
+      public void prepare(List<net.minecraft.world.level.ChunkPos> chunks, int stride, List<net.minecraft.world.level.ChunkPos> done, List<FillGpu.Job> jobs,
+            List<byte[]> codes) {
          long start = System.nanoTime();
          for (net.minecraft.world.level.ChunkPos pos : chunks) {
             if (jobs.size() >= this.pool.length) {
@@ -1327,7 +1391,8 @@ public final class GpuNoiseFill {
 
             FillGpu.Job job;
             try {
-               job = standIn(this.p, pos, Integer.MIN_VALUE, this.scratch, this.pool[jobs.size()], this.prelims ? this.prelim[jobs.size()] : null);
+               job = standIn(this.p, pos, Integer.MIN_VALUE, this.scratch, this.pool[jobs.size()], this.prelims ? this.prelim[jobs.size()] : null,
+                  this.fastStride);
             } catch (Throwable failure) {
                if (this.standInsFailed++ == 0) {
                   WorldgenAccelerator.LOG.warn("WGA LOD columns: chunk {}'s stand-in failed", pos, failure);
@@ -1342,18 +1407,31 @@ public final class GpuNoiseFill {
             }
 
             job.stride = stride;
+            this.protos[jobs.size()] = this.scratch.lastProto;
             done.add(pos);
             jobs.add(job);
             codes.add(new byte[job.codeCount()]);
          }
 
+         this.inputNanos += System.nanoTime() - start;
+      }
+
+      /**
+       * The GPU half of {@link #fill}: one launch for the jobs, which may come from several StandIns of the same program
+       * (one thread launching for others, DhLodGenerator).
+       */
+      public void launch(List<FillGpu.Job> jobs, List<byte[]> codes) {
          long gpuStart = System.nanoTime();
-         this.inputNanos += gpuStart - start;
          if (!jobs.isEmpty()) {
             this.p.gpu.fillBatch(jobs, codes);
          }
 
          this.gpuNanos += System.nanoTime() - gpuStart;
+      }
+
+      /** Whether two StandIns launch through the same GPU program (their jobs may share a launch). */
+      public boolean sameProgram(StandIns other) {
+         return other != null && other.p == this.p;
       }
    }
 

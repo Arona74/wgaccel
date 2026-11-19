@@ -78,6 +78,11 @@ final class LodSurface {
          }
       }
 
+      // With a stride, each column of the job is its filled column's, copied over its stride x stride square. Vanilla's
+      // steep test (rock instead of grass, FreeTerraForged's rock layers) compares a column's neighbours one block away,
+      // which a stride cannot know: on FreeTerraForged 1.0.0032 some steep columns at detail 2-3 came out grass where the
+      // real chunk had tuff (1-4 of 16; heights raised or lowered by interpolating between the filled columns did not
+      // do better and were left out).
       for (int t = 0; t < 256; t++) {
          int column = (t / 16 / stride) * n + (t % 16) / stride;
          job.heights[t] = heightOf[column];

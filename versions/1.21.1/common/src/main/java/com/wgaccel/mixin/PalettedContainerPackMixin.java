@@ -10,6 +10,7 @@ import net.minecraft.util.ZeroBitStorage;
 import net.minecraft.world.level.chunk.Palette;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.Coerce;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
@@ -31,7 +32,9 @@ public abstract class PalettedContainerPackMixin {
    @SuppressWarnings({"unchecked", "rawtypes"})
    @WrapOperation(method = "onResize", require = 0, at = @At(value = "INVOKE",
       target = "Lnet/minecraft/world/level/chunk/PalettedContainer$Data;copyFrom(Lnet/minecraft/world/level/chunk/Palette;Lnet/minecraft/util/BitStorage;)V"))
-   private void wgaccel$fastZeroBitCopyFrom(Object newData, Palette<?> oldPalette, BitStorage oldStorage, Operation<Void> original) {
+   // @Coerce: PalettedContainer.Data is not visible from here. Fabric Loader's Mixin on 1.21.1 refused the plain Object
+   // ("unexpected argument type java.lang.Object at index 0") and the server crashed at its first chunk.
+   private void wgaccel$fastZeroBitCopyFrom(@Coerce Object newData, Palette<?> oldPalette, BitStorage oldStorage, Operation<Void> original) {
       if (Config.FAST_CHUNK_PACK.get() && oldStorage instanceof ZeroBitStorage && oldStorage.getSize() > 0) {
          // Register the single uniform state at index 0 in the new palette; if it receives ID 0,
          // the freshly allocated SimpleBitStorage long[] is already all 0L across all 4,096 cells!

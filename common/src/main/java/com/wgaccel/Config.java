@@ -38,6 +38,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> DH_GENERATOR;
+   public static final Setting<Integer> DH_FAST_FROM;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> FAST_SURFACE_SEQUENCES;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -614,6 +615,14 @@ public final class Config {
             "one column every 1 to 4,096 blocks) instead of generated chunks. In development: no surface blocks yet (the ground",
             "shows as stone), no structures or trees; the chunks the player generates replace them. Off by default.")
          .define("distantHorizonsGenerator", false), false, false).under(GPU_IMPROVEMENTS, false);
+      DH_FAST_FROM = Setting.of(builder
+         .comment("With the Distant Horizons generator in a FreeTerraForged world: from this LOD detail level on (a column every",
+            "2^level blocks), FreeTerraForged's terrain is worked out only for the columns the level shows, without its region",
+            "filters (erosion, cliff smoothing, beaches), instead of for whole 4 x 4-chunk regions: much faster far away, but",
+            "those columns' heights are the unfiltered ones (1.0.0018 test world: 85-92% of grounds the same, 99% within 2",
+            "blocks). Below level 6 it was not faster (the exact regions use the GPU's tile noise, the few columns not):",
+            "detail 6 2.4x faster. -1: every level exact.")
+         .defineInRange("distantHorizonsFastFrom", 6, -1, 12), 6, 6).under(GPU_IMPROVEMENTS, -1);
       GPU_AREA_STEP = Setting.custom(builder
          .comment("Gain: FreeTerraForged 1.0.0010 r1000 0:46 -> 0:44; vanilla r2000 1:58 -> 1:53. Off by default (in development).",
             "The 4 x 4 area step (with C2ME): every chunk's biome step waits for its aligned 4 x 4 area's GPU work, done once",

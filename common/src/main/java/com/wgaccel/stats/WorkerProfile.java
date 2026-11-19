@@ -53,7 +53,8 @@ public final class WorkerProfile {
    }
 
    private static boolean watched(String name) {
-      return name.startsWith("c2me-worker") || name.startsWith("Worker-Main") || name.startsWith("WGA ") && !name.equals("WGA profile");
+      // Distant Horizons' world-gen threads too: they run the GPU LOD generator (DhLodGenerator).
+      return name.startsWith("c2me-worker") || name.startsWith("Worker-Main") || name.startsWith("DH-World Gen") || name.startsWith("WGA ") && !name.equals("WGA profile");
    }
 
    private void run(long millis) {
