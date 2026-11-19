@@ -37,6 +37,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_ORE_BLOCKS;
    public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
+   public static final Setting<Boolean> DH_GENERATOR;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> FAST_SURFACE_SEQUENCES;
    public static final Setting<Boolean> CPU_IMPROVEMENTS;
@@ -608,6 +609,11 @@ public final class Config {
             "96 blocks deep in every column) worked out on the GPU for each chunk as its features step starts, and read from",
             "that table when Lithos asks. Every 64th answer is compared with Lithos's own; a difference turns this off.")
          .define("gpuLithosNoise", true), true, true).under(GPU_IMPROVEMENTS, false);
+      DH_GENERATOR = Setting.of(builder
+         .comment("With Distant Horizons: its overworld LODs made from the GPU noise fill (the ground's height, water and biome of",
+            "one column every 1 to 4,096 blocks) instead of generated chunks. In development: no surface blocks yet (the ground",
+            "shows as stone), no structures or trees; the chunks the player generates replace them. Off by default.")
+         .define("distantHorizonsGenerator", false), false, false).under(GPU_IMPROVEMENTS, false);
       GPU_AREA_STEP = Setting.custom(builder
          .comment("Gain: FreeTerraForged 1.0.0010 r1000 0:46 -> 0:44; vanilla r2000 1:58 -> 1:53. Off by default (in development).",
             "The 4 x 4 area step (with C2ME): every chunk's biome step waits for its aligned 4 x 4 area's GPU work, done once",

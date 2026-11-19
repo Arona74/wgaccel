@@ -85,6 +85,17 @@ public final class FillGpu {
       public int seaType;
       /** S7: the Beardifier's pieces and junctions (see DensityCodegen's bf_value); {0, 0} without structures. */
       public int[] beard = {0, 0};
+      /**
+       * 0.70.0, the LOD columns ({@link #fillBatch} only): every stride-th column in x and z (1, 2, 4, 8 or 16), the codes
+       * packed as ((ly * n + lz / stride) * n + lx / stride) with n = 16 / stride. 1: the whole chunk.
+       */
+      public int stride = 1;
+
+      /** The codes this job gives: n * n columns of its blocks. */
+      public int codeCount() {
+         int n = 16 / this.stride;
+         return n * n * this.cellCountY * this.cellHeight;
+      }
    }
 
    private final class Lane {
@@ -295,7 +306,7 @@ public final class FillGpu {
     * that runs it for chunk blockIdx.y of a parameter table (PARAMS longs per chunk: 0 cells, 1 corners, 2 columns, 3
     * grid, 4 loc, 5 status, 6 lava, 7 codes as device addresses; 8 seedLo, 9 seedHi; 10 chunkX, 11 chunkZ, 12
     * cellMinY, 13 cellCountY, 14 cellWidth, 15 cellHeight, 16 corner stride, 17 veins, 18 sea, 19 seaType, 20
-    * aquifer). A chunk's blocks are worked out by the same code either way; the bodies index their threads by
+    * aquifer, 21 beard, 22 LOD stride). A chunk's blocks are worked out by the same code either way; the bodies index their threads by
     * blockIdx.x and threadIdx.x only and return early past their own chunk's work.
     */
    public static String batchSource(String source) {
@@ -305,14 +316,28 @@ public final class FillGpu {
          source = source.replace("extern \"C\" __global__ void cornerColumns(", "__device__ __forceinline__ void cornerColumns_body(") + """
             extern "C" __global__ void cornerColumns(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY,
                                                      int cellCountY, int cellWidth, int cellHeight, int interpolators, int slots, double* corners) {
-                cornerColumns_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, interpolators, slots, corners);
+                cornerColumns_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, interpolators, slots, corners, 1);
             }
             extern "C" __global__ void cornerColumnsBatch(const long long* jobs, const double* nd, const int* np, int interpolators, int slots) {
                 const long long* p = jobs + blockIdx.y * %1$d;
                 cornerColumns_body((const double*)p[0], nd, np, (int)p[10], (int)p[11], (int)p[12], (int)p[13], (int)p[14], (int)p[15], interpolators,
-                                   slots, (double*)p[1]);
+                                   slots, (double*)p[1], (int)p[22]);
             }
             """.formatted(PARAMS);
+      }
+
+      // 0.70.0: fillStates takes the LOD stride after beardKernel; a source saved before it gets the parameter (unused there,
+      // so only stride 1 is right for it).
+      int states = source.indexOf("void fillStates(");
+      int open = states < 0 ? -1 : source.indexOf(") {", states);
+      if (open > 0 && !source.substring(states, open).contains("int stride")) {
+         int beard = source.indexOf("const float* beardKernel", states);
+         if (beard < 0 || beard > open) {
+            throw new IllegalStateException("the fill source's fillStates has no beardKernel parameter");
+         }
+
+         int after = beard + "const float* beardKernel".length();
+         source = source.substring(0, after) + ", int stride" + source.substring(after);
       }
 
       // The standalone bench's vein debug (debugBuffer): its patched fillStates takes the buffer last, the batches none.
@@ -327,10 +352,22 @@ public final class FillGpu {
          source = source.replace(entry, "__device__ __forceinline__ void " + name + "_body(");
       }
 
+      // 0.70.0, the LOD columns' corner mask: from a stride of the cell width up, a sampled column is a corner column and
+      // reads only its own corners' values (its neighbours' with weight 0: lerp(0, a, b) = a + 0 * (b - a), so they must be
+      // finite: 0.0). The other corner columns are not worked out. Stride 1 (every fill) never masks.
+      String mask = "stride >= cellWidth && ((I * cellWidth) % stride != 0 || (Z * cellWidth) % stride != 0 || I * cellWidth >= 16 || Z * cellWidth >= 16)";
+      source = withStride(source, "densityCorners_body", "int j = rest - kz * ny;",
+         "\n    if (" + mask.replace("I", "i").replace("Z", "kz") + ") { corners[t] = 0.0; return; }");
+      if (prefill) {
+         // Their prefilled subtrees are read by their own column's corners only.
+         source = withStride(source, "cornerColumns_body", "int col = r - sign * cols;",
+            "\n    { int ci = col / nx; int cz = col - ci * nx; if (" + mask.replace("I", "ci").replace("Z", "cz") + ") return; }");
+      }
+
       return source + """
          extern "C" __global__ void densityCorners(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                    int cellWidth, int cellHeight, int interpolators, double* corners) {
-             densityCorners_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, interpolators, corners);
+             densityCorners_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, interpolators, corners, 1);
          }
          extern "C" __global__ void fillColumns(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                 int cellWidth, int cellHeight, int count, double* columns) {
@@ -341,12 +378,12 @@ public final class FillGpu {
                                                int veins, const int* grid, const int* loc, const int* status, const int* lava, int sea, int seaType,
                                                int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel%2$s) {
              fillStates_body(cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, corners, cornerStride, seedLo, seedHi, veins, grid,
-                             loc, status, lava, sea, seaType, aquifer, codes, columns, beard, beardKernel%3$s);
+                             loc, status, lava, sea, seaType, aquifer, codes, columns, beard, beardKernel, 1%3$s);
          }
          extern "C" __global__ void densityCornersBatch(const long long* jobs, const double* nd, const int* np, int interpolators) {
              const long long* p = jobs + blockIdx.y * %1$d;
              densityCorners_body((const double*)p[0], nd, np, (int)p[10], (int)p[11], (int)p[12], (int)p[13], (int)p[14], (int)p[15], interpolators,
-                                 (double*)p[1]);
+                                 (double*)p[1], (int)p[22]);
          }
          extern "C" __global__ void fillColumnsBatch(const long long* jobs, const double* nd, const int* np, int count) {
              const long long* p = jobs + blockIdx.y * %1$d;
@@ -356,9 +393,31 @@ public final class FillGpu {
              const long long* p = jobs + blockIdx.y * %1$d;
              fillStates_body((const double*)p[0], nd, np, (int)p[10], (int)p[11], (int)p[12], (int)p[13], (int)p[14], (int)p[15], (const double*)p[1],
                              (int)p[16], p[8], p[9], (int)p[17], (const int*)p[3], (const int*)p[4], (const int*)p[5], (const int*)p[6], (int)p[18],
-                             (int)p[19], (int)p[20], (unsigned char*)p[7], (const double*)p[2], (const int*)p[21], beardKernel%4$s);
+                             (int)p[19], (int)p[20], (unsigned char*)p[7], (const double*)p[2], (const int*)p[21], beardKernel, (int)p[22]%4$s);
          }
          """.formatted(PARAMS, debug ? ", double* dbgOut" : "", debug ? ", dbgOut" : "", debug ? ", (double*)0" : "");
+   }
+
+   /**
+    * A body's stride parameter (last) and, after the anchor in it, its mask line; a source without the anchor gets the
+    * parameter only (no mask: every corner worked out, still right).
+    */
+   private static String withStride(String source, String body, String anchor, String maskLine) {
+      int at = source.indexOf("void " + body + "(");
+      int open = at < 0 ? -1 : source.indexOf(") {", at);
+      if (open < 0) {
+         throw new IllegalStateException("the fill source has no " + body);
+      }
+
+      source = source.substring(0, open) + ", int stride" + source.substring(open);
+      int close = source.indexOf("\n}", open);
+      int anchorAt = source.indexOf(anchor, open);
+      if (anchorAt < 0 || (close >= 0 && anchorAt > close)) {
+         return source;
+      }
+
+      int after = anchorAt + anchor.length();
+      return source.substring(0, after) + maskLine + source.substring(after);
    }
 
    /** Compiles the fill source (with its batch entries) into the context (made current on this thread) and uploads the packed noises. */
@@ -474,6 +533,10 @@ public final class FillGpu {
       GpuSelfTest.check(cuCtxSetCurrent(this.context), "cuCtxSetCurrent");
       int nx = 16 / job.cellWidth + 1;
       int per = nx * nx * (job.cellCountY + 1);
+      if (job.stride != 1) {
+         throw new IllegalArgumentException("a strided job (LOD columns) goes through fillBatch");
+      }
+
       int blocks = 256 * job.cellCountY * job.cellHeight;
       int cellsCount = Math.max(1, job.cells.length);
       int locOffset = 8 + LAVA_INTS;
@@ -627,7 +690,11 @@ public final class FillGpu {
          Job job = jobs.get(i);
          int nx = 16 / job.cellWidth + 1;
          pers[i] = nx * nx * (job.cellCountY + 1);
-         blockCounts[i] = 256 * job.cellCountY * job.cellHeight;
+         if (job.stride != 1 && job.stride != 2 && job.stride != 4 && job.stride != 8 && job.stride != 16) {
+            throw new IllegalArgumentException("stride " + job.stride + " (1, 2, 4, 8 or 16)");
+         }
+
+         blockCounts[i] = job.codeCount();
          cellsAt[i] = cellsTotal;
          cellsTotal += Math.max(1, job.cells.length);
          intsAt[i] = intsTotal;
@@ -680,6 +747,7 @@ public final class FillGpu {
          params.put(p + 19, job.seaType);
          params.put(p + 20, job.aquifer);
          params.put(p + 21, intsDevice + 4L * (8 + LAVA_INTS + 6 * job.cellsUsed));
+         params.put(p + 22, job.stride);
       }
 
       GpuSelfTest.check(ncuMemcpyHtoDAsync(lane.cellsDevice, lane.cellsHost, 8L * cellsTotal, lane.stream), "copy in");

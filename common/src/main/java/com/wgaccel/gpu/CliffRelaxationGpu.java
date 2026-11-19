@@ -221,6 +221,11 @@ public final class CliffRelaxationGpu {
    }
 
    private static void disable(String why) {
+      if (Thread.currentThread().isInterrupted()) {
+         // The thread's owner stopping it (Distant Horizons as a world closes), not a GPU fault.
+         return;
+      }
+
       if (!disabled) {
          disabled = true;
          com.wgaccel.WgaChat.warnOff("WGA GPU cliff relaxation off, FreeTerraForged's own filter runs instead: {}", why);

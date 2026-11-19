@@ -229,6 +229,11 @@ public final class FtfRegionsAhead {
    }
 
    private static void off(Throwable failure) {
+      if (com.wgaccel.util.Interrupts.only(failure)) {
+         // The thread's owner stopping it (Distant Horizons as a world closes), not a fault of the regions ahead.
+         return;
+      }
+
       if (!off) {
          off = true;
          QUEUED.clear();

@@ -1,4 +1,4 @@
-# Worldgen Accelerator (`0.64.2`)
+# Worldgen Accelerator (`0.70.0`)
 
 > [!NOTE]
 > **Attribution:** Originally created by **`agneht26-dotcom`** (`v0.9.78`–`v0.11.5`), expanded by **Arona** up through `0.63.3` / `0.63.4`, and continued here from `0.63.4-lab.1` through **`0.64.1`** for **Minecraft 1.21.1 (NeoForge)** with **FreeTerraForged** (`1.0.0010`–`1.0.0032`), **C2ME**, and **OpenCL** as the default GPU backend.

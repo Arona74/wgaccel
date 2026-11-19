@@ -65,4 +65,8 @@ dependencies {
     compileOnly fileTree(dir: rootProject.file(minecraft_version == '1.21.1' ? 'libs/c2me' : "libs/c2me-${minecraft_version}"), include: '*.jar')
     // Optional at run time: No Man's Land's ore veins and noise fields (mixin/compat; copy its jar into libs/ to build).
     compileOnly rootProject.files('libs/nomansland-1.6.2.jar')
+    // Optional at run time: Distant Horizons' API (its world generator override, gen/DhLodGenerator). Only its
+    // com.seibel.distanthorizons.api and .coreapi packages, copied out of the Distant Horizons jar into this one; the
+    // API has no Minecraft classes, so one jar serves every Minecraft version.
+    compileOnly rootProject.files('libs/distanthorizons-api-3.3.3.jar')
 }

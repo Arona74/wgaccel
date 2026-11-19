@@ -150,9 +150,12 @@ public final class FtfRawBlocks {
             WorldgenAccelerator.LOG.info(summary());
          }
       } catch (Throwable failure) {
-         off = true;
          TileNoise.batch(null);
-         WorldgenAccelerator.LOG.warn("WGA GPU raw chunk blocks off (FreeTerraForged makes raw chunks alone): {}", failure.toString());
+         // An interrupt (Distant Horizons stopping its threads as a world closes): this chunk from FreeTerraForged, the GPU part stays on.
+         if (!com.wgaccel.util.Interrupts.only(failure)) {
+            off = true;
+            WorldgenAccelerator.LOG.warn("WGA GPU raw chunk blocks off (FreeTerraForged makes raw chunks alone): {}", failure.toString());
+         }
       }
 
       // A hit now (or FreeTerraForged makes it, as before).

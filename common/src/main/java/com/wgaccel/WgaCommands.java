@@ -29,7 +29,64 @@ public final class WgaCommands {
          .then(Commands.literal("profile")
             .executes(context -> profile(context, 60))
             .then(Commands.argument("seconds", com.mojang.brigadier.arguments.IntegerArgumentType.integer(5, 600))
-               .executes(context -> profile(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "seconds"))))));
+               .executes(context -> profile(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "seconds")))))
+         .then(Commands.literal("lod").then(Commands.literal("bench")
+            .executes(context -> lodBench(context, 16, 2, 1))
+            .then(Commands.argument("radius", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1024))
+               .executes(context -> lodBench(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), 2, 1))
+               .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 16))
+                  .executes(context -> lodBench(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"),
+                     com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"), 1))
+                  .then(Commands.argument("stride", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                     .executes(context -> lodBench(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"),
+                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"),
+                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "stride")))))))
+            .then(Commands.literal("dh")
+               .executes(context -> lodDh(context, 4, 16, 4))
+               .then(Commands.argument("detail", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 12))
+                  .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), 16, 4))
+                  .then(Commands.argument("sections", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 1024))
+                     .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "sections"), 4))
+                     .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 16))
+                        .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "sections"),
+                           com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads")))))))));
+   }
+
+   /**
+    * {@code /wgaccel lod dh [detail] [sections] [threads]}: Distant Horizons' LOD sections around the caller made by the
+    * GPU LOD generator ({@link com.wgaccel.gen.DhLodGenerator}), each column checked as DH checks it; with DH installed.
+    */
+   private static int lodDh(CommandContext<CommandSourceStack> context, int detail, int sections, int threads) {
+      CommandSourceStack source = context.getSource();
+      net.minecraft.server.level.ServerLevel level = source.getLevel();
+      java.util.function.Consumer<String> report = line -> {
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, line);
+         level.getServer().execute(() -> source.sendSuccess(() -> Component.literal(line), false));
+      };
+      if (!com.wgaccel.platform.Platform.get().isModLoaded("distanthorizons")) {
+         report.accept("WGA Distant Horizons bench: Distant Horizons is not installed");
+         return 0;
+      }
+
+      return com.wgaccel.gen.DhLodGenerator.bench(level, net.minecraft.util.Mth.floor(source.getPosition().x) >> 4,
+         net.minecraft.util.Mth.floor(source.getPosition().z) >> 4, detail, sections, threads, report) ? 1 : 0;
+   }
+
+   /**
+    * {@code /wgaccel lod bench [radius] [threads] [stride]}: the LOD prototype around the caller, radius in chunks, one
+    * column in stride x stride ({@link com.wgaccel.gen.LodColumns}).
+    */
+   private static int lodBench(CommandContext<CommandSourceStack> context, int radius, int threads, int stride) {
+      CommandSourceStack source = context.getSource();
+      net.minecraft.server.level.ServerLevel level = source.getLevel();
+      int chunkX = net.minecraft.util.Mth.floor(source.getPosition().x) >> 4;
+      int chunkZ = net.minecraft.util.Mth.floor(source.getPosition().z) >> 4;
+      java.util.function.Consumer<String> report = line -> {
+         // ALWAYS: the bench's lines share their text up to the first digit, which the logger otherwise keeps once.
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, line);
+         level.getServer().execute(() -> source.sendSuccess(() -> Component.literal(line), false));
+      };
+      return com.wgaccel.gen.LodColumns.bench(level, chunkX, chunkZ, radius, threads, stride, report) ? 1 : 0;
    }
 
    private static int profile(CommandContext<CommandSourceStack> context, int seconds) {

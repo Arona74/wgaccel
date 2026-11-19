@@ -66,7 +66,9 @@ public abstract class TileNoiseGeneratorMixin {
             Tile.Chunk first = tile.getChunkWriter(0, 0);
             table = com.wgaccel.gpu.TileNoiseGpu.begin(tile, wgaccel$heightmap.get(this), first.getBlockX(), first.getBlockZ(), this.wgaccel$chunks() * 16);
          } catch (Throwable failure) {
-            com.wgaccel.gpu.TileNoiseGpu.disable("tile setup: " + failure);
+            if (!com.wgaccel.util.Interrupts.only(failure)) {
+               com.wgaccel.gpu.TileNoiseGpu.disable("tile setup: " + failure);
+            }
          }
       }
 
@@ -78,7 +80,7 @@ public abstract class TileNoiseGeneratorMixin {
       com.wgaccel.gpu.TileNoiseGpu.Table made = table;
       CompletableFuture<Tile> future = CompletableFuture.runAsync(() -> this.wgaccel$prepare(tile, made), wgaccel$dispatch)
          .handle((v, failure) -> {
-            if (failure != null) {
+            if (failure != null && !com.wgaccel.util.Interrupts.only(failure)) {
                com.wgaccel.gpu.TileNoiseGpu.disable("tile dry pass: " + failure);
             }
 
@@ -140,7 +142,9 @@ public abstract class TileNoiseGeneratorMixin {
          com.wgaccel.gpu.TileNoiseGpu.DRY_NANOS.add(System.nanoTime() - start);
          com.wgaccel.gpu.TileNoiseGpu.fill(table, all);
       } catch (Throwable failure) {
-         com.wgaccel.gpu.TileNoiseGpu.disable("tile dry pass: " + failure);
+         if (!com.wgaccel.util.Interrupts.only(failure)) {
+            com.wgaccel.gpu.TileNoiseGpu.disable("tile dry pass: " + failure);
+         }
       }
    }
 

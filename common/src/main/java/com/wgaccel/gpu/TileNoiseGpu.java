@@ -161,6 +161,11 @@ public final class TileNoiseGpu {
 
    /** A difference found by a check: off from now on (the CPU makes everything). */
    public static void disable(String why) {
+      if (Thread.currentThread().isInterrupted()) {
+         // The thread's owner stopping it (Distant Horizons as a world closes), not a GPU fault.
+         return;
+      }
+
       DIFFERENT.increment();
       if (!disabled) {
          disabled = true;
@@ -203,6 +208,11 @@ public final class TileNoiseGpu {
          trace("begin: a table");
          return table;
       } catch (Throwable failure) {
+         if (com.wgaccel.util.Interrupts.only(failure)) {
+            // The thread's owner stopping it (Distant Horizons' world-gen threads as a world closes): this tile on the CPU.
+            return null;
+         }
+
          disabled = true;
          WorldgenAccelerator.LOG.warn("WGA GPU tile noise off: {}", failure.toString());
          return null;
@@ -335,7 +345,8 @@ public final class TileNoiseGpu {
 
          BATCHES.increment();
       } catch (Throwable failure) {
-         if (p.epoch == EPOCH.get()) disable("GPU: " + failure);
+         // An interrupt (Distant Horizons stopping its threads as a world closes) leaves the batch's cells to the CPU only.
+         if (p.epoch == EPOCH.get() && !com.wgaccel.util.Interrupts.only(failure)) disable("GPU: " + failure);
       } finally {
          GPU_NANOS.add(System.nanoTime() - start);
       }

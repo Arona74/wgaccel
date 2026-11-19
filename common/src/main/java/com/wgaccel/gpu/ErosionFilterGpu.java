@@ -107,7 +107,11 @@ public final class ErosionFilterGpu {
                POOL.remove();
             }
 
-            disable(failure.toString());
+            if (!com.wgaccel.util.Interrupts.only(failure)) {
+               // An interrupt (Distant Horizons stopping its threads as a world closes) keeps the GPU filter on.
+               disable(failure.toString());
+            }
+
             original.run();
             return;
          }
@@ -244,6 +248,11 @@ public final class ErosionFilterGpu {
    }
 
    private static void disable(String why) {
+      if (Thread.currentThread().isInterrupted()) {
+         // The thread's owner stopping it (Distant Horizons as a world closes), not a GPU fault.
+         return;
+      }
+
       if (!disabled) {
          disabled = true;
          com.wgaccel.WgaChat.warnOff("WGA GPU erosion filter off, FreeTerraForged's own filter runs instead: {}", why);

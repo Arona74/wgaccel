@@ -772,14 +772,18 @@ public final class DensityCodegen {
          extern "C" __global__ void fillStates(const double* cells, const double* nd, const int* np, int chunkX, int chunkZ, int cellMinY, int cellCountY,
                                                int cellWidth, int cellHeight, const double* corners, int cornerStride, long long seedLo, long long seedHi,
                                                int veins, const int* grid, const int* loc, const int* status, const int* lava, int sea, int seaType,
-                                               int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel) {
+                                               int aquifer, unsigned char* codes, const double* columns, const int* beard, const float* beardKernel,
+                                               int stride) {
+             // stride (1, 2, 4, 8 or 16; the LOD columns): only every stride-th column in x and z, its codes packed as
+             // ((ly * n + lz / stride) * n + lx / stride) with n = 16 / stride. Stride 1 is the whole chunk, as before.
              int height = cellCountY * cellHeight;
+             int n = 16 / stride;
              int t = blockIdx.x * blockDim.x + threadIdx.x;
-             if (t >= 256 * height) return;
-             int ly = t / 256;
-             int rest = t - ly * 256;
-             int lz = rest / 16;
-             int lx = rest - lz * 16;
+             if (t >= n * n * height) return;
+             int ly = t / (n * n);
+             int rest = t - ly * n * n;
+             int lz = rest / n * stride;
+             int lx = (rest - rest / n * n) * stride;
              DCtx c;
              dc_chunk(c, cells, nd, np, chunkX, chunkZ, cellMinY, cellCountY, cellWidth, cellHeight, corners, cornerStride);
              c.columns = columns;

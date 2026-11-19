@@ -45,6 +45,14 @@ public final class WorldgenAccelerator {
       }
 
       GpuSelfTest.cacheDirectory = com.wgaccel.platform.Platform.get().gameDir().resolve("wgaccel-gpu-cache");
+      if (com.wgaccel.platform.Platform.get().isModLoaded("distanthorizons")) {
+         try {
+            com.wgaccel.gen.DhLodGenerator.hook();
+         } catch (Throwable failure) {
+            LOG.warn("WGA Distant Horizons found, but its API could not be used (the GPU LOD generator stays off)", failure);
+         }
+      }
+
       return true;
    }
 
