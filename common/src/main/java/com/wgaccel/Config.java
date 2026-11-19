@@ -38,6 +38,13 @@ public final class Config {
    public static final Setting<Boolean> FAST_DISK_COLUMNS;
    public static final Setting<Boolean> GPU_LITHOS_NOISE;
    public static final Setting<Boolean> DH_GENERATOR;
+   public static final Setting<Boolean> VOXY_GENERATOR;
+   public static final Setting<java.util.List<? extends String>> VOXY_RINGS;
+   public static final Setting<Integer> VOXY_THREADS;
+   public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
+   public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
+   public static final Setting<VoxyOverlayCorner> VOXY_OVERLAY_CORNER;
+   public static final Setting<Boolean> VOXY_OVERLAY_HIDE_WHEN_DONE;
    public static final Setting<Integer> DH_FAST_FROM;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> FAST_SURFACE_SEQUENCES;
@@ -112,6 +119,22 @@ public final class Config {
       CUDA,
       HIP,
       OPENCL
+   }
+
+   /** Where the Voxy LOD generator's progress shows (client). */
+   public enum VoxyProgressDisplay {
+      OFF,
+      OVERLAY,
+      F3,
+      BOTH
+   }
+
+   /** The screen corner of the Voxy LOD generator's progress panel. */
+   public enum VoxyOverlayCorner {
+      TOP_LEFT,
+      TOP_RIGHT,
+      BOTTOM_LEFT,
+      BOTTOM_RIGHT
    }
 
    /** How much the mod logs (LevelLogger). */
@@ -745,6 +768,41 @@ public final class Config {
             "with the game's own blocks, as \"x,z\" chunk coordinates (as the log's chunk [x, z]). Empty: none.")
          .defineListAllowEmpty("gpuFillDebugChunks", java.util.List.of(), () -> "0,0", value -> value instanceof String));
       builder.pop();
+      builder.pop();
+      builder.comment("Voxy LOD generator (with Voxy installed): Voxy's distant terrain made from the GPU columns instead of generated",
+         "chunks, in rings around the players, nearest first. Terrain only (ground, surface blocks, water, snow and ice): no trees,",
+         "structures or other features; the chunks players really generate replace it in Voxy. Chunks already generated (in the",
+         "world's region files) are never written over. Overworld only; needs the GPU noise fill. /wgaccel lod voxy runs it once",
+         "by hand.").push("voxy");
+      VOXY_GENERATOR = Setting.custom(builder
+         .comment("The automatic Voxy LOD generator on or off. Off by default (in development).")
+         .define("voxyGenerator", false));
+      VOXY_RINGS = Setting.custom(builder
+         .comment("The rings, nearest first, as \"radius:stride\": radius in chunks from the player, stride the blocks between the",
+            "columns worked out. Stride 1, 2, 4, 8 or 16: every chunk (1 = every column, full detail; above 1 it is no faster:",
+            "the cost is per chunk). Stride 32, 64, 128 or 256: one column every stride / 16 chunks, the heights between them",
+            "interpolated (FreeTerraForged's fast cells): about 10x faster at 64, blotchier blocks. Measured (FreeTerraForged",
+            "1.0.0033, RX 9070 XT, 8 threads): stride 1 ~1,000 chunks/s, stride 32 ~3,000, stride 64 ~9,000.",
+            "Default: full detail to 64 chunks (1,024 blocks), one column per 2 x 2 chunks to 192 chunks (3,072 blocks), then",
+            "one column per 4 x 4 chunks to 512 chunks (8,192 blocks): about 1 million chunks in 2 minutes.")
+         .defineListAllowEmpty("voxyRings", java.util.List.of("64:1", "192:32", "512:64"), () -> "512:64", value -> value instanceof String));
+      VOXY_THREADS = Setting.custom(builder
+         .comment("Threads the generator works on. 0: automatic (half the CPU's threads, at most 8).")
+         .defineInRange("voxyThreads", 0, 0, 64));
+      VOXY_PAUSE_ABOVE_MSPT = Setting.custom(builder
+         .comment("The generator waits while the server's average tick takes longer than this (milliseconds; 50 is a full tick), so",
+            "the game stays smooth while other work runs. 0: never waits.")
+         .defineInRange("voxyPauseAboveMspt", 40, 0, 1000));
+      VOXY_PROGRESS = Setting.custom(builder
+         .comment("Where the generator's progress shows in the game: OVERLAY a panel in a corner of the screen (rings, chunks/s, time",
+            "left), F3 lines in the debug screen, BOTH, or OFF. In the game only (on a dedicated server, the log).")
+         .defineEnum("voxyProgress", VoxyProgressDisplay.BOTH));
+      VOXY_OVERLAY_CORNER = Setting.custom(builder
+         .comment("The panel's corner: TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT or BOTTOM_RIGHT.")
+         .defineEnum("voxyOverlayCorner", VoxyOverlayCorner.TOP_LEFT));
+      VOXY_OVERLAY_HIDE_WHEN_DONE = Setting.custom(builder
+         .comment("Hide the panel 10 seconds after the rings are done (it comes back when there is work again, as the player moves).")
+         .define("voxyOverlayHideWhenDone", true));
       builder.pop();
       SPEC = builder.build();
       SPEC.onLoad(Setting::invalidate);

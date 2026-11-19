@@ -20,6 +20,8 @@
     "defaultRequire": 1
   },
   "client": [
-    "client.LevelLoadingScreenMixin"
+    "client.LevelLoadingScreenMixin",
+    "client.GuiVoxyMixin",
+    "client.DebugVoxyMixin"
   ]
 }

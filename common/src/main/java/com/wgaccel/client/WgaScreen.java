@@ -45,6 +45,7 @@ public final class WgaScreen extends CanvasScreen {
       CONFIG("Config"),
       GPU("GPU improvements"),
       CPU("CPU improvements"),
+      LODS("Voxy LODs"),
       ADVANCED("Advanced"),
       SYSTEM("System info"),
       /** Performance tests run from the screen: shown, not open yet. */
@@ -109,6 +110,7 @@ public final class WgaScreen extends CanvasScreen {
             "Off: the GPU is never used; the CPU improvements still apply.", Improvements.GPU);
          case CPU -> this.improvements(widgets, Config.CPU_IMPROVEMENTS, "All CPU improvements",
             "Off: none of the improvements below; the GPU ones still apply.", Improvements.CPU);
+         case LODS -> this.lods(widgets);
          case ADVANCED -> this.advanced(widgets);
          case SYSTEM -> this.system();
          case BENCHMARK -> this.text(Component.literal("Coming in a later version."), this.left(), 0, this.width - this.left() - 8, GREY);
@@ -137,11 +139,18 @@ public final class WgaScreen extends CanvasScreen {
          defaults.setTooltip(Tooltip.create(Component.literal("Every improvement of this tab back to the preset's value (Config: preset).")));
          this.addRenderableWidget(defaults);
          this.addRenderableWidget(Button.builder(Component.literal("Done"), pressed -> this.onClose()).bounds(this.width / 2 + 4, buttons, 150, 20).build());
-      } else if (this.tab == Tab.ADVANCED) {
+      } else if (this.tab == Tab.ADVANCED || this.tab == Tab.LODS) {
+         boolean lods = this.tab == Tab.LODS;
          Button defaults = Button.builder(Component.literal("Defaults"), pressed -> {
-            for (Advanced.Group group : Advanced.GROUPS) {
-               for (Advanced.Entry entry : group.entries()) {
-                  reset(entry.setting());
+            if (lods) {
+               for (Setting<?> setting : LOD_SETTINGS) {
+                  reset(setting);
+               }
+            } else {
+               for (Advanced.Group group : Advanced.GROUPS) {
+                  for (Advanced.Entry entry : group.entries()) {
+                     reset(entry.setting());
+                  }
                }
             }
 
@@ -270,6 +279,39 @@ public final class WgaScreen extends CanvasScreen {
             + " what still fills it (a pause of about a second each time).", y);
       y += this.setting(widgets, Config.GPU_TESTED_WARNING, "GPU chat line", "A chat line naming the GPU and the API in use when you join a world.", y);
       return this.debugInfoLevel(widgets, y + 8);
+   }
+
+   // The Voxy LODs tab.
+
+   /** The tab's settings (its Defaults button resets them). */
+   private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_THREADS, Config.VOXY_PAUSE_ABOVE_MSPT,
+      Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER, Config.VOXY_OVERLAY_HIDE_WHEN_DONE);
+
+   private int lods(List<Placed> widgets) {
+      int left = this.left();
+      int y = 0;
+      y += this.text(Component.literal("Voxy's distant terrain made on the GPU instead of generated chunks, in rings around you, nearest first: the ground,"
+         + " its surface blocks, water, snow and ice; no trees, structures or other features (the chunks you really generate replace it in Voxy)."
+         + " Chunks already generated are never written over. Overworld only."), left, y, this.width - left - 8, GREY) + 6;
+      if (!com.wgaccel.platform.Platform.get().isModLoaded("voxy")) {
+         y += this.text(Component.literal("Voxy is not installed: these settings do nothing until it is."), left, y, this.width - left - 8, YELLOW) + 6;
+      }
+
+      y += this.text(Component.literal("Generator").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+      y += this.setting(widgets, Config.VOXY_GENERATOR, "Voxy LOD generator", "Makes Voxy's distant terrain around you by itself, as you play.", y);
+      y += this.setting(widgets, Config.VOXY_RINGS, "Rings",
+         "Nearest first, as radius:stride (radius in chunks; stride the blocks between the columns worked out). 1 is full detail (about 1,000"
+            + " chunks/s on an RX 9070 XT); 32-256 is one column every stride/16 chunks, the heights between interpolated (32: about"
+            + " 3,000 chunks/s; 64: about 9,000, blotchier blocks). Default: 64:1; 192:32; 512:64.", y);
+      y += this.setting(widgets, Config.VOXY_THREADS, "Threads", "How many threads it works on. 0: half the CPU's threads, at most 8. Applies from the next world.", y);
+      y += this.setting(widgets, Config.VOXY_PAUSE_ABOVE_MSPT, "Pause above (ms a tick)",
+         "It waits while the server's average tick takes longer than this, so the game stays smooth. 0: never waits.", y);
+      y += 6;
+      y += this.text(Component.literal("Progress").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+      y += this.setting(widgets, Config.VOXY_PROGRESS, "Show progress", "OVERLAY: a panel in a corner of the screen; F3: lines in the debug screen; BOTH; OFF.", y);
+      y += this.setting(widgets, Config.VOXY_OVERLAY_CORNER, "Panel corner", "Which corner of the screen the panel sits in.", y);
+      y += this.setting(widgets, Config.VOXY_OVERLAY_HIDE_WHEN_DONE, "Hide when done", "The panel goes 10 seconds after the rings are done; it comes back when you move on.", y);
+      return y;
    }
 
    // The Advanced tab.

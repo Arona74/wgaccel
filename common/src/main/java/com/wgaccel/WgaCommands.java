@@ -53,6 +53,12 @@ public final class WgaCommands {
             .then(Commands.literal("voxy")
                .executes(context -> lodVoxy(context, 64, 4, 1, 0))
                .then(Commands.literal("stop").executes(context -> com.wgaccel.gen.VoxyLodGenerator.stop(reporter(context)) ? 1 : 0))
+               .then(Commands.literal("reset").executes(context -> {
+                  int count = com.wgaccel.gen.VoxyAuto.reset();
+                  reporter(context).accept(count < 0 ? "WGA Voxy LOD generator: the automatic generator is not running (Voxy not installed)"
+                     : "WGA Voxy LOD generator: " + count + " tiles done forgotten; the automatic generator makes them again");
+                  return count < 0 ? 0 : 1;
+               }))
                .then(Commands.argument("radius", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 4096))
                   .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), 4, 1, 0))
                   .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 32))
