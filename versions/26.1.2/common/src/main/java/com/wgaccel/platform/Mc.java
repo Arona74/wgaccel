@@ -188,6 +188,19 @@ public final class Mc {
       chunk.setBlockState(pos, state);
    }
 
+   /** Whether it snows at pos in the biome (seaLevel: the world's). */
+   public static boolean coldEnoughToSnow(Biome biome, BlockPos pos, int seaLevel) {
+      return biome.coldEnoughToSnow(pos, seaLevel);
+   }
+
+   /**
+    * The biome's temperature at pos, height adjusted (seaLevel: the world's). Biome.getTemperature is private; only
+    * FreeTerraForged's LOD snow erosion asks (FreeTerraForged is 1.21.1 only), so here only its side of 0.15 (snow).
+    */
+   public static float temperature(Biome biome, BlockPos pos, int seaLevel) {
+      return biome.coldEnoughToSnow(pos, seaLevel) ? 0.0F : 1.0F;
+   }
+
    /** Whether it snows at pos in the biome; context: the surface rules' context there (for its sea level). */
    public static boolean coldEnoughToSnow(Biome biome, BlockPos pos, Object context) {
       return biome.coldEnoughToSnow(pos, ((SurfaceRules.Context)context).getSeaLevel());

@@ -54,6 +54,11 @@ import net.minecraft.world.level.levelgen.RandomState;
 public final class DhLodGenerator implements IDhApiWorldGenerator {
    /** Chunks per GPU launch. */
    private static final int BATCH = 64;
+   /**
+    * The ground layers a surfaced column is written with (the surface's blocks, then the default block): what cliffs
+    * show. 32, as deep as FreeTerraForged's scree looks for rock under a steep slope.
+    */
+   private static final int GROUND_DEPTH = 32;
    /** Columns 2^12 = 4,096 blocks apart at most (DH asks for the far sections at that detail directly). */
    private static final byte LARGEST_DETAIL = 12;
    /** How long the first requests wait for the GPU fill's program (it is made while the world loads). */
@@ -86,6 +91,8 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
    /** Sections being made; close waits for them, so none uses the GPU fill after the world releases it. */
    private final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
    private final LongAdder fillInputNanos = new LongAdder();
+   private volatile com.wgaccel.ftf.FtfLodDecor decor;
+   private volatile boolean decorTried;
 
    /** The generator registered last (for /wgaccel lod dh). */
    private static volatile DhLodGenerator active;
@@ -222,7 +229,8 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       final List<ChunkPos> done = new ArrayList<>(BATCH);
       final List<FillGpu.Job> jobs = new ArrayList<>(BATCH);
       final List<byte[]> codes = new ArrayList<>(BATCH);
-      final List<DhApiTerrainDataPoint> points = new ArrayList<>(3);
+      final List<DhApiTerrainDataPoint> points = new ArrayList<>(8);
+      final BlockState[] layers = new BlockState[GROUND_DEPTH];
       final SurfaceGpu.Job[] surfaceJobs = new SurfaceGpu.Job[BATCH];
 
       Worker(GpuNoiseFill.StandIns standIns) {
@@ -341,6 +349,9 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       BlockState[] table = worker.standIns.table();
       this.riverWater(worker, surfaceProgram);
       short[][] outs = this.surfaces(worker, surfaceProgram);
+      // The feature step's ground (scree, snow, ice) left out while the bench runs: it checks the surface step's.
+      boolean features = !BENCH_RUNNING.get();
+      com.wgaccel.ftf.FtfLodDecor decor = surfaceProgram == null || !features ? null : this.decor();
       int at = 0;
       for (ChunkPos pos : worker.batch) {
          int baseX = (Mc.x(pos) - chunkMinX) / chunkStep * n;
@@ -349,19 +360,52 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
             LodColumns.Columns columns = LodColumns.reduce(pos, worker.jobs.get(at), worker.codes.get(at), table, worker.groundTest, worker.surfaceTest);
             short[] out = outs == null ? null : outs[at];
             SurfaceGpu.Job surfaceJob = out == null ? null : worker.surfaceJobs[at];
+            Object[] cells = out == null || decor == null ? null : decor.cells(worker.standIns.proto(at));
             at++;
             for (int i = 0; i < n; i++) {
                for (int j = 0; j < n; j++) {
                   int column = i * n + j;
-                  if (out != null) {
-                     // The surface's block at the column's ground and at its top (the same block without water).
-                     int t = (i * fillStride) * 16 + j * fillStride;
-                     columns.groundTop()[column] = surfaced(surfaceProgram, surfaceJob, out, columns.ground()[column], t, columns.groundTop()[column]);
-                     columns.top()[column] = surfaced(surfaceProgram, surfaceJob, out, columns.surface()[column], t, columns.top()[column]);
+                  int x = pos.getMinBlockX() + i * fillStride;
+                  int z = pos.getMinBlockZ() + j * fillStride;
+                  int ground = columns.ground()[column];
+                  int surface = columns.surface()[column];
+                  if (out == null) {
+                     this.column(source, baseX + i, baseZ + j, x, z, ground, surface, columns.top()[column], columns.groundTop()[column], worker.points);
+                     continue;
                   }
 
-                  this.column(source, baseX + i, baseZ + j, pos.getMinBlockX() + i * fillStride, pos.getMinBlockZ() + j * fillStride, columns.ground()[column],
-                     columns.surface()[column], columns.top()[column], columns.groundTop()[column], worker.points);
+                  // The surface's blocks down from the column's ground (its layers, which cliffs show), and the block
+                  // at its top (the same block without water).
+                  int t = (i * fillStride) * 16 + j * fillStride;
+                  BlockState[] layers = worker.layers;
+                  BlockState fallback = columns.groundTop()[column];
+                  for (int k = 0; k < GROUND_DEPTH; k++) {
+                     BlockState state = ground == LodColumns.NONE ? surfaceProgram.defaultBlock()
+                        : surfaced(surfaceProgram, surfaceJob, out, ground - k, t, k == 0 ? fallback : surfaceProgram.defaultBlock());
+                     layers[k] = state.isAir() || !state.getFluidState().isEmpty() ? surfaceProgram.defaultBlock() : state;
+                  }
+
+                  BlockState top = surfaced(surfaceProgram, surfaceJob, out, surface, t, columns.top()[column]);
+                  Holder<Biome> biome = this.biomeAt(x, surface == LodColumns.NONE ? this.minY : surface, z);
+                  Object cell = cells == null ? null : cells[(j * fillStride) * 16 + i * fillStride];
+                  boolean dry = ground != LodColumns.NONE && surface == ground;
+                  if (dry && cell != null) {
+                     decor.scree(cell, x, z, ground, biome, layers, surfaceProgram.defaultBlock());
+                  }
+
+                  // The top layer's snow and ice (vanilla's freeze_top_layer; FreeTerraForged's snow decorator takes the
+                  // snow off steep cold ground).
+                  int seaLevel = this.level.getChunkSource().getGenerator().getSeaLevel();
+                  boolean snow = false;
+                  boolean ice = false;
+                  if (dry && features) {
+                     snow = ground + 1 < this.minY + this.height && Mc.coldEnoughToSnow(biome.value(), new net.minecraft.core.BlockPos(x, ground + 1, z), seaLevel)
+                        && holdsSnow(layers[0]) && (cell == null || !decor.snowEroded(cell, x, z, ground, biome));
+                  } else if (features && surface != LodColumns.NONE && top.is(Blocks.WATER)) {
+                     ice = Mc.coldEnoughToSnow(biome.value(), new net.minecraft.core.BlockPos(x, surface, z), seaLevel);
+                  }
+
+                  this.column(source, baseX + i, baseZ + j, ground, surface, top, layers, surfaceProgram.defaultBlock(), snow, ice, biome, worker.points);
                }
             }
          } else {
@@ -520,15 +564,116 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       this.columns.increment();
    }
 
+   /**
+    * A surfaced column: air above, snow (one block) on dry ground or ice (one block) over water when cold, the fluid
+    * between the ground and the surface, the ground's layers (layers[k]: k below the ground) as runs, then the
+    * generator's default block down to the bottom.
+    */
+   private void column(IDhApiFullDataSource source, int relX, int relZ, int ground, int surface, BlockState top, BlockState[] layers, BlockState below,
+         boolean snow, boolean ice, Holder<Biome> holder, List<DhApiTerrainDataPoint> points) {
+      int groundRel = ground == LodColumns.NONE ? 0 : Math.max(0, Math.min(this.height, ground + 1 - this.minY));
+      int surfaceRel = surface == LodColumns.NONE ? groundRel : Math.max(groundRel, Math.min(this.height, surface + 1 - this.minY));
+      long start = System.nanoTime();
+      IDhApiBiomeWrapper biome = this.biomes.computeIfAbsent(holder, b -> DhApi.Delayed.wrapperFactory.getBiomeWrapper(new Object[]{b}, this.wrapper));
+      this.biomeNanos.add(System.nanoTime() - start);
+      points.clear();
+      int snowTop = snow && surfaceRel < this.height ? surfaceRel + 1 : surfaceRel;
+      if (snowTop < this.height) {
+         points.add(DhApiTerrainDataPoint.create((byte)0, 0, 15, snowTop, this.height, this.air, biome));
+      }
+
+      if (snowTop > surfaceRel) {
+         points.add(DhApiTerrainDataPoint.create((byte)0, 0, 15, surfaceRel, snowTop, this.block(SNOW), biome));
+      }
+
+      if (groundRel < surfaceRel) {
+         int iceFrom = ice ? surfaceRel - 1 : surfaceRel;
+         if (iceFrom < surfaceRel) {
+            points.add(DhApiTerrainDataPoint.create((byte)0, 0, 15, iceFrom, surfaceRel, this.block(Blocks.ICE.defaultBlockState()), biome));
+         }
+
+         if (groundRel < iceFrom) {
+            points.add(DhApiTerrainDataPoint.create((byte)0, 0, 15, groundRel, iceFrom, this.block(top), biome));
+         }
+      }
+
+      if (groundRel > 0) {
+         // DH keeps, for each run of blocks, the light of the block above its top (LodDataBuilder.createFromChunk): the
+         // sky's 15 in the open, one less per block of water above (water dims sky light by one). With 0 the ground
+         // drew unlit, the whole LOD dark. The runs below get the same (their faces show where cliffs open them).
+         int skyLight = Math.max(0, 15 - (surfaceRel - groundRel));
+         // Runs of equal blocks: layers[k] at groundRel - 1 - k, the default block under the last layer.
+         int to = groundRel;
+         int k = 0;
+         while (to > 0) {
+            BlockState state = k < layers.length ? layers[k] : below;
+            int from = to - 1;
+            k++;
+            while (from > 0) {
+               if (k >= layers.length) {
+                  if (state == below) {
+                     from = 0;
+                  }
+
+                  break;
+               }
+
+               if (layers[k] != state) {
+                  break;
+               }
+
+               from--;
+               k++;
+            }
+
+            if (k > layers.length) {
+               from = 0;
+            }
+
+            points.add(DhApiTerrainDataPoint.create((byte)0, 0, skyLight, from, to, this.block(state), biome));
+            to = from;
+         }
+      }
+
+      source.setApiDataPointColumn(relX, relZ, points);
+      this.columns.increment();
+   }
+
+   private static final BlockState SNOW = Blocks.SNOW.defaultBlockState();
+
+   /** Whether a snow layer stays on the block (SnowLayerBlock.canSurvive, without the world: not on ice or barriers). */
+   private static boolean holdsSnow(BlockState state) {
+      return !state.is(Blocks.ICE) && !state.is(Blocks.PACKED_ICE) && !state.is(Blocks.BARRIER) && !state.isAir() && state.getFluidState().isEmpty()
+         && (state.is(Blocks.HONEY_BLOCK) || state.is(Blocks.SOUL_SAND) || state.canOcclude());
+   }
+
+   /** The FreeTerraForged feature-step ground for the LOD columns (scree, snow erosion), or null; made once. */
+   private com.wgaccel.ftf.FtfLodDecor decor() {
+      if (!this.decorTried) {
+         synchronized (this) {
+            if (!this.decorTried) {
+               this.decor = com.wgaccel.ftf.FtfLodDecor.of(this.level, this.level.getChunkSource().randomState());
+               this.decorTried = true;
+            }
+         }
+      }
+
+      return this.decor;
+   }
+
    private IDhApiBlockStateWrapper block(BlockState state) {
       return this.blocks.computeIfAbsent(state, s -> DhApi.Delayed.wrapperFactory.getBlockStateWrapper(new Object[]{s}, this.wrapper));
    }
 
    /** The noise biome at the column's top (the biome source's, as the biome step would choose it). */
    private IDhApiBiomeWrapper biome(int x, int y, int z) {
-      Holder<Biome> biome = this.level.getChunkSource().getGenerator().getBiomeSource()
-         .getNoiseBiome(QuartPos.fromBlock(x), QuartPos.fromBlock(y), QuartPos.fromBlock(z), this.level.getChunkSource().randomState().sampler());
+      Holder<Biome> biome = this.biomeAt(x, y, z);
       return this.biomes.computeIfAbsent(biome, b -> DhApi.Delayed.wrapperFactory.getBiomeWrapper(new Object[]{b}, this.wrapper));
+   }
+
+   private Holder<Biome> biomeAt(int x, int y, int z) {
+      return this.level.getChunkSource().getGenerator().getBiomeSource()
+         .getNoiseBiome(QuartPos.fromBlock(x), QuartPos.fromBlock(y), QuartPos.fromBlock(z), this.level.getChunkSource().randomState().sampler());
    }
 
    private void report() {
@@ -543,11 +688,11 @@ public final class DhLodGenerator implements IDhApiWorldGenerator {
       }
 
       WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, String.format(Locale.ROOT,
-         "WGA Distant Horizons generator: %,d sections (by detail %s), %,d columns (%,d from the CPU); per section on its thread %.1f ms (fill inputs %.1f ms, fill GPU %.1f ms, surface inputs %.1f ms, surface GPU %.1f ms, biomes %.1f ms); chunks with their surface %,d, without %,d",
+         "WGA Distant Horizons generator: %,d sections (by detail %s), %,d columns (%,d from the CPU); per section on its thread %.1f ms (fill inputs %.1f ms, fill GPU %.1f ms, surface inputs %.1f ms, surface GPU %.1f ms, biomes %.1f ms); chunks with their surface %,d, without %,d; FreeTerraForged scree on %,d dry columns, %,d changed",
          this.sections.sum(), details, this.columns.sum(), this.cpuColumns.sum(), this.sectionNanos.sum() / 1.0e6 / count, this.fillInputNanos.sum() / 1.0e6 / count,
          this.fillNanos.sum() / 1.0e6 / count,
          this.surfaceInputNanos.sum() / 1.0e6 / count, this.surfaceGpuNanos.sum() / 1.0e6 / count, this.biomeNanos.sum() / 1.0e6 / count, this.surfacedChunks.sum(),
-         this.bareChunks.sum()));
+         this.bareChunks.sum(), this.decor == null ? 0L : com.wgaccel.ftf.FtfLodDecor.COLUMNS.sum(), this.decor == null ? 0L : com.wgaccel.ftf.FtfLodDecor.CHANGED.sum()));
    }
 
    /**

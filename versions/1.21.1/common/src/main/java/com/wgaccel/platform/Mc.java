@@ -179,6 +179,34 @@ public final class Mc {
       chunk.setBlockState(pos, state, false);
    }
 
+   /** Whether it snows at pos in the biome (seaLevel: the world's, which 26.1.2 asks for). */
+   public static boolean coldEnoughToSnow(Biome biome, BlockPos pos, int seaLevel) {
+      return biome.coldEnoughToSnow(pos);
+   }
+
+   /** The biome's temperature at pos, height adjusted (seaLevel: the world's, which 26.1.2 asks for). */
+   public static float temperature(Biome biome, BlockPos pos, int seaLevel) {
+      try {
+         return (Float)Temperature.METHOD.invoke(biome, pos);
+      } catch (ReflectiveOperationException failure) {
+         throw new IllegalStateException(failure);
+      }
+   }
+
+   /** Biome.getTemperature(BlockPos), private in 1.21.1 (public with the sea level in 26.1.2). */
+   private static final class Temperature {
+      static final java.lang.reflect.Method METHOD;
+
+      static {
+         try {
+            METHOD = Names.declaredMethod(Biome.class, "getTemperature", BlockPos.class);
+            METHOD.setAccessible(true);
+         } catch (NoSuchMethodException failure) {
+            throw new ExceptionInInitializerError(failure);
+         }
+      }
+   }
+
    /** Whether it snows at pos in the biome; context: the surface rules' context there (for its sea level). */
    public static boolean coldEnoughToSnow(Biome biome, BlockPos pos, Object context) {
       return biome.coldEnoughToSnow(pos);
