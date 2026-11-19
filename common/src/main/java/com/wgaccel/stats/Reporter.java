@@ -58,6 +58,7 @@ public final class Reporter {
    }
 
    public static synchronized void start() {
+      ChunkIo.reset();
       stopScheduler();
       reset("the world opened");
       scheduler = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -70,7 +71,9 @@ public final class Reporter {
 
    public static synchronized void stop() {
       tick();
-      summary().forEach(WorldgenAccelerator.LOG::info);
+      // ALWAYS: the logger keeps a line's text up to its first digit once, so a second world's summary in the same
+      // game was left out.
+      summary().forEach(line -> WorldgenAccelerator.LOG.info(com.wgaccel.LevelLogger.ALWAYS, line));
       stopScheduler();
    }
 
@@ -82,6 +85,7 @@ public final class Reporter {
       runBaseNamed = Named.snapshot();
       runLabel = label;
       Stats.resetRun();
+      ChunkIo.reset();
       runThreads.clear();
       runCpu = 0L;
       runActiveSeconds = 0.0;
@@ -366,6 +370,11 @@ public final class Reporter {
                ? String.format(Locale.ROOT, "%s %.2f ms x %,d", stage.label, s.avgMillis(stage), s.calls(stage))
                : String.format(Locale.ROOT, "%s %.2f ms x %,d (slowest %.1f)", stage.label, s.avgMillis(stage), s.calls(stage), slowest.get(stage) / 1.0e6));
          }
+      }
+
+      String io = ChunkIo.summary();
+      if (!io.isEmpty()) {
+         parts.add(io);
       }
 
       return parts.isEmpty() ? "none" : String.join(", ", parts);
