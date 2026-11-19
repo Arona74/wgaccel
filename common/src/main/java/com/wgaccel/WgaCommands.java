@@ -49,7 +49,47 @@ public final class WgaCommands {
                      .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "sections"), 4))
                      .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 16))
                         .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "sections"),
-                           com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads")))))))));
+                           com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads")))))))
+            .then(Commands.literal("voxy")
+               .executes(context -> lodVoxy(context, 64, 4, 1, 0))
+               .then(Commands.literal("stop").executes(context -> com.wgaccel.gen.VoxyLodGenerator.stop(reporter(context)) ? 1 : 0))
+               .then(Commands.argument("radius", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 4096))
+                  .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), 4, 1, 0))
+                  .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 32))
+                     .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"), 1, 0))
+                     .then(Commands.argument("stride", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 256))
+                        .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"),
+                           com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "stride"), 0))
+                        .then(Commands.argument("from", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4096))
+                           .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"),
+                              com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "stride"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "from"))))))))));
+   }
+
+   /** Report lines to the log (ALWAYS: they share their text up to the first digit) and to the caller. */
+   private static java.util.function.Consumer<String> reporter(CommandContext<CommandSourceStack> context) {
+      CommandSourceStack source = context.getSource();
+      return line -> {
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, line);
+         source.getServer().execute(() -> source.sendSuccess(() -> Component.literal(line), false));
+      };
+   }
+
+   /**
+    * {@code /wgaccel lod voxy [radius] [threads] [stride] [from]}: Voxy's LODs of the square of chunks around the caller
+    * (radius in chunks; with from, a ring: chunks nearer than from left out) made from the GPU columns ({@link
+    * com.wgaccel.gen.VoxyLodGenerator}), one column every stride blocks (1-16; 32, 64, 128 or 256: one column every
+    * stride / 16 chunks, the heights between interpolated); {@code /wgaccel lod voxy stop} stops it. With Voxy installed.
+    */
+   private static int lodVoxy(CommandContext<CommandSourceStack> context, int radius, int threads, int stride, int from) {
+      CommandSourceStack source = context.getSource();
+      java.util.function.Consumer<String> report = reporter(context);
+      if (Integer.bitCount(stride) != 1) {
+         report.accept("WGA Voxy LOD generator: the stride is a power of two: 1 to 16, or 32 to 256 (one column every stride / 16 chunks)");
+         return 0;
+      }
+
+      return com.wgaccel.gen.VoxyLodGenerator.start(source.getLevel(), net.minecraft.util.Mth.floor(source.getPosition().x) >> 4,
+         net.minecraft.util.Mth.floor(source.getPosition().z) >> 4, radius, from, threads, stride, report) ? 1 : 0;
    }
 
    /**

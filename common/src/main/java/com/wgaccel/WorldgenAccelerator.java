@@ -167,6 +167,10 @@ public final class WorldgenAccelerator {
    /** A line for each player joining a world: the GPU and the API (compiler) the GPU parts use. Config gpuTestedWarning. */
    public static void onPlayerLoggedIn(Player player) {
       VersionSupport.warnPlayer(player);
+      if (player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
+         com.wgaccel.gen.VoxyLodGenerator.onPlayerLoggedIn(serverPlayer);
+      }
+
       if (!Config.GPU_TESTED_WARNING.get() || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
          return;
       }
