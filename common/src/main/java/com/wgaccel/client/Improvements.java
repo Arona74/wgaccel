@@ -101,6 +101,8 @@ final class Improvements {
          "Sculk veins spreading over all their faces (the deep dark's sculk patches) with plain loops instead of streams: the same world.", null),
       new Improvement(Config.FAST_CLIMATE_COLUMNS, "Fast climate columns",
          "A chunk's temperature and humidity worked out once per column instead of at every height, where they cannot change.", null),
+      new Improvement(Config.FAST_LITHOSTITCHED_CRITERIA, "Fast Lithostitched criteria",
+         "FreeTerraForged with Lithostitched biome injections: their density functions worked out once per point, and once per column where they cannot change with height.", null),
       new Improvement(Config.FAST_SURFACE_LEVELS, "Fast surface levels",
          "Minecraft 26.1.2: the terrain's rough height, which aquifers ask for around each chunk, worked out once per column instead of by every chunk around it.", null),
       new Improvement(Config.FAST_REGION_CHUNKS, "Fast region chunks",

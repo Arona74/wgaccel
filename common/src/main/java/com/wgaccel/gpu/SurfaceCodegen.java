@@ -981,6 +981,14 @@ public final class SurfaceCodegen {
             body = line("int i = (int)sf_round(%s, (double)c.x, 0.0, (double)c.z) * 4.0);", noise) + line("int h = (int)((unsigned int)c.y + (unsigned int)i);")
                + hash + line("return strata%d[((h %% %d) + %d) %% %d];", id, entries.size(), entries.size(), entries.size());
          }
+         case "BandsRuleSource" -> body = this.bwgBands(node);
+         // Oh The Biomes We've Gone's BetweenRepeatingNoiseRange: it keeps the vanilla rule it stands for (a sequence of
+         // noise-threshold tests, one per repetition) and answers with it.
+         case "BetweenRepeatingNoiseRange" -> {
+            bwgOnly(node, kind);
+            body = line("return %s(c);", this.rule(field(node, "rule")));
+         }
+         case "WeightedRuleSource" -> body = this.bwgWeighted(node, kind);
          default -> throw new DensityCodegen.Unsupported("surface rule " + described(node, kind));
       }
 
@@ -988,6 +996,131 @@ public final class SurfaceCodegen {
       this.code.append("__device__ __noinline__ int ").append(name).append("(const SCtx& c) {\n").append(body).append("}\n");
       this.rules.put(node, name);
       return name;
+   }
+
+   /**
+    * Oh The Biomes We've Gone's bands (biomeswevegone:bands): a band table indexed by y plus the surface secondary noise
+    * at (x * frequency, 0, z * frequency) times its scale, rounded, modulo the table's period. The table is the world's
+    * (made from the seed by the mod): read here by asking the mod's own SurfaceSystem.getBandsState down a column at
+    * x = z = 0, the period found from the answers, so nothing of the mod's code is copied. Checked by the sampled
+    * surface checks like every other rule.
+    */
+   private String bwgBands(Object node) throws ReflectiveOperationException {
+      if (!node.getClass().getName().startsWith("net.potionstudios.biomeswevegone.")) {
+         throw new DensityCodegen.Unsupported("surface rule " + described(node, "BandsRuleSource"));
+      }
+
+      Object bandStates = field(node, "bandStates");
+      Object size = field(node, "bandSizeProvider");
+      Object count = field(node, "bandsCountProvider");
+      float frequency = (Float)field(node, "frequency");
+      int scale = (Integer)field(node, "noiseScale");
+      java.lang.reflect.Method ask = null;
+      for (java.lang.reflect.Method method : this.system.getClass().getMethods()) {
+         if (method.getName().equals("getBandsState") && method.getParameterCount() == 9) {
+            ask = method;
+         }
+      }
+
+      if (ask == null) {
+         throw new DensityCodegen.Unsupported("surface rule BandsRuleSource: the surface system has no getBandsState");
+      }
+
+      NormalNoise noise = (NormalNoise)field(this.system, "surfaceSecondaryNoise");
+      // y + round(noise(0, 0) * scale) at the column x = z = 0: the answers there, shifted by that offset, are the table.
+      long offset = Math.round(noise.getValue(0.0f * frequency, 0.0, 0.0f * frequency) * scale);
+      // The longest table looked for (bands count x band size at most: 40 x 5 in the mod's own rules); a longer one is
+      // reported as having no period and the GPU surface stays off.
+      int most = 2048;
+      int samples = 2 * most + 2;
+      int[] answers = new int[samples];
+      for (int k = 0; k < samples; k++) {
+         BlockState state = (BlockState)ask.invoke(this.system, node, bandStates, size, count, 0, (int)(k - offset), 0, frequency, scale);
+         answers[k] = this.state(state);
+      }
+
+      int period = -1;
+      for (int p = 1; p <= most + 1 && period < 0; p++) {
+         boolean repeats = true;
+         for (int k = 0; k + p < samples && repeats; k++) {
+            repeats = answers[k] == answers[k + p];
+         }
+
+         if (repeats) {
+            period = p;
+         }
+      }
+
+      if (period < 0) {
+         throw new DensityCodegen.Unsupported("surface rule BandsRuleSource: no period in " + samples + " answers");
+      }
+
+      int at = this.noises.intData(java.util.Arrays.copyOf(answers, period));
+      String freq = Float.toString(frequency) + "f";
+      return line("double d = %s, (double)((float)c.x * %s), 0.0, (double)((float)c.z * %s)) * %d.0;", this.noises.normalNoise(noise), freq, freq, scale)
+         + line("int k = (int)(((long long)c.y + (long long)sf_round(d)) %% %d);", period)
+         + line("return c.np[%d + (k < 0 ? k + %d : k)];", at, period);
+   }
+
+   private static void bwgOnly(Object node, String kind) {
+      if (!node.getClass().getName().startsWith("net.potionstudios.biomeswevegone.")) {
+         throw new DensityCodegen.Unsupported("surface rule " + described(node, kind));
+      }
+   }
+
+   /**
+    * Oh The Biomes We've Gone's WeightedRuleSource: a rule picked from its weighted list for each block column's
+    * (x & 15, z & 15), with the surface system's noise random at (x & 15, 0, z & 15): the same 16 x 16 picks in every
+    * chunk of a world. Picked here with the list's own getRandomValue; the picks are the world's (its seed), so they go
+    * in the data, not the code.
+    */
+   private String bwgWeighted(Object node, String kind) throws ReflectiveOperationException {
+      bwgOnly(node, kind);
+      Object list = field(node, "ruleSources");
+      java.lang.reflect.Method pick = null;
+      for (java.lang.reflect.Method method : list.getClass().getMethods()) {
+         if (method.getName().equals("getRandomValue") && method.getParameterCount() == 1) {
+            pick = method;
+         }
+      }
+
+      if (pick == null) {
+         throw new DensityCodegen.Unsupported("surface rule WeightedRuleSource: its list has no getRandomValue");
+      }
+
+      net.minecraft.world.level.levelgen.PositionalRandomFactory random = (net.minecraft.world.level.levelgen.PositionalRandomFactory)field(this.system,
+         "noiseRandom");
+      List<Object> children = new java.util.ArrayList<>();
+      int[] picks = new int[256];
+      for (int x = 0; x < 16; x++) {
+         for (int z = 0; z < 16; z++) {
+            Object chosen = ((java.util.Optional<?>)pick.invoke(list, random.at(x, 0, z))).orElse(null);
+            if (chosen == null) {
+               throw new DensityCodegen.Unsupported("surface rule WeightedRuleSource: an empty list");
+            }
+
+            int index = -1;
+            for (int i = 0; i < children.size() && index < 0; i++) {
+               if (children.get(i) == chosen) {
+                  index = i;
+               }
+            }
+
+            if (index < 0) {
+               index = children.size();
+               children.add(chosen);
+            }
+
+            picks[x * 16 + z] = index;
+         }
+      }
+
+      StringBuilder text = new StringBuilder(line("int w = c.np[%d + (((c.x & 15) << 4) | (c.z & 15))];", this.noises.intData(picks)));
+      for (int i = 0; i < children.size(); i++) {
+         text.append(line("if (w == %d) return %s(c);", i, this.rule(children.get(i))));
+      }
+
+      return text + line("return -1;");
    }
 
    /** SurfaceSystem.getBand with FreeTerraForged's safe y (Math.floorMod(y, 192) + 3840) and the clay band table. */

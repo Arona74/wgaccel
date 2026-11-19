@@ -31,6 +31,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_SURFACE_LEVELS;
    public static final Setting<Boolean> FAST_CLIMATE_SEARCH;
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
+   public static final Setting<Boolean> FAST_LITHOSTITCHED_CRITERIA;
    public static final Setting<Boolean> FAST_CHUNK_PACK;
    public static final Setting<Boolean> FAST_MULTIFACE_SPREAD;
    public static final Setting<Boolean> FAST_SCULK_MOVES;
@@ -339,6 +340,12 @@ public final class Config {
             "are worked out once per column when the world's density functions prove they depend on x and z only (vanilla's do: 4% of",
             "the CPU in vanilla 26.1.2). Every 64th kept value is compared with the function's own.")
          .define("fastClimateColumns", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_LITHOSTITCHED_CRITERIA = Setting.of(builder
+         .comment("FreeTerraForged with Lithostitched biome injections (Regions Unexplored and others): every injection rule with density",
+            "criteria works its density function out at each biome cell it is asked about (9.4% of the CPU with Regions Unexplored and",
+            "Oh The Biomes We've Gone). Values are kept per point, and per column for functions proven to depend on x and z only;",
+            "every 256th value kept per column is compared with the function's own.")
+         .define("fastLithostitchedCriteria", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_CHUNK_PACK = Setting.of(builder
          .comment("Minecraft 26.1.2: saving a chunk numbers each section's blocks anew for its palette; each old number is now asked once",
             "instead of at every change along the section (pack was 3.3% of the CPU in vanilla 26.1.2). The same palette and numbers;",

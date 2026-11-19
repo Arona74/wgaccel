@@ -209,6 +209,7 @@ public final class SurfaceCheck {
          String source = codegen.loopSource(inputs.code, net.minecraft.world.level.dimension.DimensionType.WAY_BELOW_MIN_Y,
             id(biomes, net.minecraft.world.level.biome.Biomes.ERODED_BADLANDS), id(biomes, net.minecraft.world.level.biome.Biomes.FROZEN_OCEAN),
             id(biomes, net.minecraft.world.level.biome.Biomes.DEEP_FROZEN_OCEAN));
+         source = com.wgaccel.gen.GpuSurface.specialBiomes(source, biomes, true, false);
          try {
             Files.writeString(Platform.logs().resolve("wgaccel-surface-loop.cu"), source, StandardCharsets.UTF_8);
          } catch (Exception ignored) {

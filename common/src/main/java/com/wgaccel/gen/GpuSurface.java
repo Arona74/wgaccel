@@ -313,30 +313,9 @@ public final class GpuSurface {
          id(biomes, Biomes.DEEP_FROZEN_OCEAN), defaultBlockCode, skipDefaultCode);
       if (nsPillars != null) {
          WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's 5 pillar biomes accelerated on the GPU (kind=6 defaultBlockCode={})", defaultBlockCode);
-      } else {
-         // Other mods' columns made before the rules, as vanilla's eroded badlands pillars and icebergs (special: the chunk's
-         // surface on the CPU): Nature's Spirit 2.3.1's SurfaceBuilderMixin builds stone pillars from its noises in these
-         // biomes at the eroded badlands check, so the stone above every block below changes (FreeTerraForged's strata
-         // came out another stone: 5 of 240 checked chunks, 24 Oct 2026).
-         StringBuilder extra = new StringBuilder();
-         for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
-            int id = id(biomes, Mc.key(Registries.BIOME, "natures_spirit", name));
-            if (id >= 0) {
-               extra.append(" || columnBiome == ").append(id);
-            }
-         }
-
-         if (!extra.isEmpty()) {
-            String before = source;
-            source = source.replace("|| columnBiome < 0 ? 1 : 0", "|| columnBiome < 0" + extra + " ? 1 : 0");
-            if (source.equals(before)) {
-               throw new IllegalStateException("the special columns' test was not found in the surface source");
-            }
-
-            WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's pillar biomes ({}) get their surface on the CPU",
-               extra.toString().split("==").length - 1);
-         }
       }
+
+      source = specialBiomes(source, biomes, nsPillars == null, true);
       try {
          Files.writeString(Platform.logs().resolve("wgaccel-surface.cu"), source, StandardCharsets.UTF_8);
       } catch (Exception ignored) {
@@ -361,6 +340,57 @@ public final class GpuSurface {
       int batch = Config.GPU_SURFACE_BATCH_CHUNKS.get();
       com.wgaccel.gpu.SurfaceBatcher batcher = batch > 0 ? new com.wgaccel.gpu.SurfaceBatcher(gpu, batch, Config.GPU_SURFACE_BATCH_THREADS.get(), 150L) : null;
       return new Program(random, system, rules, unoptimized, biomes, zoomSeed, defaultBlock, table, fluid, gpu, batcher, nsPillars);
+   }
+
+   /**
+    * Other mods' columns made before the rules, as vanilla's eroded badlands pillars and icebergs, marked special (the
+    * chunk's surface on the CPU) in the surface source's special-columns test:
+    * - Nature's Spirit 2.3.1's SurfaceBuilderMixin builds stone pillars from its noises in five biomes at the eroded
+    *   badlands check, so the stone above every block below changes (FreeTerraForged's strata came out another stone: 5
+    *   of 240 checked chunks, 24 Oct 2026); not when its pillars are made on the GPU (natures);
+    * - Oh The Biomes We've Gone 2.6's SurfaceSystemMixin runs vanilla's eroded badlands extension (pillars) in its
+    *   shattered glacier and eroded borealis.
+    */
+   public static String specialBiomes(String source, Registry<Biome> biomes, boolean natures, boolean log) {
+      StringBuilder extra = new StringBuilder();
+      int naturesCount = 0;
+      if (natures) {
+         for (String name : List.of("sugi_forest", "blooming_sugi_forest", "stratified_desert", "lively_dunes", "blooming_dunes")) {
+            int id = id(biomes, Mc.key(Registries.BIOME, "natures_spirit", name));
+            if (id >= 0) {
+               extra.append(" || columnBiome == ").append(id);
+               naturesCount++;
+            }
+         }
+      }
+
+      int bwgCount = 0;
+      for (String name : List.of("shattered_glacier", "eroded_borealis")) {
+         int id = id(biomes, Mc.key(Registries.BIOME, "biomeswevegone", name));
+         if (id >= 0) {
+            extra.append(" || columnBiome == ").append(id);
+            bwgCount++;
+         }
+      }
+
+      if (extra.isEmpty()) {
+         return source;
+      }
+
+      String changed = source.replace("|| columnBiome < 0 ? 1 : 0", "|| columnBiome < 0" + extra + " ? 1 : 0");
+      if (changed.equals(source)) {
+         throw new IllegalStateException("the special columns' test was not found in the surface source");
+      }
+
+      if (log && naturesCount > 0) {
+         WorldgenAccelerator.LOG.info("WGA GPU surface: Nature's Spirit's pillar biomes ({}) get their surface on the CPU", naturesCount);
+      }
+
+      if (log && bwgCount > 0) {
+         WorldgenAccelerator.LOG.info("WGA GPU surface: Oh The Biomes We've Gone's pillar biomes ({}) get their surface on the CPU", bwgCount);
+      }
+
+      return changed;
    }
 
    private static int id(Registry<Biome> biomes, net.minecraft.resources.ResourceKey<Biome> key) {

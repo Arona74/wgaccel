@@ -1266,10 +1266,100 @@ public final class DensityCodegen {
          case "MulOrAdd", "Mapped", "Clamp" -> heightFree(f.get("input"), known);
          case "RangeChoice" -> heightFree(f.get("input"), known) && heightFree(f.get("whenInRange"), known) && heightFree(f.get("whenOutOfRange"), known);
          case "Marker" -> !((Enum<?>)f.get("type")).name().equals("Interpolated") && heightFree(f.get("wrapped"), known);
+         // Lithostitched's shift (MIT): its input asked at (x + shiftX, y + shiftY, z + shiftZ); y's shift does not matter
+         // when the input does not depend on y.
+         case "ShiftDensityFunction" -> actual.getClass().getName().startsWith("dev.worldgen.lithostitched.") && heightFree(f.get("input"), known)
+            && heightFree(f.get("shiftX"), known) && heightFree(f.get("shiftZ"), known);
+         // Lithostitched's cellular noise: a 2D grid (vertical size 0) samples its cells by x and z only (sample2D(x, z)).
+         case "CellularDensityFunction" -> actual.getClass().getName().startsWith("dev.worldgen.lithostitched.")
+            && (Integer)fields(f.get("gridDimensions")).get("vertical") == 0;
+         // Lithostitched's fast noise: asked at y * yScale + shiftY; with yScale 0 that is shiftY's value (+0.0 added to
+         // -0.0 below 0 gives +0.0).
+         case "FastNoiseDensityFunction" -> actual.getClass().getName().startsWith("dev.worldgen.lithostitched.") && (Double)f.get("yScale") == 0.0
+            && heightFree(f.get("shiftX"), known) && heightFree(f.get("shiftY"), known) && heightFree(f.get("shiftZ"), known);
          default -> false;
       };
       known.put(actual, result);
       return result;
+   }
+
+   /**
+    * For a function whose only use of y is range_choice tests on a y gradient (YClampedGradient), every other part
+    * depending on x and z only: those tests as {fromY, toY, fromValue, toValue, minInclusive, maxExclusive}, so its value
+    * is the same for blocks of a column that pass the same tests. Empty for a function of x and z only; null otherwise.
+    */
+   public static List<double[]> yTests(Object node) {
+      try {
+         List<double[]> tests = new java.util.ArrayList<>();
+         return yTests(node, tests, new java.util.IdentityHashMap<>()) ? tests : null;
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return null;
+      }
+   }
+
+   private static boolean yTests(Object node, List<double[]> tests, Map<Object, Boolean> known) throws ReflectiveOperationException {
+      if (heightFree(node, known)) {
+         return true;
+      }
+
+      Object actual = unwrap(node);
+      Map<String, Object> f = fields(actual);
+      return switch (kind(actual)) {
+         case "RangeChoice" -> {
+            Object input = unwrap(f.get("input"));
+            if (kind(input).equals("YClampedGradient")) {
+               Map<String, Object> g = fields(input);
+               tests.add(new double[] {((Number)g.get("fromY")).doubleValue(), ((Number)g.get("toY")).doubleValue(), (Double)g.get("fromValue"),
+                  (Double)g.get("toValue"), (Double)f.get("minInclusive"), (Double)f.get("maxExclusive")});
+            } else if (!heightFree(input, known)) {
+               yield false;
+            }
+
+            yield yTests(f.get("whenInRange"), tests, known) && yTests(f.get("whenOutOfRange"), tests, known);
+         }
+         case "MulOrAdd", "Mapped", "Clamp" -> yTests(f.get("input"), tests, known);
+         case "Ap2" -> yTests(f.get("argument1"), tests, known) && yTests(f.get("argument2"), tests, known);
+         case "Marker" -> !((Enum<?>)f.get("type")).name().equals("Interpolated") && yTests(f.get("wrapped"), tests, known);
+         default -> false;
+      };
+   }
+
+   /**
+    * A function's tree for the log: each node's kind and, in brackets, its parts (functions, numbers, enums), down to
+    * depth levels; the parts heightFree does not know show as they are.
+    */
+   public static String describe(Object node, int depth) {
+      try {
+         Object actual = unwrap(node);
+         if (actual == null) {
+            return "null";
+         }
+
+         if (actual instanceof Number || actual instanceof Enum<?> || actual instanceof Boolean) {
+            return String.valueOf(actual);
+         }
+
+         String kind = kind(actual);
+         if (depth <= 0 || !(actual instanceof net.minecraft.world.level.levelgen.DensityFunction)) {
+            return kind;
+         }
+
+         StringBuilder text = new StringBuilder(kind).append('(');
+         boolean first = true;
+         for (Map.Entry<String, Object> entry : fields(actual).entrySet()) {
+            Object value = entry.getValue();
+            Object inner = value instanceof net.minecraft.core.Holder<?> holder && holder.isBound() ? holder.value() : value;
+            if (inner instanceof net.minecraft.world.level.levelgen.DensityFunction || inner instanceof Number || inner instanceof Enum<?>
+               || inner instanceof Boolean) {
+               text.append(first ? "" : ", ").append(entry.getKey()).append('=').append(describe(inner, depth - 1));
+               first = false;
+            }
+         }
+
+         return text.append(')').toString();
+      } catch (ReflectiveOperationException | RuntimeException failure) {
+         return "?";
+      }
    }
 
    /** Whether a FlatCache marker is anywhere below node (through holders, splines and lists). */
