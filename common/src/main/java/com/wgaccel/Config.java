@@ -41,7 +41,15 @@ public final class Config {
    public static final Setting<Boolean> DH_GENERATOR;
    public static final Setting<Boolean> VOXY_GENERATOR;
    public static final Setting<java.util.List<? extends String>> VOXY_RINGS;
+   public static final Setting<VoxyPerformance> VOXY_PERFORMANCE;
    public static final Setting<Integer> VOXY_THREADS;
+   public static final Setting<Boolean> VOXY_REAL_CHUNKS;
+   public static final Setting<VoxyWithVwg> VOXY_WITH_VWG;
+   public static final Setting<Integer> VOXY_VWG_TASKS;
+   public static final Setting<Integer> VOXY_VWG_AFTER_RADIUS;
+   public static final Setting<VoxyDither> VOXY_HEIGHT_DITHER;
+   public static final Setting<Boolean> VOXY_STEP_SIDES;
+   public static final Setting<Integer> VOXY_REAL_CHUNKS_RADIUS;
    public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
    public static final Setting<VoxyOverlayCorner> VOXY_OVERLAY_CORNER;
@@ -128,6 +136,56 @@ public final class Config {
       OVERLAY,
       F3,
       BOTH
+   }
+
+   /**
+    * How much of the CPU the Voxy LOD generator takes: its threads (a share of the CPU's threads), how many of them write
+    * into Voxy at once, and their priority.
+    */
+   public enum VoxyPerformance {
+      LOW(8, 1, 2, 1, Thread.MIN_PRIORITY),
+      MEDIUM(4, 2, 4, 1, Thread.NORM_PRIORITY - 2),
+      HIGH(2, 2, 8, 2, Thread.NORM_PRIORITY),
+      EXTREME(1, 2, 16, 4, Thread.NORM_PRIORITY),
+      /** By the ring being made: HIGH for the first, MEDIUM for the second, LOW after (see VoxyAuto). */
+      DYNAMIC(2, 2, 8, 2, Thread.NORM_PRIORITY);
+
+      private final int divisor;
+      private final int least;
+      private final int most;
+      public final int writers;
+      public final int priority;
+
+      VoxyPerformance(int divisor, int least, int most, int writers, int priority) {
+         this.divisor = divisor;
+         this.least = least;
+         this.most = most;
+         this.writers = writers;
+         this.priority = priority;
+      }
+
+      /** Threads for this many CPU threads (EXTREME: all but two). */
+      public int threads(int cpus) {
+         int share = this == EXTREME ? cpus - 2 : cpus / this.divisor;
+         return Math.max(Math.min(this.least, Math.max(1, cpus - 1)), Math.min(this.most, share));
+      }
+   }
+
+   /** Which of the Voxy LOD generator's rings get a random +-1 block on each dry column's height (against moire). */
+   public enum VoxyDither {
+      OFF,
+      FAR,
+      ALL
+   }
+
+   /** How the Voxy LOD generator works with Voxy World Gen V2 (real chunks around the players). */
+   public enum VoxyWithVwg {
+      /** Ours first everywhere; VWG held until our rings within its radius are done, then let run at voxyVwgTasks tasks. */
+      AFTER,
+      /** VWG's circle left to it (ours does not write there). */
+      AVOID,
+      /** Neither looks at the other. */
+      IGNORE
    }
 
    /** The screen corner of the Voxy LOD generator's progress panel. */
@@ -793,13 +851,59 @@ public final class Config {
             "Default: full detail to 64 chunks (1,024 blocks), one column per 2 x 2 chunks to 192 chunks (3,072 blocks), then",
             "one column per 4 x 4 chunks to 512 chunks (8,192 blocks): about 1 million chunks in 2 minutes.")
          .defineListAllowEmpty("voxyRings", java.util.List.of("64:1", "192:32", "512:64"), () -> "512:64", value -> value instanceof String));
+      VOXY_PERFORMANCE = Setting.custom(builder
+         .comment("How much of the CPU the generator takes (changes apply at once):",
+            "LOW: an eighth of the CPU's threads (1-2), low priority, one writing into Voxy at a time;",
+            "MEDIUM: a quarter (2-4), below normal priority, one writing at a time;",
+            "HIGH: half (2-8), two writing at a time;",
+            "EXTREME: all but two (up to 16), four writing at a time;",
+            "DYNAMIC: HIGH for the first ring, MEDIUM for the second, LOW after; with voxyWithVwg AFTER, Voxy World Gen V2 gets",
+            "the CPU back the other way: half of voxyVwgTasks during our first ring, all of it during the second, twice from the",
+            "third, and its own maxActiveTasks once our rings are done.",
+            "Writing into Voxy is limited because many threads writing while Voxy draws and unloads the same sections can hit a race",
+            "in Voxy (Voxy 0.2.16: \"Section freed while marked as dirty\", then its threads wait for ever).")
+         .defineEnum("voxyPerformance", VoxyPerformance.MEDIUM));
       VOXY_THREADS = Setting.custom(builder
-         .comment("Threads the generator works on. 0: automatic (half the CPU's threads, at most 8).")
+         .comment("Threads the generator works on. 0: from voxyPerformance.")
          .defineInRange("voxyThreads", 0, 0, 64));
       VOXY_PAUSE_ABOVE_MSPT = Setting.custom(builder
          .comment("The generator waits while the server's average tick takes longer than this (milliseconds; 50 is a full tick), so",
             "the game stays smooth while other work runs. 0: never waits.")
          .defineInRange("voxyPauseAboveMspt", 40, 0, 1000));
+      builder.comment("How the LODs look (tests against moire far away; off by default).").push("visuals");
+      VOXY_HEIGHT_DITHER = Setting.custom(builder
+         .comment("Against moire far away (smooth slopes make perfectly regular 1-block steps, thin lines that shimmer as the view turns):",
+            "a random -1, 0 or +1 block on each dry column's height, so the steps are irregular. FAR: the interpolated rings only",
+            "(stride 32 and up); ALL: every ring; OFF. Applies to LODs made from now on (/wgaccel lod voxy reset to make them again).")
+         .defineEnum("voxyHeightDither", VoxyDither.OFF));
+      VOXY_STEP_SIDES = Setting.custom(builder
+         .comment("Against moire far away: the blocks a step shows on its side take the surface's block (grass, sand, snow) instead",
+            "of what lies under it (dirt), so slopes are not striped green and brown. LODs then differ a little from the real chunks",
+            "that replace them. Applies to LODs made from now on.")
+         .define("voxyStepSides", false));
+      builder.pop();
+      VOXY_WITH_VWG = Setting.custom(builder
+         .comment("With Voxy World Gen V2 (VWG) installed and on (its config/voxyworldgenv2.json, only read):",
+            "AFTER: our LODs first everywhere; VWG is held (its runtime 'enabled', never its file) until our rings within its",
+            "generationRadius are done, then runs at voxyVwgTasks tasks and replaces our LODs with real chunks; held again when",
+            "the player moves and new LODs are needed there. AVOID: its circle is left to it. IGNORE: neither looks at the other.",
+            "Your own VWG settings come back when our generator stops or is turned off.")
+         .defineEnum("voxyWithVwg", VoxyWithVwg.AFTER));
+      VOXY_VWG_TASKS = Setting.custom(builder
+         .comment("AFTER: how many chunks VWG works on at once once it runs (a low number keeps it from fighting ours). 0: its own",
+            "maxActiveTasks.")
+         .defineInRange("voxyVwgTasks", 4, 0, 128));
+      VOXY_VWG_AFTER_RADIUS = Setting.custom(builder
+         .comment("AFTER: VWG starts once our rings within this many chunks of the player are done. 0: VWG's own generationRadius.")
+         .defineInRange("voxyVwgAfterRadius", 0, 0, 4096));
+      VOXY_REAL_CHUNKS = Setting.custom(builder
+         .comment("When the rings around a player are done, generate the real chunks (trees, structures and all) near them with",
+            "Chunky (needs Chunky installed), and hand each one to Voxy as it is saved so it replaces the LOD. One Chunky task at",
+            "a time; none while another Chunky task runs in the overworld.")
+         .define("voxyRealChunks", false));
+      VOXY_REAL_CHUNKS_RADIUS = Setting.custom(builder
+         .comment("How far the real chunks go, in chunks from the player (a square). 0: the first ring's radius.")
+         .defineInRange("voxyRealChunksRadius", 0, 0, 1024));
       VOXY_PROGRESS = Setting.custom(builder
          .comment("Where the generator's progress shows in the game: OVERLAY a panel in a corner of the screen (rings, chunks/s, time",
             "left), F3 lines in the debug screen, BOTH, or OFF. In the game only (on a dedicated server, the log).")

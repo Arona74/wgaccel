@@ -26,7 +26,8 @@ final class LodSurface {
 
    /** The surface program for the stand-ins' world, or null (gpuSurface off or not ready, another world). */
    static GpuSurface.Program program(RandomState random) {
-      GpuSurface.Program p = GpuSurface.program();
+      // Even after a check turned the chunks' GPU surface off: the LODs would be bare stone without it.
+      GpuSurface.Program p = GpuSurface.programForLods();
       return p != null && p.random() == random ? p : null;
    }
 

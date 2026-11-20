@@ -118,6 +118,21 @@ public final class Mc {
    }
 
    /** The key's id ("namespace:path"). */
+   /**
+    * Whether the chunk is saved finished (status full) in the level's region files: false when it is not saved or saved at
+    * an earlier step (the neighbours started around finished chunks, up to 8 chunks out for structure starts), true when it
+    * cannot be read (never written over). Asynchronous: the reads of a tile's chunks go out together (one at a time through
+    * the storage thread made the Voxy generator's first ring 3x slower).
+    */
+   public static java.util.concurrent.CompletableFuture<Boolean> savedFull(net.minecraft.server.level.ServerLevel level, int x, int z) {
+      try {
+         return level.getChunkSource().chunkMap.read(new ChunkPos(x, z)).handle((tag, failure) -> failure != null
+            || tag.isPresent() && tag.get().getString("Status").endsWith("full"));
+      } catch (RuntimeException failure) {
+         return java.util.concurrent.CompletableFuture.completedFuture(true);
+      }
+   }
+
    public static String id(ResourceKey<?> key) {
       return key.location().toString();
    }

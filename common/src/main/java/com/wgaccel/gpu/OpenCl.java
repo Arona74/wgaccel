@@ -488,9 +488,18 @@ public final class OpenCl {
          return;
       }
 
-      if (QUEUES.remove(stream)) {
-         clFinish(stream);
-         clReleaseCommandQueue(stream);
+      // Under the free lock: a free waits on every queue of a snapshot of QUEUES (finishAll), and a queue released while it
+      // went through them was waited on after its release: on AMD's driver that clFinish never returned, the GPU idle and
+      // every chunk worker behind the lock (20 Nov 2026, world loading, RX 9070 XT; thread dump: c2me worker in
+      // OpenCl.free > finishAll > clFinish holding FREEING's write lock).
+      FREEING.writeLock().lock();
+      try {
+         if (QUEUES.remove(stream)) {
+            clFinish(stream);
+            clReleaseCommandQueue(stream);
+         }
+      } finally {
+         FREEING.writeLock().unlock();
       }
    }
 

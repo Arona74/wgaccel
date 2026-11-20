@@ -19,6 +19,7 @@ public abstract class ChunkSerializerMixin {
       CompoundTag tag = null;
       try {
          tag = original.call(level, chunk);
+         com.wgaccel.gen.VoxyAuto.saved(level, chunk);
          return tag;
       } finally {
          Stats.record(Stage.SERIALIZE, System.nanoTime() - start);

@@ -284,8 +284,9 @@ public final class WgaScreen extends CanvasScreen {
    // The Voxy LODs tab.
 
    /** The tab's settings (its Defaults button resets them). */
-   private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_THREADS, Config.VOXY_PAUSE_ABOVE_MSPT,
-      Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER, Config.VOXY_OVERLAY_HIDE_WHEN_DONE);
+   private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_PERFORMANCE, Config.VOXY_THREADS,
+      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
+      Config.VOXY_OVERLAY_HIDE_WHEN_DONE);
 
    private int lods(List<Placed> widgets) {
       int left = this.left();
@@ -303,14 +304,32 @@ public final class WgaScreen extends CanvasScreen {
          "Nearest first, as radius:stride (radius in chunks; stride the blocks between the columns worked out). 1 is full detail (about 1,000"
             + " chunks/s on an RX 9070 XT); 32-256 is one column every stride/16 chunks, the heights between interpolated (32: about"
             + " 3,000 chunks/s; 64: about 9,000, blotchier blocks). Default: 64:1; 192:32; 512:64.", y);
-      y += this.setting(widgets, Config.VOXY_THREADS, "Threads", "How many threads it works on. 0: half the CPU's threads, at most 8. Applies from the next world.", y);
+      y += this.setting(widgets, Config.VOXY_PERFORMANCE, "Performance",
+         "How much of the CPU it takes. LOW: an eighth of the threads, low priority; MEDIUM: a quarter; HIGH: half; EXTREME: all but two;"
+            + " DYNAMIC: HIGH for the first ring, MEDIUM for the second, LOW after (Voxy World Gen V2 gets more tasks as ours slows). Applies at once.", y);
+      y += this.setting(widgets, Config.VOXY_THREADS, "Threads", "How many threads it works on. 0: from the performance setting.", y);
       y += this.setting(widgets, Config.VOXY_PAUSE_ABOVE_MSPT, "Pause above (ms a tick)",
          "It waits while the server's average tick takes longer than this, so the game stays smooth. 0: never waits.", y);
+      y += this.setting(widgets, Config.VOXY_WITH_VWG, "With Voxy World Gen V2",
+         "AFTER: our LODs first, then Voxy World Gen V2 runs and replaces them with real chunks. AVOID: its circle is left to it. IGNORE: no link.", y);
+      y += this.setting(widgets, Config.VOXY_VWG_TASKS, "Voxy World Gen V2 tasks", "AFTER: its chunks at once once it runs. 0: its own setting.", y);
+      y += this.setting(widgets, Config.VOXY_VWG_AFTER_RADIUS, "Voxy World Gen V2 starts after",
+         "AFTER: it starts once our LODs within this many chunks are done (e.g. 128). 0: its own radius.", y);
+      y += this.setting(widgets, Config.VOXY_REAL_CHUNKS, "Real chunks after LODs",
+         "When the rings around you are done, generate the real chunks near you with Chunky (needs Chunky); they replace the LODs in Voxy.", y);
+      y += this.setting(widgets, Config.VOXY_REAL_CHUNKS_RADIUS, "Real chunks radius", "In chunks around you. 0: the first ring's radius.", y);
       y += 6;
       y += this.text(Component.literal("Progress").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
       y += this.setting(widgets, Config.VOXY_PROGRESS, "Show progress", "OVERLAY: a panel in a corner of the screen; F3: lines in the debug screen; BOTH; OFF.", y);
       y += this.setting(widgets, Config.VOXY_OVERLAY_CORNER, "Panel corner", "Which corner of the screen the panel sits in.", y);
       y += this.setting(widgets, Config.VOXY_OVERLAY_HIDE_WHEN_DONE, "Hide when done", "The panel goes 10 seconds after the rings are done; it comes back when you move on.", y);
+      y += 6;
+      y += this.text(Component.literal("Visuals").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+      y += this.setting(widgets, Config.VOXY_HEIGHT_DITHER, "Height dither",
+         "Against moire far away: a random +-1 block on each column's height breaks regular steps. FAR: the interpolated rings; ALL: every ring."
+            + " New LODs only (/wgaccel lod voxy reset).", y);
+      y += this.setting(widgets, Config.VOXY_STEP_SIDES, "Step sides like the surface",
+         "Against moire far away: the side of each step shows the surface block (grass, snow) instead of dirt. New LODs only.", y);
       return y;
    }
 

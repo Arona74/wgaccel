@@ -15,13 +15,20 @@ import java.util.Locale;
  * @param chunksPerSecond the last seconds' rate (chunks covered: written or found already generated)
  * @param threads the threads working
  * @param at when it was published (System.nanoTime)
+ * @param extra one more line (the real chunks' Chunky task), or ""
  */
-public record VoxyProgress(String source, State state, String why, List<Ring> rings, double chunksPerSecond, int threads, long at) {
+public record VoxyProgress(String source, State state, String why, List<Ring> rings, double chunksPerSecond, int threads, long at, String extra) {
    public enum State {
       RUNNING,
       PAUSED,
       WAITING,
-      DONE
+      DONE,
+      /** Stopped for this session (Voxy stopped answering). */
+      STOPPED
+   }
+
+   public VoxyProgress(String source, State state, String why, List<Ring> rings, double chunksPerSecond, int threads, long at) {
+      this(source, state, why, rings, chunksPerSecond, threads, at, "");
    }
 
    /**
@@ -139,6 +146,7 @@ public record VoxyProgress(String source, State state, String why, List<Ring> ri
             100.0 * ring.fraction()));
       }
 
-      return text.append("; time left ").append(duration(this.etaSeconds())).toString();
+      text.append("; time left ").append(duration(this.etaSeconds()));
+      return this.extra.isEmpty() ? text.toString() : text.append("; ").append(this.extra).toString();
    }
 }

@@ -21,7 +21,9 @@ public abstract class SerializableChunkDataMixin {
    private static SerializableChunkData wgaccel$copyOf(ServerLevel level, ChunkAccess chunk, Operation<SerializableChunkData> original) {
       long start = System.nanoTime();
       try {
-         return original.call(level, chunk);
+         SerializableChunkData data = original.call(level, chunk);
+         com.wgaccel.gen.VoxyAuto.saved(level, chunk);
+         return data;
       } finally {
          Stats.record(Stage.SERIALIZE, System.nanoTime() - start);
       }

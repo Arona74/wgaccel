@@ -148,6 +148,14 @@ public final class GpuSurface {
       return failed ? null : program;
    }
 
+   /**
+    * The compiled program even after a check found a difference (the LOD generators: a surface right but for a few blocks
+    * beats bare stone; chunks still get theirs on the CPU then), null when there is none.
+    */
+   static Program programForLods() {
+      return program;
+   }
+
    private static final LongAdder AHEAD_DIFFERENT = new LongAdder();
    private static final LongAdder SAME_SKIPPED = new LongAdder();
 
@@ -1598,8 +1606,16 @@ public final class GpuSurface {
                   if (expected != game) {
                      differ++;
                      if (first == null) {
-                        first = String.format(Locale.ROOT, "first at (%d, %d, %d): game %s, gpu %s (before %s)", job.minX + lx, y, job.minZ + lz, game, expected,
-                           current.before[at]);
+                        String biome;
+                        try {
+                           biome = chunk.getNoiseBiome(net.minecraft.core.QuartPos.fromBlock(job.minX + lx), net.minecraft.core.QuartPos.fromBlock(y),
+                              net.minecraft.core.QuartPos.fromBlock(job.minZ + lz)).unwrapKey().map(key -> com.wgaccel.platform.Mc.id(key)).orElse("?");
+                        } catch (RuntimeException unknown) {
+                           biome = "?";
+                        }
+
+                        first = String.format(Locale.ROOT, "first at (%d, %d, %d) in %s: game %s, gpu %s (before %s)", job.minX + lx, y, job.minZ + lz, biome,
+                           game, expected, current.before[at]);
                      }
                   }
                }

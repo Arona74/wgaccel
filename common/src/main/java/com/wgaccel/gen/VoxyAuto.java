@@ -34,10 +34,19 @@ import net.minecraft.world.level.storage.LevelResource;
  *   publishes the progress ({@link VoxyProgress}) twice a second and logs it every minute.
  *   <li>The workers wait while the server's average tick is over voxyPauseAboveMspt, while Voxy has no world yet (the
  *   game still joining) and while the GPU fill is not ready.
- *   <li>Chunks already generated (in the world's region files, or loaded) are never written: Voxy has them from the real
- *   chunks. A far ring's tile leaves out the chunks of near tiles already done (full detail is not written over).
+ *   <li>Chunks already generated (saved finished in the world's region files, or loaded) are never written: Voxy has them
+ *   from the real chunks. Chunks saved at an earlier step (the neighbours started around finished chunks) are written. A far ring's tile leaves out the chunks of near tiles already done (full detail is not written over).
  *   <li>The tiles done are kept in the world's data/wgaccel_voxy_lod.dat, so a restart does not make them again
  *   ({@code /wgaccel lod voxy reset} forgets them, after Voxy's own LODs were deleted).
+ *   <li>voxyPerformance sets the threads, their priority and how many write into Voxy at once (changes apply at once).
+ *   The workers also wait while the last 20 ticks were slow.
+ *   <li>A watchdog: a write into Voxy that has not come back after 30 s stops the generator for the session (Voxy 0.2.16's
+ *   section race leaves its threads waiting for ever; see {@link VoxyWriter}).
+ *   <li>voxyWithVwg, with Voxy World Gen V2 on ({@link VwgControl}): AFTER holds it until our rings within its
+ *   generationRadius are done, then lets it run at voxyVwgTasks tasks; AVOID leaves its circle (dx^2 + dz^2 <= r^2 in
+ *   chunks, as its DistanceGraph counts) to it.
+ *   <li>voxyRealChunks: once the rings around a player are done, a Chunky task generates the real chunks near them, and
+ *   each one is handed to Voxy's ingest as it is saved (Voxy only takes the chunks the client is shown).
  * </ul>
  */
 public final class VoxyAuto {
@@ -45,6 +54,7 @@ public final class VoxyAuto {
    private static final int MAGIC = 0x57474156;
    /** Strides on the 8 x 8-chunk grid (every chunk). */
    private static final int[] NEAR_STRIDES = {1, 2, 4, 8, 16};
+   private static final long WATCHDOG_NANOS = 30_000_000_000L;
    private static volatile VoxyAuto instance;
 
    private final MinecraftServer server;
@@ -59,8 +69,28 @@ public final class VoxyAuto {
    private volatile VoxyWriter writer;
    private volatile VoxyProgress.State state = VoxyProgress.State.WAITING;
    private volatile String why = "starting";
-   private int threads;
+   private volatile int threads;
    private volatile boolean dirty;
+   /** Stopped for this session: a write into Voxy never came back. */
+   private volatile boolean broken;
+   /** The mean of the last 20 ticks (ms), worked out by the scheduler. */
+   private volatile double recentMspt;
+   private Config.VoxyPerformance lastPerformance;
+   private int lastThreads = -1;
+   /** voxyRealChunks: our Chunky task runs; the places done this session (by 8-chunk tile); the progress line. */
+   private volatile boolean realActive;
+   private boolean realOurs;
+   private final Set<Long> realCentres = new java.util.HashSet<>();
+   private volatile String realLine = "";
+   private boolean chunkyMissingLogged;
+   private final LongAdder realIngested = new LongAdder();
+   /** voxyWithVwg AVOID: Voxy World Gen V2's radius in chunks left to it (0: none). */
+   private volatile int vwgRadius;
+   private int vwgLogged = -1;
+   private final VwgControl vwg = new VwgControl();
+   private volatile String vwgLine = "";
+   private Boolean vwgHeld;
+   private int vwgTasks = -1;
    /** Each detail's rate (chunks/s, by stride; an average over about 5 s of the time its ring was being made). */
    private final Map<Integer, Double> strideRates = new ConcurrentHashMap<>();
    /** The plan and its rings' counts at the last scheduler step (for the rates). */
@@ -107,6 +137,7 @@ public final class VoxyAuto {
       }
 
       auto.stopped = true;
+      auto.vwg.restore();
       for (Thread worker : auto.workers) {
          try {
             worker.join(30_000L);
@@ -168,6 +199,8 @@ public final class VoxyAuto {
 
          if (!on) {
             this.plan = null;
+            this.vwg.restore();
+            this.vwgLine = "";
             VoxyProgress.publish(null);
             continue;
          }
@@ -208,6 +241,8 @@ public final class VoxyAuto {
 
    /** One scheduler step: Voxy's world, the workers, the plan. */
    private void tick() {
+      // Voxy World Gen V2 held from the first step (no plan yet: not ready), not only once our generator has one.
+      this.controlVwg();
       VoxyAccess access = VoxyAccess.get();
       if (access == null) {
          this.waitFor("Voxy's insert not found");
@@ -224,18 +259,51 @@ public final class VoxyAuto {
          this.writer = new VoxyWriter(this.level, target, "Voxy LOD generator");
       }
 
-      if (this.workers.isEmpty()) {
-         int configured = Config.VOXY_THREADS.get();
-         this.threads = configured > 0 ? configured : Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors() / 2));
-         for (int t = 0; t < this.threads; t++) {
-            Thread worker = new Thread(this::work, "WGA Voxy auto " + t);
-            worker.setDaemon(true);
-            worker.start();
-            this.workers.add(worker);
-         }
+      if (this.broken) {
+         this.state = VoxyProgress.State.STOPPED;
+         this.why = "Voxy stopped answering; restart the game";
+         this.vwg.restore();
+         this.vwgLine = "";
+         return;
+      }
 
-         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, "WGA Voxy LOD generator: {} threads, rings {}, {} tiles already done", this.threads,
+      if (this.writer.longestWriteNanos() > WATCHDOG_NANOS) {
+         this.broken = true;
+         this.state = VoxyProgress.State.STOPPED;
+         this.why = "Voxy stopped answering; restart the game";
+         WorldgenAccelerator.LOG.warn(LevelLogger.ALWAYS,
+            "WGA Voxy LOD generator: a write into Voxy has not come back for 30 s; stopped for this session. Voxy can lose track of a section"
+               + " when many threads write while it draws and unloads the same sections (Voxy 0.2.16: \"Section freed while marked as dirty\");"
+               + " its threads then wait for that section for ever. If the game hangs, restart it and set voxyPerformance lower (or voxyGenerator off).");
+         return;
+      }
+
+      this.recentMspt = recentMspt(this.server);
+      Config.VoxyPerformance chosen = Config.VOXY_PERFORMANCE.get();
+      Config.VoxyPerformance performance = chosen == Config.VoxyPerformance.DYNAMIC ? dynamic(this.plan) : chosen;
+      int configured = Config.VOXY_THREADS.get();
+      int wanted = configured > 0 ? configured : performance.threads(Runtime.getRuntime().availableProcessors());
+      this.threads = wanted;
+      this.writer.maxWriters(performance.writers);
+      while (this.workers.size() < wanted) {
+         int index = this.workers.size();
+         Thread worker = new Thread(() -> this.work(index), "WGA Voxy auto " + index);
+         worker.setDaemon(true);
+         worker.start();
+         this.workers.add(worker);
+      }
+
+      for (Thread worker : this.workers) {
+         worker.setPriority(performance.priority);
+      }
+
+      if (performance != this.lastPerformance || wanted != this.lastThreads) {
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS,
+            "WGA Voxy LOD generator: {} threads, {} writing into Voxy at once ({} performance), rings {}, {} tiles already done", wanted,
+            performance.writers, chosen == Config.VoxyPerformance.DYNAMIC ? "DYNAMIC: " + performance : performance,
             String.join(", ", Config.VOXY_RINGS.get()), this.done.size());
+         this.lastPerformance = performance;
+         this.lastThreads = wanted;
       }
 
       List<int[]> centres = new ArrayList<>();
@@ -251,10 +319,235 @@ public final class VoxyAuto {
          return;
       }
 
-      String rings = String.join(",", Config.VOXY_RINGS.get());
+      this.readVwg();
+      String rings = String.join(",", Config.VOXY_RINGS.get()) + "|vwg " + this.vwgRadius;
       Plan plan = this.plan;
       if (plan == null || !plan.rings.equals(rings) || moved(plan.centres, centres)) {
          this.plan = this.plan(centres, rings);
+      }
+
+      this.realChunks(centres);
+      this.controlVwg();
+   }
+
+   /**
+    * voxyWithVwg AFTER: Voxy World Gen V2 held while our rings within its radius are not done, then let run at
+    * voxyVwgTasks tasks (its runtime settings only); otherwise the player's own settings back.
+    */
+   private void controlVwg() {
+      VwgControl.Own own = this.vwg.own();
+      if (own == null || !own.enabled() || Config.VOXY_WITH_VWG.get() != Config.VoxyWithVwg.AFTER) {
+         this.vwg.restore();
+         this.vwgLine = "";
+         this.vwgHeld = null;
+         this.vwgTasks = -1;
+         return;
+      }
+
+      Plan plan = this.plan;
+      int after = Config.VOXY_VWG_AFTER_RADIUS.get() > 0 ? Config.VOXY_VWG_AFTER_RADIUS.get() : own.radius();
+      boolean ready = plan != null && doneWithin(plan, after);
+      int configured = Config.VOXY_VWG_TASKS.get();
+      int tasks = configured > 0 ? configured : own.tasks();
+      if (Config.VOXY_PERFORMANCE.get() == Config.VoxyPerformance.DYNAMIC) {
+         // The other way round from ours: half during our first ring, all during the second, twice after, its own once ours
+         // are done.
+         int ring = ringBeingMade(plan);
+         tasks = ring < 0 ? Math.max(own.tasks(), tasks) : ring == 0 ? Math.max(1, tasks / 2) : ring == 1 ? tasks : Math.min(128, tasks * 2);
+      }
+
+      if (!this.vwg.apply(ready, tasks)) {
+         this.vwgLine = "";
+         return;
+      }
+
+      if (this.vwgHeld == null || this.vwgHeld == ready || ready && tasks != this.vwgTasks) {
+         this.vwgHeld = !ready;
+         this.vwgTasks = tasks;
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, ready
+            ? "WGA Voxy LOD generator: our LODs within {} chunks are done; Voxy World Gen V2 runs ({} tasks)"
+            : "WGA Voxy LOD generator: Voxy World Gen V2 held until our LODs within {} chunks are done", after, tasks);
+      }
+
+      this.vwgLine = ready ? String.format(Locale.ROOT, "Voxy World Gen V2: running, %d tasks", tasks)
+         : String.format(Locale.ROOT, "Voxy World Gen V2: waiting for the LODs within %d chunks", after);
+   }
+
+   /** The first ring not done, -1 when all are (or there is no plan: 0). */
+   private static int ringBeingMade(Plan plan) {
+      if (plan == null) {
+         return 0;
+      }
+
+      for (int r = 0; r < plan.totals.length; r++) {
+         if (plan.done[r].sum() < plan.totals[r]) {
+            return r;
+         }
+      }
+
+      return -1;
+   }
+
+   /** DYNAMIC: HIGH for the first ring, MEDIUM for the second, LOW after (and once all are done). */
+   private static Config.VoxyPerformance dynamic(Plan plan) {
+      int ring = ringBeingMade(plan);
+      return ring == 0 ? Config.VoxyPerformance.HIGH : ring == 1 ? Config.VoxyPerformance.MEDIUM : Config.VoxyPerformance.LOW;
+   }
+
+   /** Whether every ring that reaches inside the radius (its inner edge under it) is done. */
+   private static boolean doneWithin(Plan plan, int radius) {
+      int inner = 0;
+      for (int r = 0; r < plan.totals.length; r++) {
+         if (inner < radius && plan.done[r].sum() < plan.totals[r]) {
+            return false;
+         }
+
+         inner = plan.radii[r];
+      }
+
+      return true;
+   }
+
+   /**
+    * Voxy World Gen V2's generationRadius when it is installed, on ("enabled") and voxyAvoidVwg is on, else 0. Its JSON
+    * config is only read (a missing or unreadable file: 0).
+    */
+   private void readVwg() {
+      VwgControl.Own own = this.vwg.own();
+      int radius = own != null && own.enabled() && Config.VOXY_WITH_VWG.get() == Config.VoxyWithVwg.AVOID ? own.radius() : 0;
+      this.vwgRadius = radius;
+      if (radius != this.vwgLogged) {
+         this.vwgLogged = radius;
+         if (radius > 0) {
+            WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS,
+               "WGA Voxy LOD generator: Voxy World Gen V2 makes real chunks within {} chunks of each player (its config); that circle is left to it", radius);
+         }
+      }
+   }
+
+   /** Inside Voxy World Gen V2's circle around a player (its own test: dx^2 + dz^2 <= r^2 in chunks). */
+   private static boolean inVwg(List<int[]> centres, int radius, int x, int z) {
+      if (radius <= 0) {
+         return false;
+      }
+
+      long r2 = (long)radius * radius;
+      for (int[] c : centres) {
+         long dx = x - c[0];
+         long dz = z - c[1];
+         if (dx * dx + dz * dz <= r2) {
+            return true;
+         }
+      }
+
+      return false;
+   }
+
+   /** The mean of the server's last 20 tick times (ms): the average over 100 ticks hides a server that just fell behind. */
+   private static double recentMspt(MinecraftServer server) {
+      long[] times = server.getTickTimesNanos();
+      int count = server.getTickCount();
+      int n = Math.min(20, Math.min(times.length, count));
+      if (n <= 0) {
+         return 0.0;
+      }
+
+      double sum = 0.0;
+      for (int i = 1; i <= n; i++) {
+         sum += times[Math.floorMod(count - i, times.length)];
+      }
+
+      return sum / n / 1.0e6;
+   }
+
+   private static boolean allDone(Plan plan) {
+      for (int r = 0; r < plan.totals.length; r++) {
+         if (plan.done[r].sum() < plan.totals[r]) {
+            return false;
+         }
+      }
+
+      return true;
+   }
+
+   /**
+    * voxyRealChunks: when every ring is done, a Chunky task for the real chunks within voxyRealChunksRadius (0: the first
+    * ring's) of a player whose place was not done yet this session; none while any Chunky task runs in the overworld.
+    */
+   private void realChunks(List<int[]> centres) {
+      if (!Config.VOXY_REAL_CHUNKS.get()) {
+         this.realActive = false;
+         this.realLine = "";
+         return;
+      }
+
+      String world = com.wgaccel.platform.Mc.id(this.level.dimension());
+      boolean running = ChunkyTasks.running(world);
+      if (this.realOurs && !running) {
+         this.realOurs = false;
+         WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, "WGA Voxy LOD generator: real chunks done (Chunky); {} chunks handed to Voxy so far",
+            this.realIngested.sum());
+      }
+
+      this.realActive = this.realOurs && running;
+      if (running) {
+         if (!this.realOurs) {
+            this.realLine = "";
+         }
+
+         return;
+      }
+
+      this.realLine = "";
+      Plan plan = this.plan;
+      if (plan == null || plan.radii.length == 0 || !allDone(plan)) {
+         return;
+      }
+
+      if (!ChunkyTasks.installed()) {
+         if (!this.chunkyMissingLogged) {
+            this.chunkyMissingLogged = true;
+            WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, "WGA Voxy LOD generator: voxyRealChunks needs Chunky; it is not installed");
+         }
+
+         return;
+      }
+
+      int configured = Config.VOXY_REAL_CHUNKS_RADIUS.get();
+      int radius = configured > 0 ? configured : plan.radii[0];
+      for (int[] c : centres) {
+         long place = (long)Math.floorDiv(c[0], VoxyWriter.TILE) << 32 | Math.floorDiv(c[1], VoxyWriter.TILE) & 0xFFFFFFFFL;
+         if (this.realCentres.contains(place)) {
+            continue;
+         }
+
+         if (ChunkyTasks.start(world, c[0] * 16 + 8, c[1] * 16 + 8, radius * 16)) {
+            this.realCentres.add(place);
+            this.realOurs = true;
+            this.realActive = true;
+            this.realLine = String.format(Locale.ROOT, "Real chunks: Chunky, %d chunks around %d, %d", radius, c[0] * 16 + 8, c[1] * 16 + 8);
+            WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, "WGA Voxy LOD generator: LODs done; real chunks within {} chunks of {}, {} started with Chunky",
+               radius, c[0] * 16 + 8, c[1] * 16 + 8);
+         }
+
+         return;
+      }
+   }
+
+   /** A chunk being saved (ChunkSerializer.write / SerializableChunkData.copyOf): handed to Voxy while our Chunky task runs. */
+   public static void saved(ServerLevel level, net.minecraft.world.level.chunk.ChunkAccess chunk) {
+      VoxyAuto auto = instance;
+      if (auto == null || !auto.realActive || level != auto.level || !(chunk instanceof net.minecraft.world.level.chunk.LevelChunk full)) {
+         return;
+      }
+
+      try {
+         VoxyAccess access = VoxyAccess.get();
+         if (access != null && access.ingest(full)) {
+            auto.realIngested.increment();
+         }
+      } catch (RuntimeException failure) {
+         // Never break saving.
       }
    }
 
@@ -305,7 +598,8 @@ public final class VoxyAuto {
    }
 
    private Plan plan(List<int[]> centres, String text) {
-      List<int[]> rings = rings(text);
+      List<int[]> rings = rings(text.substring(0, text.indexOf("|vwg")));
+      int vwg = this.vwgRadius;
       int[] radii = new int[rings.size()];
       int[] strides = new int[rings.size()];
       long[] totals = new long[rings.size()];
@@ -333,7 +627,7 @@ public final class VoxyAuto {
                   for (int x = tx * unit; x < (tx + 1) * unit; x++) {
                      for (int z = tz * unit; z < (tz + 1) * unit; z++) {
                         int d = distance(centres, x, z);
-                        if (d <= radius && (r == 0 || d > inner)) {
+                        if (d <= radius && (r == 0 || d > inner) && !inVwg(centres, vwg, x, z)) {
                            chunks++;
                         }
                      }
@@ -428,9 +722,10 @@ public final class VoxyAuto {
 
    private VoxyProgress progress(double rate) {
       Plan plan = this.plan;
-      if (plan == null) {
-         return this.state == VoxyProgress.State.WAITING
-            ? new VoxyProgress("auto", this.state, this.why, List.of(), 0.0, this.threads, System.nanoTime()) : null;
+      if (plan == null || this.broken) {
+         return this.state == VoxyProgress.State.WAITING || this.broken
+            ? new VoxyProgress("auto", this.broken ? VoxyProgress.State.STOPPED : this.state, this.why, List.of(), 0.0, this.threads, System.nanoTime())
+            : null;
       }
 
       List<VoxyProgress.Ring> rings = new ArrayList<>();
@@ -446,23 +741,33 @@ public final class VoxyAuto {
          rate = 0.0;
       }
 
+      String real = this.realLine;
+      if (!real.isEmpty()) {
+         real = real + String.format(Locale.ROOT, " (%,d to Voxy)", this.realIngested.sum());
+      }
+
+      String vwgLine = this.vwgLine;
+      if (!vwgLine.isEmpty()) {
+         real = real.isEmpty() ? vwgLine : real + "; " + vwgLine;
+      }
+
       return new VoxyProgress("auto", state, state == VoxyProgress.State.DONE || state == VoxyProgress.State.RUNNING ? "" : this.why, rings, rate,
-         this.threads, System.nanoTime());
+         this.threads, System.nanoTime(), real);
    }
 
    // ---- the workers ----
 
-   private void work() {
+   private void work(int slot) {
       LodBuilder.Worker worker = null;
       while (!this.stopping()) {
          try {
-            if (!Config.VOXY_GENERATOR.get() || this.writer == null || this.plan == null) {
+            if (!Config.VOXY_GENERATOR.get() || this.writer == null || this.plan == null || this.broken || slot >= this.threads) {
                Thread.sleep(500L);
                continue;
             }
 
             int limit = Config.VOXY_PAUSE_ABOVE_MSPT.get();
-            double mspt = this.server.getAverageTickTimeNanos() / 1.0e6;
+            double mspt = Math.max(this.server.getAverageTickTimeNanos() / 1.0e6, this.recentMspt);
             if (limit > 0 && mspt > limit) {
                this.state = VoxyProgress.State.PAUSED;
                this.why = String.format(Locale.ROOT, "server busy: %.0f ms a tick", mspt);
@@ -515,8 +820,32 @@ public final class VoxyAuto {
    private void run(LodBuilder.Worker worker, Job job) {
       RegionHeaders regions = new RegionHeaders(this.regionDir);
       boolean far = job.stride > 16;
+      // The saved chunks' statuses, read together (each read goes through the storage thread).
+      int unit = VoxyWriter.unit(job.stride);
+      Map<Long, java.util.concurrent.CompletableFuture<Boolean>> saved = new HashMap<>();
+      for (int x = job.tx * unit; x < (job.tx + 1) * unit; x++) {
+         for (int z = job.tz * unit; z < (job.tz + 1) * unit; z++) {
+            if (regions.exists(x, z) && !this.level.getChunkSource().hasChunk(x, z)) {
+               saved.put(com.wgaccel.platform.Mc.key(x, z), com.wgaccel.platform.Mc.savedFull(this.level, x, z));
+            }
+         }
+      }
+
+      Plan plan = this.plan;
+      int vwg = this.vwgRadius;
       this.writer.tile(worker, job.tx, job.tz, job.stride, (x, z) -> {
-         if (this.level.getChunkSource().hasChunk(x, z) || regions.exists(x, z)) {
+         if (plan != null && inVwg(plan.centres, vwg, x, z)) {
+            return false;
+         }
+
+         // Loaded (Voxy takes them from the real chunks), or saved finished. A chunk saved at an earlier step (around finished
+         // chunks: structure starts reach 8 chunks out) is never shown to the client, so Voxy never gets it: written here.
+         if (this.level.getChunkSource().hasChunk(x, z)) {
+            return false;
+         }
+
+         java.util.concurrent.CompletableFuture<Boolean> full = saved.get(com.wgaccel.platform.Mc.key(x, z));
+         if (full != null && full.join()) {
             return false;
          }
 

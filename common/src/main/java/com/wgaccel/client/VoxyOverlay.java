@@ -93,7 +93,7 @@ public final class VoxyOverlay {
          }
 
          int rings = progress.rings().size();
-         int height = PAD + LINE + 2 + rings * (LINE + BAR + 4) + LINE + PAD - 2;
+         int height = PAD + LINE + 2 + rings * (LINE + BAR + 4) + LINE + PAD - 2 + (progress.extra().isEmpty() ? 0 : LINE);
          int width = width(font, progress);
          int x = left ? MARGIN : screenWidth - width - MARGIN;
          int y = top ? MARGIN : screenHeight - height - MARGIN - 40;
@@ -109,6 +109,7 @@ public final class VoxyOverlay {
          case PAUSED -> "paused";
          case WAITING -> "waiting";
          case DONE -> "done";
+         case STOPPED -> "stopped";
       };
    }
 
@@ -123,7 +124,7 @@ public final class VoxyOverlay {
    private static String footer(VoxyProgress progress) {
       return switch (progress.state()) {
          case RUNNING -> String.format(Locale.ROOT, "%,d / %,d chunks   ETA %s", progress.done(), progress.total(), VoxyProgress.duration(progress.etaSeconds()));
-         case PAUSED, WAITING -> progress.why();
+         case PAUSED, WAITING, STOPPED -> progress.why();
          case DONE -> String.format(Locale.ROOT, "%,d chunks", progress.total());
       };
    }
@@ -138,6 +139,10 @@ public final class VoxyOverlay {
       }
 
       widest = Math.max(widest, font.width(footer(progress)));
+      if (!progress.extra().isEmpty()) {
+         widest = Math.max(widest, font.width(progress.extra()));
+      }
+
       return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, widest + 2 * PAD + 2));
    }
 
@@ -147,6 +152,7 @@ public final class VoxyOverlay {
          case PAUSED -> PAUSED;
          case WAITING -> WAITING;
          case DONE -> DONE;
+         case STOPPED -> PAUSED;
       };
       // The card, its edge and the state's stripe.
       canvas.fill(x, y, x + width, y + height, CARD);
@@ -183,7 +189,11 @@ public final class VoxyOverlay {
          inner = ring.radius();
       }
 
-      canvas.text(font, trim(font, footer(progress), right - left), left, line, DIM);
+      canvas.text(font, trim(font, footer(progress), right - left), left, line, progress.state() == VoxyProgress.State.STOPPED ? TEXT : DIM);
+      if (!progress.extra().isEmpty()) {
+         line += LINE;
+         canvas.text(font, trim(font, progress.extra(), right - left), left, line, DIM);
+      }
    }
 
    private static String trim(Font font, String text, int width) {
@@ -222,6 +232,7 @@ public final class VoxyOverlay {
             case PAUSED -> "\u00a76paused" + (progress.why().isEmpty() ? "" : " \u00a7f(" + progress.why() + ")");
             case WAITING -> "\u00a77waiting" + (progress.why().isEmpty() ? "" : " (" + progress.why() + ")");
             case DONE -> "\u00a7adone";
+            case STOPPED -> "\u00a76stopped" + (progress.why().isEmpty() ? "" : " \u00a7f(" + progress.why() + ")");
          };
          lines.add("\u00a76[WGA] Voxy LODs\u00a7r " + state);
          int inner = 0;
@@ -234,6 +245,10 @@ public final class VoxyOverlay {
          if (progress.state() == VoxyProgress.State.RUNNING) {
             lines.add(String.format(Locale.ROOT, "\u00a7f%,d / %,d chunks, \u00a7bETA %s\u00a7f, %d threads", progress.done(), progress.total(),
                VoxyProgress.duration(progress.etaSeconds()), progress.threads()));
+         }
+
+         if (!progress.extra().isEmpty()) {
+            lines.add("\u00a7f" + progress.extra());
          }
       } catch (RuntimeException failure) {
          // Never break F3.

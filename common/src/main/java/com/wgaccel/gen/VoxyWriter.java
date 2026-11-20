@@ -1,5 +1,7 @@
 package com.wgaccel.gen;
 
+import com.wgaccel.Config;
+
 import com.wgaccel.platform.Mc;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,6 +57,17 @@ public final class VoxyWriter {
    public final LongAdder columnNanos = new LongAdder();
    public final LongAdder writeNanos = new LongAdder();
    public final LongAdder insertNanos = new LongAdder();
+   /**
+    * At most this many threads write a chunk's sections into Voxy at once (the rest wait their turn): many threads writing
+    * while Voxy meshes and unloads the same sections hit a race in Voxy 0.2.16 (WorldSection.trySetFreed: "Section freed
+    * while marked as dirty or in the save queue"), after which its threads wait for that section for ever
+    * (ActiveSectionTracker.acquire spins until the section is loaded).
+    */
+   private volatile int maxWriters = Integer.MAX_VALUE;
+   private final Object gate = new Object();
+   private int writing;
+   /** The threads writing into Voxy now, and since when (System.nanoTime): a write that never returns shows here. */
+   private final java.util.concurrent.ConcurrentHashMap<Thread, Long> writingSince = new java.util.concurrent.ConcurrentHashMap<>();
 
    public VoxyWriter(ServerLevel level, VoxyAccess.Target target, String name) {
       this.level = level;
@@ -62,6 +75,49 @@ public final class VoxyWriter {
       this.minY = Mc.minY(level);
       this.height = level.getHeight();
       this.builder = new LodBuilder(level, this.minY, this.height, name);
+   }
+
+   public void maxWriters(int writers) {
+      this.maxWriters = Math.max(1, writers);
+      synchronized (this.gate) {
+         this.gate.notifyAll();
+      }
+   }
+
+   /** How long the oldest write into Voxy still running has taken (ns), 0 when none runs. */
+   public long longestWriteNanos() {
+      long now = System.nanoTime();
+      long longest = 0;
+      for (long since : this.writingSince.values()) {
+         longest = Math.max(longest, now - since);
+      }
+
+      return longest;
+   }
+
+   private void enter() {
+      synchronized (this.gate) {
+         while (this.writing >= this.maxWriters) {
+            try {
+               this.gate.wait(100L);
+            } catch (InterruptedException interrupted) {
+               Thread.currentThread().interrupt();
+               throw new java.util.concurrent.CancellationException("stopping");
+            }
+         }
+
+         this.writing++;
+      }
+
+      this.writingSince.put(Thread.currentThread(), System.nanoTime());
+   }
+
+   private void leave() {
+      this.writingSince.remove(Thread.currentThread());
+      synchronized (this.gate) {
+         this.writing--;
+         this.gate.notify();
+      }
    }
 
    /** Chunks per side of a tile at this stride. */
@@ -294,6 +350,9 @@ public final class VoxyWriter {
       final Map<Long, ChunkColumns> byPos = new HashMap<>();
       /** Far tiles: the interpolated chunk being written. */
       final ChunkColumns out = new ChunkColumns();
+      /** voxyStepSides: each column's lowest neighbour ground, and whether it is on for the chunk being written. */
+      final int[] lowNeighbour = new int[256];
+      boolean stepSides;
       final int snowId;
       final int iceId;
       Object section;
@@ -373,15 +432,58 @@ public final class VoxyWriter {
 
       long insertNanos = 0;
       long[] data = this.target.data(work.section);
-      for (int sy = from; sy <= to; sy++) {
-         int nonAir = fill(chunk, work, data, sy << 4);
-         long insert = System.nanoTime();
-         this.target.insert(work.section, cx, sy, cz, nonAir);
-         insertNanos += System.nanoTime() - insert;
-         this.sections.increment();
+      shape(chunk, work);
+      this.enter();
+      try {
+         for (int sy = from; sy <= to; sy++) {
+            int nonAir = fill(chunk, work, data, sy << 4);
+            long insert = System.nanoTime();
+            this.target.insert(work.section, cx, sy, cz, nonAir);
+            insertNanos += System.nanoTime() - insert;
+            this.sections.increment();
+         }
+      } finally {
+         this.leave();
       }
 
       return insertNanos;
+   }
+
+   /**
+    * The moire settings, before a chunk is written: voxyHeightDither moves each dry column's ground by a random -1, 0 or
+    * +1 (the same for a column every time); voxyStepSides works out each column's lowest neighbour ground (inside the
+    * chunk; at its edge the column's own) for {@link #fill}.
+    */
+   private static void shape(ChunkColumns chunk, Work work) {
+      Config.VoxyDither dither = Config.VOXY_HEIGHT_DITHER.get();
+      if (dither == Config.VoxyDither.ALL || dither == Config.VoxyDither.FAR && work.stride >= 16 && chunk == work.out) {
+         int x0 = Mc.x(chunk.pos) * 16;
+         int z0 = Mc.z(chunk.pos) * 16;
+         for (int col = 0; col < 256; col++) {
+            if (chunk.surface[col] != chunk.ground[col]) {
+               continue;
+            }
+
+            int step = (int)(random(x0 + (col & 15) + 0x2545F491, z0 + (col >> 4)) * 3.0) - 1;
+            chunk.ground[col] += step;
+            chunk.surface[col] += step;
+         }
+      }
+
+      work.stepSides = Config.VOXY_STEP_SIDES.get();
+      if (work.stepSides) {
+         for (int col = 0; col < 256; col++) {
+            int x = col & 15;
+            int z = col >> 4;
+            int own = chunk.ground[col];
+            int low = own;
+            low = Math.min(low, x > 0 ? chunk.ground[col - 1] : own);
+            low = Math.min(low, x < 15 ? chunk.ground[col + 1] : own);
+            low = Math.min(low, z > 0 ? chunk.ground[col - 16] : own);
+            low = Math.min(low, z < 15 ? chunk.ground[col + 16] : own);
+            work.lowNeighbour[col] = low;
+         }
+      }
    }
 
    /** The section at block y baseY: its 4,096 ids; returns its non-air count. */
@@ -408,7 +510,13 @@ public final class VoxyWriter {
                id = VoxyAccess.id(Math.max(0, SKY - (surface - y)), ice && y == surface ? work.iceId : chunk.fluid[col], biome);
             } else {
                int k = ground - y;
-               id = VoxyAccess.id(groundLight, k < LodBuilder.GROUND_DEPTH ? chunk.layers[base + k] : chunk.below[col], biome);
+               int block = k < LodBuilder.GROUND_DEPTH ? chunk.layers[base + k] : chunk.below[col];
+               if (k > 0 && work.stepSides && surface == ground && y > work.lowNeighbour[col]) {
+                  // A block a step shows on its side: the surface's (snow when snowed on).
+                  block = snow ? work.snowId : chunk.layers[base];
+               }
+
+               id = VoxyAccess.id(groundLight, block, biome);
             }
 
             data[ly << 8 | col] = id;
