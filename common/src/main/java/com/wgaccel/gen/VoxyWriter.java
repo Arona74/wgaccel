@@ -3,15 +3,21 @@ package com.wgaccel.gen;
 import com.wgaccel.Config;
 
 import com.wgaccel.platform.Mc;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
+import net.minecraft.core.Holder;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Voxy's LOD sections made from the GPU columns ({@link LodBuilder}) and put into the level's Voxy world ({@link
@@ -49,6 +55,8 @@ public final class VoxyWriter {
    final ServerLevel level;
    final LodBuilder builder;
    final VoxyAccess.Target target;
+   /** voxyTrees: the stand-in trees ({@link LodTrees}). */
+   private final LodTrees trees;
    private final int minY;
    private final int height;
    private final ThreadLocal<Work> works = new ThreadLocal<>();
@@ -57,6 +65,8 @@ public final class VoxyWriter {
    public final LongAdder columnNanos = new LongAdder();
    public final LongAdder writeNanos = new LongAdder();
    public final LongAdder insertNanos = new LongAdder();
+   /** voxyTrees: the time working out and drawing the trees (part of writeNanos). */
+   public final LongAdder treeNanos = new LongAdder();
    /**
     * At most this many threads write a chunk's sections into Voxy at once (the rest wait their turn): many threads writing
     * while Voxy meshes and unloads the same sections hit a race in Voxy 0.2.16 (WorldSection.trySetFreed: "Section freed
@@ -64,6 +74,7 @@ public final class VoxyWriter {
     * (ActiveSectionTracker.acquire spins until the section is loaded).
     */
    private volatile int maxWriters = Integer.MAX_VALUE;
+   private volatile boolean closed;
    private final Object gate = new Object();
    private int writing;
    /** The threads writing into Voxy now, and since when (System.nanoTime): a write that never returns shows here. */
@@ -75,6 +86,7 @@ public final class VoxyWriter {
       this.minY = Mc.minY(level);
       this.height = level.getHeight();
       this.builder = new LodBuilder(level, this.minY, this.height, name);
+      this.trees = new LodTrees(target::block, level);
    }
 
    public void maxWriters(int writers) {
@@ -95,9 +107,21 @@ public final class VoxyWriter {
       return longest;
    }
 
+   /** The world is closing: threads waiting for their turn to write leave (CancellationException), none enters. */
+   public void close() {
+      this.closed = true;
+      synchronized (this.gate) {
+         this.gate.notifyAll();
+      }
+   }
+
    private void enter() {
       synchronized (this.gate) {
-         while (this.writing >= this.maxWriters) {
+         while (this.writing >= this.maxWriters || this.closed) {
+            if (this.closed) {
+               throw new java.util.concurrent.CancellationException("the world is closing");
+            }
+
             try {
                this.gate.wait(100L);
             } catch (InterruptedException interrupted) {
@@ -155,7 +179,55 @@ public final class VoxyWriter {
     * were written.
     */
    public int tile(LodBuilder.Worker worker, int tx, int tz, int stride, ChunkTest test) {
-      return stride > 16 ? this.farTile(worker, tx, tz, stride, test) : this.nearTile(worker, tx, tz, stride, test);
+      try {
+         return stride > 16 ? this.farTile(worker, tx, tz, stride, test) : this.nearTile(worker, tx, tz, stride, test);
+      } finally {
+         this.unpinAll(this.work());
+      }
+   }
+
+   /**
+    * Voxy's world sections the chunk's sections go into (levels 0-4, as WorldUpdater.insertUpdate takes them) held by us
+    * while this thread writes there: insertUpdate acquires and releases each of them for every section, and each release
+    * to no reference unloads it (saved by Voxy's saving service, then freed). That churn, hundreds of times a second over
+    * the same sections, is where Voxy 0.2.16's race shows ("Section freed while marked as dirty or in the save queue",
+    * after which its threads and ours wait for ever). Held, they unload once, when we let go: the 64 used last per
+    * thread (a level-0 world section is 32^3 ids, 256 KB), all at the end of each tile.
+    */
+   private void pin(Work work, int cx, int sy, int cz) {
+      if (!this.target.pins()) {
+         return;
+      }
+
+      for (int lvl = 0; lvl <= 4; lvl++) {
+         int x = cx >> (lvl + 1);
+         int y = sy >> (lvl + 1);
+         int z = cz >> (lvl + 1);
+         long key = (long)lvl << 60 | ((long)x & 0xFFFFFL) << 40 | ((long)y & 0xFFFL) << 28 | (long)z & 0xFFFFFL;
+         if (work.pinned.get(key) == null) {
+            Object section = this.target.pin(lvl, x, y, z);
+            if (section != null) {
+               work.pinned.put(key, section);
+            }
+         }
+      }
+   }
+
+   private void unpinAll(Work work) {
+      if (work.pinned.isEmpty()) {
+         return;
+      }
+
+      this.writingSince.put(Thread.currentThread(), System.nanoTime());
+      try {
+         for (Object section : work.pinned.values()) {
+            this.target.unpin(section);
+         }
+
+         work.pinned.clear();
+      } finally {
+         this.writingSince.remove(Thread.currentThread());
+      }
    }
 
    private int nearTile(LodBuilder.Worker worker, int tx, int tz, int stride, ChunkTest test) {
@@ -213,13 +285,33 @@ public final class VoxyWriter {
             highest = Math.max(highest, next != null ? next.highest : chunk.highest + 16);
          }
 
+         if (work.survey) {
+            // /wgaccel lod trees: the trees worked out (LodTreeStats' record), nothing written into Voxy.
+            this.plant(work, chunk);
+            continue;
+         }
+
          insertNanos += this.writeChunk(work, chunk, lowest, highest);
       }
 
       this.writeNanos.add(System.nanoTime() - writeStart - insertNanos);
       this.insertNanos.add(insertNanos);
-      this.chunks.add(n);
+      this.chunks.add(work.survey ? 0 : n);
       return n;
+   }
+
+   /**
+    * {@code /wgaccel lod trees}: tile (tx, tz) at full detail worked out as the generator would, its trees counted
+    * ({@link LodTreeStats}) for the chunks the test takes; nothing written into Voxy.
+    */
+   public int survey(LodBuilder.Worker worker, int tx, int tz, ChunkTest test) {
+      Work work = this.work();
+      work.survey = true;
+      try {
+         return this.nearTile(worker, tx, tz, 1, test);
+      } finally {
+         work.survey = false;
+      }
    }
 
    private int farTile(LodBuilder.Worker worker, int tx, int tz, int stride, ChunkTest test) {
@@ -310,6 +402,8 @@ public final class VoxyWriter {
                   out.ice[col] = wet && from.ice[0];
                   out.snow[col] = !wet && from.snow[0];
                   out.biome[col] = from.biome[0];
+                  out.biomes[col] = from.biomes[0];
+                  out.soil[col] = from.soil[0];
                   out.below[col] = from.below[0];
                   System.arraycopy(from.layers, 0, out.layers, col * LodBuilder.GROUND_DEPTH, LodBuilder.GROUND_DEPTH);
                   out.highest = Math.max(out.highest, out.snow[col] ? out.surface[col] + 1 : out.surface[col]);
@@ -335,6 +429,10 @@ public final class VoxyWriter {
       final int[] surface = new int[256];
       final int[] fluid = new int[256];
       final int[] biome = new int[256];
+      @SuppressWarnings("unchecked")
+      final Holder<Biome>[] biomes = new Holder[256];
+      /** The ground's top block is soil a tree grows on (dirt, grass, podzol...). */
+      final boolean[] soil = new boolean[256];
       final boolean[] snow = new boolean[256];
       final boolean[] ice = new boolean[256];
       /** layers[col * GROUND_DEPTH + k]: the block k under the ground. */
@@ -353,6 +451,52 @@ public final class VoxyWriter {
       /** voxyStepSides: each column's lowest neighbour ground, and whether it is on for the chunk being written. */
       final int[] lowNeighbour = new int[256];
       boolean stepSides;
+      /** Each tree's checks (its base, Integer.MIN_VALUE: it does not grow) and its blocks (x, y, z from its base, id, solid). */
+      final Map<LodTrees.Tree, Integer> bases = new java.util.LinkedHashMap<>(4096, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(Map.Entry<LodTrees.Tree, Integer> eldest) {
+            return this.size() > 16384;
+         }
+      };
+      final Map<LodTrees.Tree, int[]> grown = new java.util.LinkedHashMap<>(1024, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(Map.Entry<LodTrees.Tree, int[]> eldest) {
+            return this.size() > 2048;
+         }
+      };
+      /** Voxy's world sections this thread holds while writing ({@link #pin}): the 64 used last, the eldest let go. */
+      final Map<Long, Object> pinned = new java.util.LinkedHashMap<>(128, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(Map.Entry<Long, Object> eldest) {
+            if (this.size() > 64) {
+               VoxyWriter.this.target.unpin(eldest.getValue());
+               return true;
+            }
+
+            return false;
+         }
+      };
+      /** {@link #survey}: the trees counted, nothing written. */
+      boolean survey;
+      /** voxyTrees: the chunk being written's trees, per section (y >> 4): Voxy block ids, 0 none; spare arrays. */
+      final Map<Integer, int[]> trees = new HashMap<>();
+      final ArrayDeque<int[]> spare = new ArrayDeque<>();
+      @SuppressWarnings("unchecked")
+      final Holder<Biome>[] seen = new Holder[16];
+      int treeTop;
+      /**
+       * The plants placed before the trees over the 3 x 3 chunks around the one written (48 x 48, x then z): 0 none, 1 one a
+       * tree replaces (grass), 2 one it cannot (pink petals...).
+       */
+      final byte[] covered = new byte[48 * 48];
+      /** Each column's highest leaves (Integer.MIN_VALUE: none): snow goes on them where the ground is snowy. */
+      final int[] leafTop = new int[256];
+      /**
+       * The trees standing so far around the chunk being written (its 3 x 3 chunks, taken in order of x then z, the same
+       * order whichever of them is written): trunk x, z and crown radius.
+       */
+      final int[] standing = new int[3 * 2048];
+      int standingCount;
       final int snowId;
       final int iceId;
       Object section;
@@ -389,6 +533,8 @@ public final class VoxyWriter {
          int fluid = surface > ground ? target.block(c.top) : 0;
          int biome = target.biome(c.biome);
          int below = target.block(c.below);
+         BlockState top = c.layers == null ? c.groundTop : c.layers[0];
+         boolean soil = top != null && top.is(BlockTags.DIRT);
          int s = this.stride;
          int at = -1;
          for (int x = i * s; x < Math.min(16, i * s + s); x++) {
@@ -398,6 +544,8 @@ public final class VoxyWriter {
                chunk.surface[col] = surface;
                chunk.fluid[col] = fluid;
                chunk.biome[col] = biome;
+               chunk.biomes[col] = c.biome;
+               chunk.soil[col] = soil;
                chunk.snow[col] = c.snow;
                chunk.ice[col] = c.ice;
                chunk.below[col] = below;
@@ -423,20 +571,28 @@ public final class VoxyWriter {
    private long writeChunk(Work work, ChunkColumns chunk, int lowest, int highest) {
       int cx = Mc.x(chunk.pos);
       int cz = Mc.z(chunk.pos);
+      shape(chunk, work);
+      long trees = System.nanoTime();
+      this.plant(work, chunk);
+      if (work.treeTop != Integer.MIN_VALUE) {
+         this.snowOnTrees(work, chunk);
+      }
+
+      this.treeNanos.add(System.nanoTime() - trees);
       int topSection = (this.minY + this.height - 1) >> 4;
       int from = Math.max(this.minY, lowest - UNDER) >> 4;
-      int to = Math.min(topSection, (Math.max(highest, chunk.highest) >> 4) + 1);
+      int to = Math.min(topSection, (Math.max(Math.max(highest, chunk.highest), work.treeTop) >> 4) + 1);
       if (work.section == null) {
          work.section = this.target.section(cx, from, cz);
       }
 
       long insertNanos = 0;
       long[] data = this.target.data(work.section);
-      shape(chunk, work);
       this.enter();
       try {
          for (int sy = from; sy <= to; sy++) {
-            int nonAir = fill(chunk, work, data, sy << 4);
+            this.pin(work, cx, sy, cz);
+            int nonAir = fill(chunk, work, data, sy << 4, work.trees.get(sy));
             long insert = System.nanoTime();
             this.target.insert(work.section, cx, sy, cz, nonAir);
             insertNanos += System.nanoTime() - insert;
@@ -486,8 +642,251 @@ public final class VoxyWriter {
       }
    }
 
-   /** The section at block y baseY: its 4,096 ids; returns its non-air count. */
-   private static int fill(ChunkColumns chunk, Work work, long[] data, int baseY) {
+   /**
+    * voxyTrees: the trees over the chunk (its own and its neighbours' within {@link LodTrees#REACH}) into work.trees. A
+    * tree stands where its biome is the feature's and the ground is dry soil; a neighbour's column comes from the tile
+    * when it is in it, else the chunk's nearest edge column.
+    */
+   private void plant(Work work, ChunkColumns chunk) {
+      for (Map.Entry<Integer, int[]> entry : work.trees.entrySet()) {
+         Arrays.fill(entry.getValue(), 0);
+         work.spare.add(entry.getValue());
+      }
+
+      work.trees.clear();
+      work.treeTop = Integer.MIN_VALUE;
+      Arrays.fill(work.leafTop, Integer.MIN_VALUE);
+      Config.VoxyFeature mode = Config.VOXY_TREES.get();
+      if (mode == Config.VoxyFeature.OFF || mode == Config.VoxyFeature.NEAR && chunk == work.out) {
+         return;
+      }
+
+      int cx = Mc.x(chunk.pos);
+      int cz = Mc.z(chunk.pos);
+      int x0 = cx * 16;
+      int z0 = cz * 16;
+      work.standingCount = 0;
+      Arrays.fill(work.covered, (byte)0);
+      for (int dx = -1; dx <= 1; dx++) {
+         for (int dz = -1; dz <= 1; dz++) {
+            ChunkColumns other = dx == 0 && dz == 0 ? chunk : chunk == work.out ? null : work.byPos.get(Mc.key(cx + dx, cz + dz));
+            int n = biomes(chunk, work.seen, 0);
+            n = other != null && other != chunk ? biomes(other, work.seen, n) : n;
+            for (int b = 0; b < n; b++) {
+               this.trees.covers(work.seen[b], cx + dx, cz + dz, (x, z, dy, px, pz, blocking) -> {
+                  int i = x - (x0 - 16);
+                  int k = z - (z0 - 16);
+                  // Takes only on free ground just under the try's height (the patch centre's ground + 1 + dy).
+                  if (i >= 0 && i < 48 && k >= 0 && k < 48 && work.covered[i * 48 + k] == 0
+                     && groundAt(work, chunk, x0, z0, px, pz) + dy == groundAt(work, chunk, x0, z0, x, z)) {
+                     work.covered[i * 48 + k] = (byte)(blocking ? 2 : 1);
+                  }
+               });
+            }
+         }
+      }
+
+      int[] record = LodTreeStats.chunk(Mc.key(cx, cz));
+      if (record != null) {
+         for (int col = 0; col < 256; col++) {
+            if (chunk.surface[col] == chunk.ground[col]) {
+               record[1]++;
+               record[2] += chunk.soil[col] ? 1 : 0;
+            }
+         }
+      }
+
+      for (int dx = -1; dx <= 1; dx++) {
+         for (int dz = -1; dz <= 1; dz++) {
+            ChunkColumns other = dx == 0 && dz == 0 ? chunk : chunk == work.out ? null : work.byPos.get(Mc.key(cx + dx, cz + dz));
+            int n = biomes(chunk, work.seen, 0);
+            n = other != null && other != chunk ? biomes(other, work.seen, n) : n;
+            // The same order whichever chunk is written: which tree stands under which depends on it.
+            Arrays.sort(work.seen, 0, n, java.util.Comparator.comparingInt(System::identityHashCode));
+            for (int b = 0; b < n; b++) {
+               Holder<Biome> biome = work.seen[b];
+               trees:
+               for (LodTrees.Tree tree : this.trees.trees(biome, cx + dx, cz + dz)) {
+                  int x = tree.x();
+                  int z = tree.z();
+                  LodTrees.Kind kind = tree.kind();
+                  int height = tree.height();
+                  int radius = tree.radius();
+                  int crown = tree.crown();
+                  // Every tree of the 3 x 3 chunks is looked at (a far one can still stand over a near one's spot);
+                  // only those within reach are drawn.
+                  boolean near = x >= x0 - LodTrees.REACH && x < x0 + 16 + LodTrees.REACH && z >= z0 - LodTrees.REACH
+                     && z < z0 + 16 + LodTrees.REACH;
+                  boolean inside = x >= x0 && x < x0 + 16 && z >= z0 && z < z0 + 16;
+                  // Its spot's checks, once per tree on this thread (each of the 3 x 3 chunks around asks): its base, or
+                  // none when it does not grow.
+                  Integer known = work.bases.get(tree);
+                  int base;
+                  if (known != null) {
+                     base = known;
+                  } else {
+                     base = Integer.MIN_VALUE;
+                     ChunkColumns at = inside ? chunk : chunk == work.out ? null : work.byPos.get(Mc.key(x >> 4, z >> 4));
+                     int col;
+                     if (at == null) {
+                        at = chunk;
+                        col = Math.clamp(z - z0, 0, 15) << 4 | Math.clamp(x - x0, 0, 15);
+                     } else {
+                        col = (z & 15) << 4 | x & 15;
+                     }
+
+                     // Ground cover a tree cannot replace on its spot (pink petals): the room check fails at its base.
+                     int ci = x - (x0 - 16);
+                     int ck = z - (z0 - 16);
+                     boolean covered = kind.config != null && ci >= 0 && ci < 48 && ck >= 0 && ck < 48 && work.covered[ci * 48 + ck] == 2;
+                     // Room to grow (TreeFeature's free height: the ground around the trunk, uphill on a slope, takes it).
+                     if (at.biomes[col] == biome && at.soil[col] && at.surface[col] == at.ground[col] && !covered
+                        && this.trees.fits(kind, height, x, z, at.ground[col] + 1, (gx, gz) -> groundAt(work, chunk, x0, z0, gx, gz))) {
+                        base = at.ground[col] + 1;
+                     }
+
+                     work.bases.put(tree, base);
+                  }
+
+                  if (base == Integer.MIN_VALUE) {
+                     continue trees;
+                  }
+
+                  // A spot under an earlier tree's crown: the game's heightmap finds its leaves there, a sapling does
+                  // not grow on them (dense forests lose a good share; cherry groves most: crowns 9 blocks across).
+                  // Earlier: in this chunk, or in the chunks before it in x, z order.
+                  for (int t = 0; t < work.standingCount; t++) {
+                     int ex = x - work.standing[t * 3];
+                     int ez = z - work.standing[t * 3 + 1];
+                     int er = work.standing[t * 3 + 2];
+                     if (ex * ex + ez * ez <= er * er) {
+                        continue trees;
+                     }
+                  }
+
+                  if (work.standingCount < 2048) {
+                     work.standing[work.standingCount * 3] = x;
+                     work.standing[work.standingCount * 3 + 1] = z;
+                     work.standing[work.standingCount * 3 + 2] = kind.mushroom != 0 ? radius : kind.footprint;
+                     work.standingCount++;
+                  }
+
+                  if (!near) {
+                     continue trees;
+                  }
+
+                  if (inside && record != null) {
+                     record[0]++;
+                  }
+
+                  // Its blocks, grown once per tree on this thread (a tree over a chunk edge is drawn by each chunk it reaches).
+                  int[] blocks = work.grown.get(tree);
+                  if (blocks == null) {
+                     int[][] list = {new int[64 * 5]};
+                     int[] count = {0};
+                     int bx0 = x;
+                     int by0 = base;
+                     int bz0 = z;
+                     this.trees.grow(kind, x, base, z, height, radius, crown, new net.minecraft.world.level.levelgen.LegacyRandomSource(tree.seed()),
+                        (bx, by, bz, id, solid) -> {
+                           if (count[0] + 5 > list[0].length) {
+                              list[0] = Arrays.copyOf(list[0], list[0].length * 2);
+                           }
+
+                           int[] a = list[0];
+                           a[count[0]++] = bx - bx0;
+                           a[count[0]++] = by - by0;
+                           a[count[0]++] = bz - bz0;
+                           a[count[0]++] = id;
+                           a[count[0]++] = solid ? 1 : 0;
+                        });
+                     blocks = Arrays.copyOf(list[0], count[0]);
+                     work.grown.put(tree, blocks);
+                  }
+
+                  for (int i = 0; i < blocks.length; i += 5) {
+                     put(work, chunk, x0, z0, x + blocks[i], base + blocks[i + 1], z + blocks[i + 2], blocks[i + 3], blocks[i + 4] != 0);
+                  }
+               }
+            }
+         }
+      }
+   }
+
+   /** Snow on the highest leaves of each column whose ground is snowy (the game's freeze step puts it on the top block). */
+   private void snowOnTrees(Work work, ChunkColumns chunk) {
+      int x0 = Mc.x(chunk.pos) * 16;
+      int z0 = Mc.z(chunk.pos) * 16;
+      for (int col = 0; col < 256; col++) {
+         int top = work.leafTop[col];
+         if (top != Integer.MIN_VALUE && chunk.snow[col]) {
+            put(work, chunk, x0, z0, x0 + (col & 15), top + 1, z0 + (col >> 4), work.snowId, false);
+         }
+      }
+   }
+
+   /** The ground at block column (x, z): the chunk's, a tile neighbour's, else the chunk's nearest edge column. */
+   private static int groundAt(Work work, ChunkColumns chunk, int x0, int z0, int x, int z) {
+      if (x >= x0 && x < x0 + 16 && z >= z0 && z < z0 + 16) {
+         return chunk.ground[(z - z0) << 4 | x - x0];
+      }
+
+      ChunkColumns other = chunk == work.out ? null : work.byPos.get(Mc.key(x >> 4, z >> 4));
+      return other != null ? other.ground[(z & 15) << 4 | x & 15]
+         : chunk.ground[Math.clamp(z - z0, 0, 15) << 4 | Math.clamp(x - x0, 0, 15)];
+   }
+
+   /** The distinct biomes of the chunk's columns added to seen (at most its length); returns the count. */
+   private static int biomes(ChunkColumns chunk, Holder<Biome>[] seen, int n) {
+      outer:
+      for (int col = 0; col < 256 && n < seen.length; col++) {
+         Holder<Biome> biome = chunk.biomes[col];
+         if (biome == null) {
+            continue;
+         }
+
+         for (int i = 0; i < n; i++) {
+            if (seen[i] == biome) {
+               continue outer;
+            }
+         }
+
+         seen[n++] = biome;
+      }
+
+      return n;
+   }
+
+   private static void put(Work work, ChunkColumns chunk, int x0, int z0, int x, int y, int z, int block, boolean over) {
+      int lx = x - x0;
+      int lz = z - z0;
+      if (lx < 0 || lx > 15 || lz < 0 || lz > 15) {
+         return;
+      }
+
+      int col = lz << 4 | lx;
+      if (y <= chunk.surface[col]) {
+         return;
+      }
+
+      int[] section = work.trees.get(y >> 4);
+      if (section == null) {
+         section = work.spare.isEmpty() ? new int[4096] : work.spare.poll();
+         work.trees.put(y >> 4, section);
+      }
+
+      int i = (y & 15) << 8 | col;
+      if (over || section[i] == 0) {
+         section[i] = block;
+         work.treeTop = Math.max(work.treeTop, y);
+         if (!over) {
+            work.leafTop[col] = Math.max(work.leafTop[col], y);
+         }
+      }
+   }
+
+   /** The section at block y baseY: its 4,096 ids (trees: voxyTrees' blocks, null none); returns its non-air count. */
+   private static int fill(ChunkColumns chunk, Work work, long[] data, int baseY, int[] trees) {
       int nonAir = 0;
       long sky = VoxyAccess.air(SKY);
       for (int col = 0; col < 256; col++) {
@@ -503,7 +902,10 @@ public final class VoxyWriter {
          for (int ly = 0; ly < 16; ly++) {
             int y = baseY + ly;
             long id;
-            if (y > surface) {
+            int tree = y > surface && trees != null ? trees[ly << 8 | col] : 0;
+            if (tree != 0) {
+               id = VoxyAccess.id(SKY, tree, biome);
+            } else if (y > surface) {
                id = snow && y == surface + 1 ? VoxyAccess.id(SKY, work.snowId, biome) : sky;
             } else if (y > ground) {
                // Water dims sky light by one a block.

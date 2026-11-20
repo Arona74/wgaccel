@@ -43,6 +43,12 @@ public final class VoxyAccess {
    private final Field nonAir;
    private final MethodHandle mip;
    private final MethodHandle insert;
+   /**
+    * WorldEngine.acquire(lvl, x, y, z) and WorldSection.release(): a reference of ours on a world section while we write
+    * into it (null when missing: no pinning).
+    */
+   private final MethodHandle acquireSection;
+   private final MethodHandle releaseSection;
    /** VoxelIngestService.tryAutoIngestChunk(LevelChunk): Voxy's own ingest of a real chunk (null when missing). */
    private final MethodHandle ingest;
 
@@ -94,6 +100,18 @@ public final class VoxyAccess {
       }
 
       this.ingest = ingest;
+      MethodHandle acquireSection = null;
+      MethodHandle releaseSection = null;
+      try {
+         Method acquire = engine.getMethod("acquire", int.class, int.class, int.class, int.class);
+         acquireSection = lookup.unreflect(acquire);
+         releaseSection = lookup.unreflect(acquire.getReturnType().getMethod("release"));
+      } catch (ReflectiveOperationException missing) {
+         // Then sections are not pinned.
+      }
+
+      this.acquireSection = acquireSection;
+      this.releaseSection = releaseSection;
       // The id layout checked against Voxy's own.
       Method compose = mapper.getMethod("composeMappingId", byte.class, int.class, int.class);
       long theirs = (long)compose.invoke(null, (byte)0x5A, 12345, 321);
@@ -261,6 +279,29 @@ public final class VoxyAccess {
             VoxyAccess.this.insert.invoke(this.engine, section);
          } catch (Throwable error) {
             throw new IllegalStateException("Voxy's section insert", error);
+         }
+      }
+
+      /** Whether world sections can be pinned ({@link #pin}). */
+      public boolean pins() {
+         return VoxyAccess.this.acquireSection != null;
+      }
+
+      /** A reference of ours on world section (lvl, x, y, z) (loaded if need be), or null when it failed. */
+      public Object pin(int lvl, int x, int y, int z) {
+         try {
+            return VoxyAccess.this.acquireSection.invoke(this.engine, lvl, x, y, z);
+         } catch (Throwable error) {
+            return null;
+         }
+      }
+
+      /** Our reference given back. */
+      public void unpin(Object section) {
+         try {
+            VoxyAccess.this.releaseSection.invoke(section);
+         } catch (Throwable error) {
+            WorldgenAccelerator.LOG.debug("WGA Voxy LOD generator: a section's reference not given back", error);
          }
       }
 

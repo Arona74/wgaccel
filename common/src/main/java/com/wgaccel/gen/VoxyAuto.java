@@ -114,6 +114,37 @@ public final class VoxyAuto {
       this.doneFile = root.resolve("data").resolve(FILE);
    }
 
+   private final long[] lastTimes = new long[6];
+
+   /** The last minute's time per chunk written (ms, all threads): columns, trees, the rest of the fill, Voxy's insert; sections per chunk. */
+   private String times() {
+      VoxyWriter writer = this.writer;
+      if (writer == null) {
+         return "";
+      }
+
+      long[] now = {writer.chunks.sum(), writer.sections.sum(), writer.columnNanos.sum(), writer.treeNanos.sum(), writer.writeNanos.sum(), writer.insertNanos.sum()};
+      long chunks = now[0] - this.lastTimes[0];
+      double[] d = new double[6];
+      for (int i = 0; i < 6; i++) {
+         d[i] = now[i] - this.lastTimes[i];
+      }
+
+      System.arraycopy(now, 0, this.lastTimes, 0, 6);
+      if (chunks <= 0) {
+         return "";
+      }
+
+      return String.format(Locale.ROOT, " | per chunk (ms of thread time): columns %.3f, trees %.3f, fill %.3f, Voxy insert %.3f; %.1f sections",
+         d[2] / chunks / 1e6, d[3] / chunks / 1e6, (d[4] - d[3]) / chunks / 1e6, d[5] / chunks / 1e6, d[1] / chunks);
+   }
+
+   /** The running generator's writer (null when none yet): {@code /wgaccel lod trees} works out trees with it. */
+   public static VoxyWriter writer() {
+      VoxyAuto auto = instance;
+      return auto == null ? null : auto.writer;
+   }
+
    /** From the server's start: the generator's scheduler (it does nothing while voxyGenerator is off). */
    public static void start(MinecraftServer server) {
       if (!com.wgaccel.platform.Platform.get().isModLoaded("voxy")) {
@@ -138,9 +169,23 @@ public final class VoxyAuto {
 
       auto.stopped = true;
       auto.vwg.restore();
+      VoxyWriter writer = auto.writer;
+      if (writer != null) {
+         // Workers waiting for their turn to write leave at once.
+         writer.close();
+      }
+
+      // At most 10 s for all of them: a worker inside a Voxy write that never returns (its 0.2.16 race: "Section freed
+      // while marked as dirty" leaves a lock of its section tracker held) is a daemon and is left behind.
+      long until = System.nanoTime() + 10_000_000_000L;
       for (Thread worker : auto.workers) {
+         long left = (until - System.nanoTime()) / 1_000_000L;
+         if (left <= 0) {
+            break;
+         }
+
          try {
-            worker.join(30_000L);
+            worker.join(left);
          } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             break;
@@ -148,9 +193,13 @@ public final class VoxyAuto {
       }
 
       auto.save();
-      VoxyWriter writer = auto.writer;
       if (writer != null) {
-         writer.release();
+         if (writer.longestWriteNanos() > 0) {
+            // Giving Voxy's world back would wait on the same held lock: the game could not close.
+            WorldgenAccelerator.LOG.warn("WGA Voxy LOD generator: a write into Voxy never returned (Voxy's own error earlier in the log); its world is left to Voxy");
+         } else {
+            writer.release();
+         }
       }
 
       VoxyProgress.publish(null);
@@ -228,7 +277,7 @@ public final class VoxyAuto {
          if (progress != null && now > nextLog) {
             nextLog = now + 60_000_000_000L;
             if (progress.state() != VoxyProgress.State.DONE || this.dirty) {
-               WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, progress.line());
+               WorldgenAccelerator.LOG.info(LevelLogger.ALWAYS, progress.line() + this.times());
             }
          }
 

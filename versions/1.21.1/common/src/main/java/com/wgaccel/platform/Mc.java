@@ -320,4 +320,56 @@ public final class Mc {
    public static net.minecraft.tags.TagKey<Block> geodeInvalidBlocks(net.minecraft.world.level.levelgen.GeodeBlockSettings settings) {
       return net.minecraft.tags.BlockTags.GEODE_INVALID_BLOCKS;
    }
+
+   /** A block state provider's block at pos with no level (26.1.2 asks for one; the simple providers ignore it). */
+   public static net.minecraft.world.level.block.state.BlockState providedState(
+      net.minecraft.world.level.levelgen.feature.stateproviders.BlockStateProvider provider, net.minecraft.util.RandomSource random,
+      net.minecraft.core.BlockPos pos) {
+      return provider.getState(random, pos);
+   }
+
+   /**
+    * A tree grown by its own trunk and foliage placers (TreeFeature's steps) in an empty world: logs and leaves handed out.
+    * False when this version cannot (the caller draws a simple shape).
+    */
+   public static boolean growTree(net.minecraft.world.level.levelgen.feature.configurations.TreeConfiguration config,
+      net.minecraft.util.RandomSource random, int height, net.minecraft.core.BlockPos pos, int foliageHeight, int foliageRadius,
+      java.util.function.BiConsumer<net.minecraft.core.BlockPos, net.minecraft.world.level.block.state.BlockState> logs,
+      java.util.function.BiConsumer<net.minecraft.core.BlockPos, net.minecraft.world.level.block.state.BlockState> leaves) {
+      // NeoForge's TrunkPlacer.setDirtAt casts the world to LevelReader: an empty one that is both.
+      net.minecraft.world.level.LevelSimulatedReader empty = com.wgaccel.gen.EmptyWorld.of(net.minecraft.world.level.LevelSimulatedReader.class,
+         net.minecraft.world.level.LevelReader.class);
+      net.minecraft.world.level.levelgen.feature.foliageplacers.FoliagePlacer.FoliageSetter setter =
+         new net.minecraft.world.level.levelgen.feature.foliageplacers.FoliagePlacer.FoliageSetter() {
+            @Override
+            public void set(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state) {
+               leaves.accept(pos, state);
+            }
+
+            @Override
+            public boolean isSet(net.minecraft.core.BlockPos pos) {
+               return false;
+            }
+         };
+      for (net.minecraft.world.level.levelgen.feature.foliageplacers.FoliagePlacer.FoliageAttachment attachment
+         : config.trunkPlacer.placeTrunk(empty, logs, random, height, pos, config)) {
+         config.foliagePlacer.createFoliage(empty, setter, random, config, height, attachment, foliageHeight, foliageRadius);
+      }
+
+      return true;
+   }
+
+   /** A huge mushroom's cap provider, stem provider and cap radius. */
+   public static Object[] mushroom(net.minecraft.world.level.levelgen.feature.configurations.HugeMushroomFeatureConfiguration config) {
+      return new Object[]{config.capProvider, config.stemProvider, config.foliageRadius};
+   }
+
+   /** A random patch's tries, xz spread, placed feature and y spread (RandomPatchConfiguration), else null. */
+   public static Object[] patch(net.minecraft.world.level.levelgen.feature.configurations.FeatureConfiguration config) {
+      if (config instanceof net.minecraft.world.level.levelgen.feature.configurations.RandomPatchConfiguration patch) {
+         return new Object[]{patch.tries(), patch.xzSpread(), patch.feature(), patch.ySpread()};
+      }
+
+      return null;
+   }
 }

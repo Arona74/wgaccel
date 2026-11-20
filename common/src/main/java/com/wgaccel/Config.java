@@ -49,6 +49,7 @@ public final class Config {
    public static final Setting<Integer> VOXY_VWG_AFTER_RADIUS;
    public static final Setting<VoxyDither> VOXY_HEIGHT_DITHER;
    public static final Setting<Boolean> VOXY_STEP_SIDES;
+   public static final Setting<VoxyFeature> VOXY_TREES;
    public static final Setting<Integer> VOXY_REAL_CHUNKS_RADIUS;
    public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
@@ -175,6 +176,13 @@ public final class Config {
    public enum VoxyDither {
       OFF,
       FAR,
+      ALL
+   }
+
+   /** Which of the Voxy LOD generator's rings get an added feature (trees...): none, the full-detail ones, all. */
+   public enum VoxyFeature {
+      OFF,
+      NEAR,
       ALL
    }
 
@@ -840,8 +848,9 @@ public final class Config {
          "world's region files) are never written over. Overworld only; needs the GPU noise fill. /wgaccel lod voxy runs it once",
          "by hand.").push("voxy");
       VOXY_GENERATOR = Setting.custom(builder
-         .comment("The automatic Voxy LOD generator on or off. Off by default (in development).")
-         .define("voxyGenerator", false));
+         .comment("The automatic Voxy LOD generator on or off (only does anything with Voxy installed). On by default since 0.70.3;",
+            "a config written by an older version keeps its value.")
+         .define("voxyGenerator", true));
       VOXY_RINGS = Setting.custom(builder
          .comment("The rings, nearest first, as \"radius:stride\": radius in chunks from the player, stride the blocks between the",
             "columns worked out. Stride 1, 2, 4, 8 or 16: every chunk (1 = every column, full detail; above 1 it is no faster:",
@@ -881,6 +890,14 @@ public final class Config {
             "of what lies under it (dirt), so slopes are not striped green and brown. LODs then differ a little from the real chunks",
             "that replace them. Applies to LODs made from now on.")
          .define("voxyStepSides", false));
+      builder.pop();
+      builder.comment("What the LODs show besides the terrain. Each: OFF, NEAR (the rings of stride 16 and under), ALL (every ring).",
+         "Applies to LODs made from now on (/wgaccel lod voxy reset to make them again).").push("features");
+      VOXY_TREES = Setting.custom(builder
+         .comment("Trees: each biome's own trees and huge mushrooms, grown by the game's own trunk and leaf placers",
+            "(FreeTerraForged: its tree templates), about as many as the game makes and in its pattern, not its exact spots.",
+            "Real chunks replace them. Mods' own non-vanilla tree features are left out. About 6% slower in the far rings.")
+         .defineEnum("voxyTrees", VoxyFeature.ALL));
       builder.pop();
       VOXY_WITH_VWG = Setting.custom(builder
          .comment("With Voxy World Gen V2 (VWG) installed and on (its config/voxyworldgenv2.json, only read):",

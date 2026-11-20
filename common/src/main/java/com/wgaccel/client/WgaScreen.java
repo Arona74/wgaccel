@@ -285,7 +285,7 @@ public final class WgaScreen extends CanvasScreen {
 
    /** The tab's settings (its Defaults button resets them). */
    private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_PERFORMANCE, Config.VOXY_THREADS,
-      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
+      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
       Config.VOXY_OVERLAY_HIDE_WHEN_DONE);
 
    private int lods(List<Placed> widgets) {
@@ -330,6 +330,11 @@ public final class WgaScreen extends CanvasScreen {
             + " New LODs only (/wgaccel lod voxy reset).", y);
       y += this.setting(widgets, Config.VOXY_STEP_SIDES, "Step sides like the surface",
          "Against moire far away: the side of each step shows the surface block (grass, snow) instead of dirt. New LODs only.", y);
+      y += 6;
+      y += this.text(Component.literal("Features").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
+      y += this.setting(widgets, Config.VOXY_TREES, "Trees",
+         "Each biome's own trees and huge mushrooms, shaped as the game grows them, about as many as it makes. ALL: every ring; NEAR: the full-detail rings; OFF."
+            + " New LODs only (/wgaccel lod voxy reset).", y);
       return y;
    }
 

@@ -6,6 +6,8 @@
   "compatibilityLevel": "${mixin_java}",
   "mixins": [
     "TileGeneratorMixin",
+    "FastPoissonAccessor",
+    "FeatureTemplateAccessor",
     "WorldFiltersMixin",
     "TileCacheMixin",
     "BiomeSelectionMixin",

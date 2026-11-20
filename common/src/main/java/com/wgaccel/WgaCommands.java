@@ -50,6 +50,10 @@ public final class WgaCommands {
                      .then(Commands.argument("threads", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 16))
                         .executes(context -> lodDh(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "detail"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "sections"),
                            com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads")))))))
+            .then(Commands.literal("trees")
+               .executes(context -> lodTrees(context, 8))
+               .then(Commands.argument("radius", com.mojang.brigadier.arguments.IntegerArgumentType.integer(1, 32))
+                  .executes(context -> lodTrees(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius")))))
             .then(Commands.literal("voxy")
                .executes(context -> lodVoxy(context, 64, 4, 1, 0))
                .then(Commands.literal("stop").executes(context -> com.wgaccel.gen.VoxyLodGenerator.stop(reporter(context)) ? 1 : 0))
@@ -69,6 +73,39 @@ public final class WgaCommands {
                         .then(Commands.argument("from", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 4096))
                            .executes(context -> lodVoxy(context, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "radius"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "threads"),
                               com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "stride"), com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(context, "from"))))))))));
+   }
+
+   /** {@code /wgaccel lod trees [radius]}: real trees per chunk by biome around the caller vs the Voxy LODs' ({@link com.wgaccel.gen.LodTreeStats}). */
+   private static int lodTrees(CommandContext<CommandSourceStack> context, int radius) {
+      CommandSourceStack source = context.getSource();
+      net.minecraft.core.BlockPos at = net.minecraft.core.BlockPos.containing(source.getPosition());
+      java.util.function.Consumer<String> out = reporter(context);
+      com.wgaccel.gen.VoxyWriter writer = com.wgaccel.gen.VoxyAuto.writer();
+      if (writer == null) {
+         com.wgaccel.gen.LodTreeStats.compare(source.getLevel(), at, radius).forEach(out);
+         return 1;
+      }
+
+      // The LODs' trees for the same chunks worked out first (off the server thread: the GPU columns), then compared there.
+      int cx0 = at.getX() >> 4;
+      int cz0 = at.getZ() >> 4;
+      Thread survey = new Thread(() -> {
+         try {
+            com.wgaccel.gen.LodBuilder.Worker worker = writer.worker(() -> !source.getServer().isRunning());
+            for (int tx = Math.floorDiv(cx0 - radius, com.wgaccel.gen.VoxyWriter.TILE); tx <= Math.floorDiv(cx0 + radius, com.wgaccel.gen.VoxyWriter.TILE); tx++) {
+               for (int tz = Math.floorDiv(cz0 - radius, com.wgaccel.gen.VoxyWriter.TILE); tz <= Math.floorDiv(cz0 + radius, com.wgaccel.gen.VoxyWriter.TILE); tz++) {
+                  writer.survey(worker, tx, tz, (x, z) -> Math.abs(x - cx0) <= radius && Math.abs(z - cz0) <= radius);
+               }
+            }
+         } catch (RuntimeException failure) {
+            WorldgenAccelerator.LOG.warn("WGA trees per chunk: the LODs' trees could not be worked out", failure);
+         }
+
+         source.getServer().execute(() -> com.wgaccel.gen.LodTreeStats.compare(source.getLevel(), at, radius).forEach(out));
+      }, "WGA tree survey");
+      survey.setDaemon(true);
+      survey.start();
+      return 1;
    }
 
    /** Report lines to the log (ALWAYS: they share their text up to the first digit) and to the caller. */
