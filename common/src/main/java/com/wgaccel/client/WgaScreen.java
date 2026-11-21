@@ -286,7 +286,7 @@ public final class WgaScreen extends CanvasScreen {
    /** The tab's settings (its Defaults button resets them). */
    private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_PERFORMANCE, Config.VOXY_THREADS,
       Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
-      Config.VOXY_OVERLAY_HIDE_WHEN_DONE);
+      Config.VOXY_OVERLAY_HIDE_WHEN_DONE, Config.VOXY_OVERLAY_ANIMATION);
 
    private int lods(List<Placed> widgets) {
       int left = this.left();
@@ -323,6 +323,7 @@ public final class WgaScreen extends CanvasScreen {
       y += this.setting(widgets, Config.VOXY_PROGRESS, "Show progress", "OVERLAY: a panel in a corner of the screen; F3: lines in the debug screen; BOTH; OFF.", y);
       y += this.setting(widgets, Config.VOXY_OVERLAY_CORNER, "Panel corner", "Which corner of the screen the panel sits in.", y);
       y += this.setting(widgets, Config.VOXY_OVERLAY_HIDE_WHEN_DONE, "Hide when done", "The panel goes 10 seconds after the rings are done; it comes back when you move on.", y);
+      y += this.setting(widgets, Config.VOXY_OVERLAY_ANIMATION, "Chase scene", "A cheetah chasing a hare through the biomes, under the panel's title (and on the world-loading screen); it runs at the generator's speed.", y);
       y += 6;
       y += this.text(Component.literal("Visuals").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
       y += this.setting(widgets, Config.VOXY_HEIGHT_DITHER, "Height dither",

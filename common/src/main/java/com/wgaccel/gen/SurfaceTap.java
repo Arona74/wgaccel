@@ -28,7 +28,7 @@ import net.minecraft.world.level.block.state.BlockState;
  */
 public final class SurfaceTap {
    public static final int STRATA_MAX = 64;
-   public static final int FIELDS = 13;
+   public static final int FIELDS = 14;
 
    /** A tapped chunk's calls (FIELDS ints each), results (state index, -1 for null), and per-column secondary and strata. */
    public static final class Tap {
@@ -82,6 +82,8 @@ public final class SurfaceTap {
       Object strata;
       long lastXZ = Long.MIN_VALUE;
       int fastFlags;
+      long solidTopXZ = Long.MIN_VALUE;
+      int solidTop;
       final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
    }
 
@@ -178,6 +180,19 @@ public final class SurfaceTap {
    }
 
    /** C1: Lithostitched's SlopeCondition input: the highest minus the lowest of the four neighbours' WORLD_SURFACE_WG heights. */
+   /** The column's highest block that is neither air nor a fluid (as the Still Life FTF bridge's SurfaceLayer reads it); minY - 1 when none. */
+   private static int solidTop(net.minecraft.world.level.chunk.ChunkAccess chunk, int x, int z, BlockPos.MutableBlockPos pos) {
+      int min = Mc.minY(chunk);
+      for (int y = chunk.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG, x & 15, z & 15); y >= min; y--) {
+         BlockState state = chunk.getBlockState(pos.set(x, y, z));
+         if (!state.isAir() && state.getFluidState().isEmpty()) {
+            return y;
+         }
+      }
+
+      return min - 1;
+   }
+
    private static int slope(net.minecraft.world.level.chunk.ChunkAccess chunk, int x, int z) {
       net.minecraft.world.level.levelgen.Heightmap.Types type = net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG;
       int north = chunk.getHeight(type, x, Math.max(z - 1, 0));
@@ -268,6 +283,14 @@ public final class SurfaceTap {
       int packed = columns == null ? column : column | (columns.flags(x, z) & 65535) << 8;
       tap.calls[at + 11] = packed | (current.fastFlags << 24);
       tap.calls[at + 12] = slope(current.chunk, x & 15, z & 15);
+      // The column's highest solid block (the Still Life FTF bridge's surface_layer), read at its first rule call: the
+      // rules run from the top down, so nothing in the column has changed yet.
+      if (current.solidTopXZ != updateXZ) {
+         current.solidTopXZ = updateXZ;
+         current.solidTop = solidTop(current.chunk, x, z, current.pos);
+      }
+
+      tap.calls[at + 13] = current.solidTop;
       tap.secondary[column] = c.wgaccel$secondary();
       tap.results[tap.count] = state == null ? -1 : codegen.state(state);
       tap.count++;

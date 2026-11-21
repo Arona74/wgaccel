@@ -81,6 +81,12 @@ final class LodTrees {
        * (the game's heightmap finds the leaves, a sapling does not take there).
        */
       int footprint = 2;
+      /**
+       * The counting and spreading modifiers of the placed features between the source and this tree (a selector's
+       * entry with its own count, a random patch's tries: Still Life's groups), run again from the source's spot; null
+       * when there are none (one tree at the spot).
+       */
+      List<PlacementModifier> inner;
 
       Kind(List<com.wgaccel.ftf.FtfTrees.Shape[]> templates, int radius, String names) {
          this.config = null;
@@ -264,30 +270,42 @@ final class LodTrees {
                continue;
             }
 
-            int height = 5;
-            int radius = 2;
-            int crown = 3;
-            if (kind.templates != null) {
-               radius = kind.capRadius;
-            } else if (kind.mushroom != 0) {
-               // HugeMushroomFeature's height.
-               height = own.nextInt(3) + 4;
-               height *= own.nextInt(12) == 0 ? 2 : 1;
-               radius = kind.capRadius;
-               crown = 0;
+            if (kind.inner == null) {
+               this.tree(kind, x, z, own, out);
             } else {
-               try {
-                  height = kind.config.trunkPlacer.getTreeHeight(own);
-                  crown = Math.max(1, kind.config.foliagePlacer.foliageHeight(own, height, kind.config));
-                  radius = Math.max(1, kind.config.foliagePlacer.foliageRadius(own, height - crown));
-               } catch (RuntimeException odd) {
-                  // A placer that needs more than a random: the defaults.
+               // The chosen entry's own counts and spread, from this spot (as the game runs a nested placed feature).
+               for (BlockPos at : this.spots(kind.inner, source.context, own, spot)) {
+                  this.tree(kind, at.getX(), at.getZ(), new LegacyRandomSource(mix(own.nextLong() ^ mix(at.getX() * 0x632BE59BD9B4E019L + at.getZ()))), out);
                }
             }
-
-            out.add(new Tree(x, z, kind, Math.min(height, 40), Math.min(radius, REACH - 1), Math.min(crown, 16), own.nextLong()));
          }
       }
+   }
+
+   /** A tree of this kind at (x, z): its height and crown from the random. */
+   private void tree(Kind kind, int x, int z, RandomSource own, List<Tree> out) {
+      int height = 5;
+      int radius = 2;
+      int crown = 3;
+      if (kind.templates != null) {
+         radius = kind.capRadius;
+      } else if (kind.mushroom != 0) {
+         // HugeMushroomFeature's height.
+         height = own.nextInt(3) + 4;
+         height *= own.nextInt(12) == 0 ? 2 : 1;
+         radius = kind.capRadius;
+         crown = 0;
+      } else {
+         try {
+            height = kind.config.trunkPlacer.getTreeHeight(own);
+            crown = Math.max(1, kind.config.foliagePlacer.foliageHeight(own, height, kind.config));
+            radius = Math.max(1, kind.config.foliagePlacer.foliageRadius(own, height - crown));
+         } catch (RuntimeException odd) {
+            // A placer that needs more than a random: the defaults.
+         }
+      }
+
+      out.add(new Tree(x, z, kind, Math.min(height, 40), Math.min(radius, REACH - 1), Math.min(crown, 16), own.nextLong()));
    }
 
    /**
@@ -315,7 +333,14 @@ final class LodTrees {
 
    /** A placement's spots in chunk (cx, cz): its counting and spreading modifiers run with a random of ours. */
    private List<BlockPos> spots(List<PlacementModifier> placement, PlacementContext context, RandomSource random, int cx, int cz) {
-      List<BlockPos> spots = List.of(new BlockPos(cx * 16, 0, cz * 16));
+      return this.spots(placement, context, random, new BlockPos(cx * 16, 0, cz * 16));
+   }
+
+   /** A placement's spots from this start (a nested placed feature: its parent's spot). */
+   private List<BlockPos> spots(List<PlacementModifier> placement, PlacementContext context, RandomSource random, BlockPos start) {
+      int cx = start.getX() >> 4;
+      int cz = start.getZ() >> 4;
+      List<BlockPos> spots = List.of(start);
       for (PlacementModifier modifier : placement) {
          List<BlockPos> next = new ArrayList<>();
          if (this.ftf && com.wgaccel.ftf.FtfTrees.poisson(modifier)) {
@@ -457,6 +482,9 @@ final class LodTrees {
             for (int i = 0; i < kinds.size(); i++) {
                trees.append(i == 0 ? "" : ", ").append(kinds.get(i).names).append(' ')
                   .append(String.format(java.util.Locale.ROOT, "%.0f%% (leaves reach %d)", chances.get(i)[0] * 100, kinds.get(i).footprint));
+               if (kinds.get(i).inner != null) {
+                  trees.append(" then ").append(kinds.get(i).inner.stream().map(m -> m.getClass().getSimpleName()).toList());
+               }
             }
 
             described.add(placed.getRegisteredName() + " [" + trees + "; counted by "
@@ -482,8 +510,51 @@ final class LodTrees {
       }
    }
 
-   /** The trees a placed feature makes, each with its probability (weight: the probability of reaching it). */
+   /**
+    * The trees a placed feature makes, each with its probability (weight: the probability of reaching it). Below the
+    * source (depth > 0), the placed feature's own counting modifiers, and a random patch's tries when they spread out,
+    * go in front of the inner ones of each tree found under it.
+    */
    private void collect(PlacedFeature placed, float weight, List<float[]> chances, List<Kind> kinds, int depth) {
+      int before = kinds.size();
+      this.collectHere(placed, weight, chances, kinds, depth);
+      if (depth == 0 || kinds.size() == before) {
+         return;
+      }
+
+      List<PlacementModifier> mine = new ArrayList<>();
+      for (PlacementModifier modifier : placed.placement()) {
+         if (this.counted(modifier)) {
+            mine.add(modifier);
+         }
+      }
+
+      Object[] patch = com.wgaccel.platform.Mc.patch(placed.feature().value().config());
+      if (patch != null && (Integer)patch[0] > 1 && (Integer)patch[1] > 1) {
+         // RandomPatchFeature's tries spread around the spot (a pale oak or maple grove): about as many trees, spread
+         // as far (its offsets are a triangle, these even).
+         int spread = (Integer)patch[1];
+         mine.add(CountPlacement.of((Integer)patch[0]));
+         mine.add(RandomOffsetPlacement.of(net.minecraft.util.valueproviders.UniformInt.of(-spread, spread),
+            net.minecraft.util.valueproviders.ConstantInt.of(0)));
+      }
+
+      if (mine.isEmpty()) {
+         return;
+      }
+
+      for (int i = before; i < kinds.size(); i++) {
+         Kind kind = kinds.get(i);
+         List<PlacementModifier> inner = new ArrayList<>(mine);
+         if (kind.inner != null) {
+            inner.addAll(kind.inner);
+         }
+
+         kind.inner = List.copyOf(inner);
+      }
+   }
+
+   private void collectHere(PlacedFeature placed, float weight, List<float[]> chances, List<Kind> kinds, int depth) {
       if (depth > 6 || weight <= 0) {
          return;
       }
@@ -601,6 +672,17 @@ final class LodTrees {
       } else if (config instanceof RandomBooleanFeatureConfiguration either) {
          this.collect(either.featureTrue.value(), weight / 2, chances, kinds, depth + 1);
          this.collect(either.featureFalse.value(), weight / 2, chances, kinds, depth + 1);
+      } else if (config instanceof net.minecraft.world.level.levelgen.feature.configurations.VegetationPatchConfiguration patch) {
+         // A patch of ground with a tree on it (Still Life's baobabs, redwoods, kapoks, old oaks): the tree.
+         this.collect(patch.vegetationFeature.value(), weight * Math.min(1.0F, patch.vegetationChance * 4), chances, kinds, depth + 1);
+      } else {
+         Object[] patch = com.wgaccel.platform.Mc.patch(config);
+         if (patch != null) {
+            // A random patch of trees (Still Life's: mostly one try on the spot): its feature, its tries added by collect.
+            @SuppressWarnings("unchecked")
+            Holder<PlacedFeature> inner = (Holder<PlacedFeature>)patch[2];
+            this.collect(inner.value(), weight, chances, kinds, depth + 1);
+         }
       }
    }
 

@@ -38,7 +38,7 @@ public final class VersionSupport {
    }
 
    private static final List<SupportedMod> SUPPORTED = List.of(
-      new SupportedMod("freeterraforged", "FreeTerraForged", Category.FTF, "1.0.0010", "1.0.0033", "1.0.0010 - 1.0.0033"),
+      new SupportedMod("freeterraforged", "FreeTerraForged", Category.FTF, "1.0.0010", "1.0.0034", "1.0.0010 - 1.0.0034"),
       new SupportedMod("reterraforged", "Conquest ReTerraForged", Category.TERRAIN, "0.1.0", "0.1.99", "0.1.0"),
       new SupportedMod("roadweaver", "RoadWeaver", Category.TERRAIN, "2.3.0", "2.3.99", "2.3.2"),
       new SupportedMod("wwoo", "William Wythers' Overhauled Overworld (WWOO)", Category.BIOME, "2.6.0", "2.6.99", "2.6.7"),
@@ -50,7 +50,7 @@ public final class VersionSupport {
       new SupportedMod("mr_still_life", "Still Life (FTF edition)", Category.BIOME, "0.3.0", "0.3.99", "0.3-ftf"),
       new SupportedMod("still_life", "Still Life", Category.BIOME, "0.3.0", "0.3.99", "0.3 - 0.3.5"),
       new SupportedMod("stilllife", "Still Life", Category.BIOME, "0.3.0", "0.3.99", "0.3 - 0.3.5"),
-      new SupportedMod("stilllife_ftf_bridge", "Still Life x FreeTerraForged Bridge", Category.BIOME, "3.3.0", "3.3.99", "3.3.0"),
+      new SupportedMod("stilllife_ftf_bridge", "Still Life x FreeTerraForged Bridge", Category.BIOME, "3.3.0", "5.5.99", "3.3.0, 5.5.0"),
       new SupportedMod("nomansland", "No Man's Land", Category.BIOME, "1.6.0", "1.6.99", "1.6.2"),
       new SupportedMod("terrablender", "TerraBlender", Category.BIOME, "4.1.0.0", "4.1.0.99", "4.1.0.8"),
       new SupportedMod("lithostitched", "Lithostitched", Category.BIOME, "1.8.0", "1.8.99", "1.8.0 - 1.8.1"),

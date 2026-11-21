@@ -47,6 +47,8 @@ public final class SurfaceCodegen {
     * layer is plain stone. Both followed here when FreeTerraForged has the class.
     */
    private final boolean fastStrata;
+   /** The tree has the Still Life FTF bridge's surface_layer: the kernels work out each column's highest solid block. */
+   private boolean solidTop;
    /**
     * FreeTerraForged 1.0.0014's FastStrataSequenceRule (72c60c35): deepslate only past 10 blocks of stone above and 4
     * below, the strata asked first there; strata straight past 20 above and 4 below, desert or not. Until then 2 / 1
@@ -236,9 +238,10 @@ public final class SurfaceCodegen {
                                                  const int* strataCount, int strataMax, const double* nd, const int* np, int* out) {
              int t = blockIdx.x * blockDim.x + threadIdx.x;
              if (t >= count) return;
-             const int* r = calls + t * 13;
+             const int* r = calls + t * 14;
              SCtx c;
              c.fastFlags = ((unsigned int)r[11]) >> 24;
+             c.solidTop = r[13];
              c.x = r[0];
              c.y = r[1];
              c.z = r[2];
@@ -362,6 +365,15 @@ public final class SurfaceCodegen {
              c.strataCount = strataCount[t];
              c.nd = nd;
              c.np = np;
+             c.solidTop = minY - 1;
+         #ifdef WGA_SOLID_TOP
+             for (int y = min(top, minY + height - 1); y >= minY; y--) {
+                 if ((kind[y - minY] & 3) >= 2) {
+                     c.solidTop = y;
+                     break;
+                 }
+             }
+         #endif
              int i2 = 0;
              int j2 = (-2147483647 - 1);
              int k2 = 2147483647;
@@ -740,6 +752,15 @@ public final class SurfaceCodegen {
              c.np = np;
              c.biome = bm_biome(grid, g, zoomSeed, x, y, z);
              c.cold = c.biome >= 0 ? bm_cold(sx, temperature, modifier, c.biome, x, y, z) : 0;
+             c.solidTop = minY - 1;
+         #ifdef WGA_SOLID_TOP
+             for (int y2 = min(heights[t], minY + height - 1); y2 >= minY; y2--) {
+                 if ((kinds[(y2 - minY) * 256 + t] & 3) >= 2) {
+                     c.solidTop = y2;
+                     break;
+                 }
+             }
+         #endif
              int r = %s(c);
              if (r < 0 && kinds[i] == 6 && %d >= 0) r = %d;
              if (r >= 0 && r == %d && kinds[i] == 2) r = -1;
@@ -798,6 +819,8 @@ public final class SurfaceCodegen {
           int slope;
           int minSurface;
           int fastFlags;
+          // The column's highest solid block (the Still Life FTF bridge's surface_layer; minY - 1 when none).
+          int solidTop;
           // ColumnConditions' bits for the column.
           unsigned int colFlags;
           double secondary;
@@ -1209,6 +1232,20 @@ public final class SurfaceCodegen {
          case "SurfaceRules$Steep" -> line("return c.steep != 0;");
          case "SurfaceRules$Temperature" -> line("return c.cold != 0;");
          case "SurfaceRules$AbovePreliminarySurface" -> line("return c.y >= c.minSurface;");
+         // The Still Life FTF bridge's surface_layer (its cave floor guard): in the solid run that reaches the column's
+         // highest solid block (SurfaceLayer.Test: blockY + stoneDepthAbove - 1 >= the solid top).
+         case "SurfaceLayer" -> {
+            if (!node.getClass().getName().equals("stilllife.ftfbridge.SurfaceLayer")) {
+               throw new DensityCodegen.Unsupported("surface condition " + described(node, kind));
+            }
+
+            if (!this.solidTop) {
+               this.solidTop = true;
+               this.code.insert(0, "#define WGA_SOLID_TOP 1\n");
+            }
+
+            yield line("return c.y + c.stoneAbove - 1 >= c.solidTop;");
+         }
          // No Man's Land's conditions: two conditions both / either (Java's && and ||), the biome in any of its tags, and
          // its y test in floats (BelowOrEqualToYConditionSource.YCondition.compute: the offset added twice, as there).
          case "AndConditionSource", "OrConditionSource" -> {

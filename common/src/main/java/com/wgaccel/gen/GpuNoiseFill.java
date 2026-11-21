@@ -167,6 +167,12 @@ public final class GpuNoiseFill {
    /** C2.5: the other dimensions' programs (the Nether's, the End's...), by their RandomState; no look-ahead there. */
    private static final Map<RandomState, Program> OTHERS = java.util.Collections.synchronizedMap(new IdentityHashMap<>());
    private static volatile boolean failed;
+   /**
+    * The program itself unusable (a launch or a check that threw, an aquifer it has no version of): the LOD generator's
+    * stand-ins off too. A checked chunk that only came out different (another mod's change to a few blocks) turns the fill
+    * off for real chunks but leaves the program to the LODs.
+    */
+   private static volatile boolean broken;
    private static final AtomicInteger BAD_LAUNCHES = new AtomicInteger();
    private static final int BAD_LAUNCHES_ALLOWED = 3;
 
@@ -241,6 +247,7 @@ public final class GpuNoiseFill {
       }
 
       failed = false;
+      broken = false;
       if (Config.GPU_NOISE_FILL.get() == Config.GpuFilterMode.OFF || Config.GPU_MODE.get() == Config.GpuMode.OFF || !com.wgaccel.gpu.Lwjgl.PRESENT) {
          return;
       }
@@ -307,8 +314,12 @@ public final class GpuNoiseFill {
             WorldgenAccelerator.LOG.info(String.format(Locale.ROOT, "WGA GPU noise fill (%s): ready in %.0f ms (aquifer %s, ore veins %s)", name,
                (System.nanoTime() - start) / 1.0e6, built.aquiferKind == 0 ? "disabled" : built.aquiferKind == 2 ? "C2ME's" : "vanilla's", built.veins ? "on" : "off"));
          } catch (DensityCodegen.Unsupported unsupported) {
-            task.failed(unsupported.kind);
-            com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off in " + name + ": the density function kind {} has no GPU version", unsupported.kind);
+            // A mod's own terrain in its own dimension (Create Riftborne's rift: its whole final density is its
+            // shattered_pillars, worked out per block): that dimension fills on the CPU as it would without the mod, the
+            // others keep theirs. Expected, so not a warning nor a chat message.
+            task.done();
+            WorldgenAccelerator.LOG.info("WGA GPU noise fill: off in {}, its chunks fill on the CPU as usual (its density function kind {} has no GPU version)",
+               name, unsupported.kind);
          } catch (Throwable failure) {
             task.failed(failure.toString());
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off in " + name + ": {}", failure.toString());
@@ -552,6 +563,7 @@ public final class GpuNoiseFill {
          }
 
          failed = true;
+         broken = true;
          com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off (chunks fill on the CPU from now on): {}", failure.toString());
          return null;
       } finally {
@@ -1339,10 +1351,19 @@ public final class GpuNoiseFill {
          }
       }
 
-      /** For the overworld's program, or null when the GPU fill is not ready (off, still compiling, failed). */
+      /**
+       * For the overworld's program, or null when it is not ready (off, still compiling) or broken. Kept after a checked
+       * chunk came out different: the LODs do not need every block right.
+       */
       public static StandIns create(int size) {
          Program p = program;
-         return p == null || failed ? null : new StandIns(p, size);
+         return p == null || broken ? null : new StandIns(p, size);
+      }
+
+      /** Why {@link #create} gives null: "off" when the program is broken or the fill is off, else "not ready". */
+      public static String unavailable() {
+         return broken || Config.GPU_NOISE_FILL.get() == Config.GpuFilterMode.OFF || Config.GPU_MODE.get() == Config.GpuMode.OFF ? "GPU fill off (see the log)"
+            : "GPU fill not ready";
       }
 
       public ServerLevel level() {
@@ -1786,6 +1807,7 @@ public final class GpuNoiseFill {
       if (!(aquifer instanceof Aquifer.NoiseBasedAquifer)) {
          // Another mod's own aquifer: the GPU knows vanilla's (C2ME's rewrite keeps its class) and Conquest ReTerraForged's
          // wrapper around it only, so every chunk of this world fills on the CPU; the fill goes off rather than prepare chunks for nothing.
+         broken = true;
          if (!failed) {
             failed = true;
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: the world's aquifer ({}) has no GPU version; chunks fill on the CPU",
@@ -2387,6 +2409,7 @@ public final class GpuNoiseFill {
          report();
       } catch (Throwable failure) {
          failed = true;
+         broken = true;
          WorldgenAccelerator.LOG.warn("WGA GPU noise fill check failed (chunks fill on the CPU from now on): {}", failure.toString());
       }
    }

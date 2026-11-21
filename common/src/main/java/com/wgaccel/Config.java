@@ -55,6 +55,7 @@ public final class Config {
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
    public static final Setting<VoxyOverlayCorner> VOXY_OVERLAY_CORNER;
    public static final Setting<Boolean> VOXY_OVERLAY_HIDE_WHEN_DONE;
+   public static final Setting<Boolean> VOXY_OVERLAY_ANIMATION;
    public static final Setting<Integer> DH_FAST_FROM;
    public static final Setting<Boolean> FAST_SURFACE_READS;
    public static final Setting<Boolean> FAST_SURFACE_SEQUENCES;
@@ -274,7 +275,8 @@ public final class Config {
          .comment("How many chunks Chunky keeps in flight while pregenerating (its chunky.maxWorkingCount; Chunky's own default is 50,",
             "which leaves the generation threads and the GPU waiting). 0: automatic, from the heap and the world's height (each chunk in",
             "flight keeps ~220 chunks loaded; kept under ~45% of the heap: 16 GB with a 768-block FreeTerraForged world ~300, a",
-            "vanilla-height world or a bigger heap 512; 512 on 16 GB filled the heap in a radius 2000 run and slowed it).",
+            "vanilla-height world or a bigger heap 512; 512 on 16 GB filled the heap in a radius 2000 run and slowed it; at most 24",
+            "per CPU thread, as a CPU that cannot keep up also falls behind unloading them).",
             "-1: leave Chunky's setting alone. A value set on the command line (-Dchunky.maxWorkingCount) always wins.",
             "Takes effect for a pregeneration started after the world has loaded.")
          .defineInRange("chunkyMaxWorkingCount", 0, -1, 65536), 0, 0);
@@ -297,7 +299,7 @@ public final class Config {
       builder.pop();
       builder.comment("Version support: verified FreeTerraForged, terrain, and biome mod versions for Worldgen Accelerator:",
          "  Terrain / Shaping Mods:",
-         "    - FreeTerraForged (freeterraforged): 1.0.0010 to 1.0.0033 (MC 1.21.1; tested 1.0.0010, 1.0.0013, 1.0.0014, 1.0.0024-1.0.0033)",
+         "    - FreeTerraForged (freeterraforged): 1.0.0010 to 1.0.0034 (MC 1.21.1; tested 1.0.0010, 1.0.0013, 1.0.0014, 1.0.0024-1.0.0034)",
          "    - Conquest ReTerraForged (reterraforged): 0.1.0 (Fabric 26.1.2, with Conquest of Arborea & Lithos)",
          "    - Lithosphere (lithosphere): 1.8.2 (supported with Still Life 0.3 / 0.3.5 1.21.1 backport)",
          "    - RoadWeaver (roadweaver): 2.3.2",
@@ -307,7 +309,7 @@ public final class Config {
          "    - Biomes O' Plenty (biomesoplenty): 21.1.0.14 (with TerraBlender 4.1.0.8, GlitchCore 2.1.0.2)",
          "    - Regions Unexplored (regions_unexplored): 0.6.2 (with Lithostitched 1.8.0 - 1.8.1)",
          "    - Terralith (terralith): 2.6.2 (with Lithostitched 1.8.0)",
-         "    - Still Life (mr_still_life / still_life): 0.3-ftf (with stilllife_ftf_bridge 3.3.0, VanillaBackport 1.2.1 - 1.2.2) or 0.3 / 0.3.5 (with Lithosphere 1.8.2)",
+         "    - Still Life (mr_still_life / still_life): 0.3-ftf (with stilllife_ftf_bridge 3.3.0 or 5.5.0, VanillaBackport 1.2.1 - 1.2.2) or 0.3 / 0.3.5 (with Lithosphere 1.8.2)",
          "    - No Man's Land (nomansland): 1.6.2 (with Biolith 3.0.14)",
          "    - Supporting / Companion Worldgen Mods: TerraBlender 4.1.0.8, Lithostitched 1.8.0 - 1.8.1, Biolith 3.0.14,",
          "      VanillaBackport 1.2.1 - 1.2.2 (with Platform 1.4.2), Worldgen Patches 1.1.0, Streams Reflowing 2.15.2").push("version_support");
@@ -680,13 +682,13 @@ public final class Config {
       GPU_NOISE_FILL_OTHER_DIMENSIONS = Setting.of(builder
          .comment("The GPU noise fill in the other dimensions with a noise generator (the Nether, the End, modded ones), each with its",
             "own GPU code made when it loads; every 64th chunk checked as in the overworld. A dimension whose terrain has something",
-            "the GPU does not know stays on the CPU (a chat warning names it).")
+            "the GPU does not know stays on the CPU (the log names it).")
          .define("gpuNoiseFillOtherDimensions", true), true, true).under(GPU_IMPROVEMENTS, false);
       GPU_NOISE_FILL_CPU_DIMENSIONS = Setting.custom(builder
          .comment("Dimensions whose noise fill stays on the CPU even with gpuNoiseFillOtherDimensions on. The Nether and the End by",
             "default: C2ME's CPU fill was as fast or faster there on the test PC (End radius 2000: 0:48 on the GPU against 0:31;",
-            "Nether radius 1000 with biome mods: 0:30 against 0:23).")
-         .defineListAllowEmpty("gpuNoiseFillCpuDimensions", java.util.List.of("minecraft:the_nether", "minecraft:the_end"), () -> "minecraft:the_end",
+            "Nether radius 1000 with biome mods: 0:30 against 0:23); and Create Riftborne's rift, whose terrain has no GPU version.")
+         .defineListAllowEmpty("gpuNoiseFillCpuDimensions", java.util.List.of("minecraft:the_nether", "minecraft:the_end", "create_riftborne:rift"), () -> "minecraft:the_end",
             value -> value instanceof String));
       GPU_NOISE_FILL_VANILLA = Setting.of(builder
          .comment("Measured: vanilla r2000 on 26.1.2 2:23 -> 1:41 (on); on 1.21.1 2:15 without the mod, 2:29 with it (off).",
@@ -931,6 +933,11 @@ public final class Config {
       VOXY_OVERLAY_HIDE_WHEN_DONE = Setting.custom(builder
          .comment("Hide the panel 10 seconds after the rings are done (it comes back when there is work again, as the player moves).")
          .define("voxyOverlayHideWhenDone", true));
+      VOXY_OVERLAY_ANIMATION = Setting.custom(builder
+         .comment("The little scene under the panel's title (a cheetah chasing a hare through the biomes), also on the world-loading",
+            "screen. In the panel it runs at the generator's speed (normal: 300 chunks/s at full detail, 1,500 at stride 32, 3,000",
+            "at 64) and stands still while it waits.")
+         .define("voxyOverlayAnimation", true));
       builder.pop();
       SPEC = builder.build();
       SPEC.onLoad(Setting::invalidate);

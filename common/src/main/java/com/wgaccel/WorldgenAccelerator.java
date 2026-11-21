@@ -94,7 +94,7 @@ public final class WorldgenAccelerator {
          return;
       }
 
-      int count = wanted > 0 ? wanted : automaticWorkingCount(Runtime.getRuntime().maxMemory(), level.getSectionsCount());
+      int count = wanted > 0 ? wanted : automaticWorkingCount(Runtime.getRuntime().maxMemory(), level.getSectionsCount(), Runtime.getRuntime().availableProcessors());
       System.setProperty("chunky.maxWorkingCount", Integer.toString(count));
       LOG.info("WGA Chunky: {} chunks in flight (chunky.maxWorkingCount)", count);
    }
@@ -104,11 +104,13 @@ public final class WorldgenAccelerator {
     * loaded (its neighbours at earlier steps; 0.11.4's memory report: 512 in flight, ~112,000 chunks, about 2.4 KB per
     * section with light and palettes), so the loaded chunks are kept under about 45% of the heap: a 16 GB heap and a
     * 768-block FreeTerraForged world get ~300 (512 filled it and slowed a radius 2000 run from 430 to 170 chunks/s), a
-    * vanilla-height world or a bigger heap 512. Between 64 and 512, in steps of 32.
+    * vanilla-height world or a bigger heap 512. And at most 24 per CPU thread: a CPU that cannot keep up with that many
+    * also falls behind unloading them (0.70.3, a 6-thread server with 320: ~148,000 chunks loaded, the heap full after 2
+    * hours, then out of memory). Between 64 and 512, in steps of 32.
     */
-   static int automaticWorkingCount(long maxHeap, int sections) {
+   static int automaticWorkingCount(long maxHeap, int sections, int threads) {
       double perChunk = Math.max(1, sections) * 2400.0;
-      double count = 0.45 * maxHeap / (220.0 * perChunk);
+      double count = Math.min(0.45 * maxHeap / (220.0 * perChunk), 24.0 * threads);
       return Math.max(64, Math.min(512, (int)(count / 32) * 32));
    }
 

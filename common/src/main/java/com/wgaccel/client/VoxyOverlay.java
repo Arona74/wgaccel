@@ -12,14 +12,14 @@ import net.minecraft.client.gui.Font;
  * the F3 screen. It reads what the generator last published ({@link VoxyProgress}; the integrated server runs in the
  * same game, so nothing shows when playing on a dedicated server).
  *
- * <p>The panel: a dark card with a stripe in the state's colour, the title and the rate, then one bar per ring (red
- * while being made, green when done, grey until its turn) with its radius, detail and percentage, and a last line with
- * the time left, or why the generator waits.
+ * <p>The panel: a dark card with a stripe in the state's colour, the title and the rate, the game's CPU use, the GPU's
+ * use and the GPU API the mod runs on, then one bar per ring (yellow while being made, green when done, grey until its
+ * turn) with its radius, detail and percentage, and a last line with the time left, or why the generator waits.
  */
 public final class VoxyOverlay {
    /** The panel's narrowest and widest (it is as wide as its longest line). */
-   private static final int MIN_WIDTH = 170;
-   private static final int MAX_WIDTH = 320;
+   private static final int MIN_WIDTH = 200;
+   private static final int MAX_WIDTH = 360;
    private static final int MARGIN = 6;
    private static final int PAD = 6;
    private static final int LINE = 10;
@@ -30,12 +30,22 @@ public final class VoxyOverlay {
    private static final int TITLE = 0xFFFFFF;
    private static final int TEXT = 0xD0D4DA;
    private static final int DIM = 0x8A9099;
-   private static final int ACTIVE = 0xFFE5484D;
+   private static final int ACTIVE = 0xFFFFE629;
    private static final int DONE = 0xFF46A758;
    private static final int PAUSED = 0xFFF5A524;
    private static final int WAITING = 0xFF8A9099;
    /** How long the panel stays after the rings are done (config voxyOverlayHideWhenDone). */
    private static final long DONE_SHOWN_NANOS = 10_000_000_000L;
+   private static final String TITLE_TEXT = "WGA Voxy LODs Generator";
+   /** The chase scene's height (config voxyOverlayAnimation), under the title row. */
+   private static final int SCENE = 40;
+   /** The scene's own time: it runs at the generator's speed against the normal one for the ring's detail. */
+   private static final ChaseScene.Clock CLOCK = new ChaseScene.Clock();
+   /** The usage colours: green (low) to yellow (80%), orange from 80%, red from 95%. */
+   private static final int LOW = 0x46A758;
+   private static final int HIGH = 0xFFE629;
+   private static final int VERY_HIGH = 0xF76B15;
+   private static final int FULL = 0xE5484D;
    private static volatile long doneSince;
 
    private VoxyOverlay() {
@@ -93,7 +103,7 @@ public final class VoxyOverlay {
          }
 
          int rings = progress.rings().size();
-         int height = PAD + LINE + 2 + rings * (LINE + BAR + 4) + LINE + PAD - 2 + (progress.extra().isEmpty() ? 0 : LINE);
+         int height = PAD + LINE + 2 + sceneRow() + LINE + 2 + rings * (LINE + BAR + 4) + LINE + PAD - 2 + (progress.extra().isEmpty() ? 0 : LINE);
          int width = width(font, progress);
          int x = left ? MARGIN : screenWidth - width - MARGIN;
          int y = top ? MARGIN : screenHeight - height - MARGIN - 40;
@@ -111,6 +121,77 @@ public final class VoxyOverlay {
          case DONE -> "done";
          case STOPPED -> "stopped";
       };
+   }
+
+   /** The scene's row (and the gap under it), or none when the scene is off. */
+   private static int sceneRow() {
+      return Config.VOXY_OVERLAY_ANIMATION.get() ? SCENE + 2 : 0;
+   }
+
+   /**
+    * How fast the scene runs: chunks/s against the normal speed for the current ring's detail (300 chunks/s at full
+    * detail and strides up to 16, which cost the same per chunk; 1,500 at stride 32, 3,000 at 64, twice for each step
+    * after), within 0.25 - 4; standing still unless the generator runs.
+    */
+   private static double speed(VoxyProgress progress) {
+      if (progress.state() != VoxyProgress.State.RUNNING) {
+         return 0.0;
+      }
+
+      int current = progress.currentRing();
+      int stride = current >= 0 && current < progress.rings().size() ? progress.rings().get(current).stride() : 1;
+      double normal = stride <= 16 ? 300.0 : 1500.0 * stride / 32.0;
+      return Math.max(0.25, Math.min(4.0, progress.chunksPerSecond() / normal));
+   }
+
+   /** The game's CPU use: the process's share of all the CPU's threads, 0-100, or -1 when not known. */
+   private static double cpuPercent() {
+      try {
+         if (java.lang.management.ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
+            double load = os.getProcessCpuLoad();
+            return load < 0 ? -1.0 : 100.0 * load;
+         }
+      } catch (RuntimeException | LinkageError unknown) {
+         // Not known.
+      }
+
+      return -1.0;
+   }
+
+   private static String usage(double percent) {
+      return percent < 0 ? "n/a" : String.format(Locale.ROOT, "%.0f%%", percent);
+   }
+
+   /** The usage line's left part: "CPU 42%   GPU 63%". */
+   private static String usageLine() {
+      return "CPU " + usage(cpuPercent()) + "   GPU " + usage(GpuUsage.percent());
+   }
+
+   /** A usage's colour (RGB): green to yellow up to 80%, orange from 80%, red from 95%; grey when not known. */
+   private static int usageColor(double percent) {
+      if (percent < 0) {
+         return DIM;
+      } else if (percent >= 95) {
+         return FULL;
+      } else if (percent >= 80) {
+         return VERY_HIGH;
+      }
+
+      double f = percent / 80.0;
+      int r = (int)Math.round((LOW >> 16 & 255) + f * ((HIGH >> 16 & 255) - (LOW >> 16 & 255)));
+      int g = (int)Math.round((LOW >> 8 & 255) + f * ((HIGH >> 8 & 255) - (LOW >> 8 & 255)));
+      int b = (int)Math.round((LOW & 255) + f * ((HIGH & 255) - (LOW & 255)));
+      return r << 16 | g << 8 | b;
+   }
+
+   /** The same colours as Minecraft's colour codes for F3: green, yellow, gold, red; grey when not known. */
+   private static String usageCode(double percent) {
+      return percent < 0 ? "§7" : percent >= 95 ? "§c" : percent >= 80 ? "§6" : percent >= 50 ? "§e" : "§a";
+   }
+
+   /** The GPU API the mod's GPU parts run on (OpenCL, CUDA, HIP), or "GPU off" (GpuBackend probes when loaded: only once running). */
+   private static String api() {
+      return com.wgaccel.gpu.GpuDevice.running ? com.wgaccel.gpu.GpuBackend.name() : "GPU off";
    }
 
    private static String label(int inner, VoxyProgress.Ring ring) {
@@ -131,7 +212,8 @@ public final class VoxyOverlay {
 
    /** As wide as the longest line (a gap of 12 between a line's left and right parts), within MIN_WIDTH-MAX_WIDTH. */
    private static int width(Font font, VoxyProgress progress) {
-      int widest = font.width("Voxy LODs") + 12 + font.width(rate(progress));
+      int widest = font.width(TITLE_TEXT) + 12 + font.width(rate(progress));
+      widest = Math.max(widest, font.width(usageLine()) + 12 + font.width(api()));
       int inner = 0;
       for (VoxyProgress.Ring ring : progress.rings()) {
          widest = Math.max(widest, font.width(label(inner, ring)) + 12 + font.width(percent(ring)));
@@ -163,9 +245,29 @@ public final class VoxyOverlay {
       int left = x + PAD + 2;
       int right = x + width - PAD;
       int line = y + PAD;
-      canvas.text(font, "Voxy LODs", left, line, TITLE);
+      canvas.text(font, TITLE_TEXT, left, line, TITLE);
       String rate = rate(progress);
       canvas.text(font, rate, right - font.width(rate), line, accent & 0xFFFFFF);
+      line += LINE + 2;
+      if (Config.VOXY_OVERLAY_ANIMATION.get()) {
+         // The chase, as wide as the panel's lines.
+         ChaseScene.draw(canvas, left, line, right - left, SCENE, CLOCK.advance(speed(progress)));
+         line += SCENE + 2;
+      }
+
+      // CPU and GPU use, each value in its colour; the GPU API on the right.
+      double cpu = cpuPercent();
+      double gpu = GpuUsage.percent();
+      int at = left;
+      canvas.text(font, "CPU ", at, line, TEXT);
+      at += font.width("CPU ");
+      canvas.text(font, usage(cpu), at, line, usageColor(cpu));
+      at += font.width(usage(cpu));
+      canvas.text(font, "   GPU ", at, line, TEXT);
+      at += font.width("   GPU ");
+      canvas.text(font, usage(gpu), at, line, usageColor(gpu));
+      String api = api();
+      canvas.text(font, api, right - font.width(api), line, DIM);
       line += LINE + 2;
       int current = progress.currentRing();
       int inner = 0;
@@ -234,7 +336,10 @@ public final class VoxyOverlay {
             case DONE -> "\u00a7adone";
             case STOPPED -> "\u00a76stopped" + (progress.why().isEmpty() ? "" : " \u00a7f(" + progress.why() + ")");
          };
-         lines.add("\u00a76[WGA] Voxy LODs\u00a7r " + state);
+         lines.add("\u00a76WGA Voxy LODs Generator\u00a7r " + state);
+         double cpu = cpuPercent();
+         double gpu = GpuUsage.percent();
+         lines.add("\u00a7fCPU " + usageCode(cpu) + usage(cpu) + "\u00a7f, GPU " + usageCode(gpu) + usage(gpu) + "\u00a7f, " + api());
          int inner = 0;
          for (VoxyProgress.Ring ring : progress.rings()) {
             String color = ring.done() >= ring.total() ? "\u00a7a" : "\u00a7e";

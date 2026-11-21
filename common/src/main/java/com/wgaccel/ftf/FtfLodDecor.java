@@ -205,6 +205,11 @@ public final class FtfLodDecor {
             this.steepness(cell, x, z);
          }
 
+         if (StillLifeSnow.keep(this.scree, blocks[0], cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue)) {
+            // The Still Life FTF bridge's snow caps: its hook at erodeColumn's head leaves a snow top off cliffs alone.
+            return;
+         }
+
          if (cell.terrain.isRiver() || cell.terrain.isWetland() || cell.terrain == TerrainType.VOLCANO_PIPE) {
             return;
          }

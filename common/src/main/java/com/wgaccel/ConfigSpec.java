@@ -83,14 +83,24 @@ public final class ConfigSpec {
       }
 
       List<String> corrected = new ArrayList<>();
+      List<String> moved = new ArrayList<>();
       for (ConfigValue<?> value : this.values) {
-         if (!value.accept(read.remove(value.dottedPath()))) {
+         Object raw = read.remove(value.dottedPath());
+         if (raw == null) {
+            raw = this.misplaced(read, value, moved);
+         }
+
+         if (!value.accept(raw)) {
             corrected.add(value.dottedPath());
          }
       }
 
-      if (!exists || !corrected.isEmpty() || !read.isEmpty()) {
-         if (exists) {
+      if (!exists || !corrected.isEmpty() || !read.isEmpty() || !moved.isEmpty()) {
+         if (exists && !moved.isEmpty()) {
+            LOG.info("WGA config: {}: {} taken back from under a sub-table (where 0.70.3 wrote them)", this.fileName, moved);
+         }
+
+         if (exists && (!corrected.isEmpty() || !read.isEmpty())) {
             LOG.warn("WGA config: {} put right (missing or wrong: {}; unknown, dropped: {})", this.fileName, corrected, read.keySet());
          }
 
@@ -100,6 +110,27 @@ public final class ConfigSpec {
       }
 
       this.onLoad.run();
+   }
+
+   /**
+    * A value missing from its table but in the file under one of that table's sub-tables (and not a value of the
+    * sub-table itself): 0.70.3 wrote a table's values defined after a sub-table below the sub-table's header, where TOML
+    * reads them as the sub-table's. Taken out of the file's unknown values; else null.
+    */
+   private Object misplaced(Map<String, Object> read, ConfigValue<?> value, List<String> moved) {
+      List<String> table = value.path.subList(0, value.path.size() - 1);
+      String key = value.path.get(value.path.size() - 1);
+      for (Object node : this.nodes) {
+         if (node instanceof Table sub && in(sub.path, table)) {
+            String there = String.join(".", sub.path) + "." + key;
+            if (read.containsKey(there) && this.values.stream().noneMatch(other -> other.dottedPath().equals(there))) {
+               moved.add(value.dottedPath());
+               return read.remove(there);
+            }
+         }
+      }
+
+      return null;
    }
 
    /** Writes every value to the file, with its comments (atomic: a game stopped mid-write leaves the old file). */
@@ -154,17 +185,17 @@ public final class ConfigSpec {
    /** The file's text, as NeoForge laid it out: a tab per table level, "#" comments, a blank line before each table. */
    private String text() {
       StringBuilder out = new StringBuilder();
-      for (Object node : this.nodes) {
-         if (node instanceof Table table) {
-            out.append('\n');
-            String indent = "\t".repeat(table.path.size() - 1);
-            for (String line : table.comment) {
-               out.append(indent).append('#').append(line).append('\n');
-            }
+      this.write(out, List.of());
+      return out.toString();
+   }
 
-            out.append(indent).append('[').append(String.join(".", table.path)).append("]\n");
-         } else {
-            ConfigValue<?> value = (ConfigValue<?>)node;
+   /**
+    * The values of the table at this path (root: empty), then each of its sub-tables, in the order they were defined: a
+    * value written after a sub-table's header would be read as the sub-table's.
+    */
+   private void write(StringBuilder out, List<String> table) {
+      for (Object node : this.nodes) {
+         if (node instanceof ConfigValue<?> value && in(value.path, table)) {
             String indent = "\t".repeat(value.path.size() - 1);
             for (String line : value.comment) {
                out.append(indent).append('#').append(line).append('\n');
@@ -178,7 +209,23 @@ public final class ConfigSpec {
          }
       }
 
-      return out.toString();
+      for (Object node : this.nodes) {
+         if (node instanceof Table sub && in(sub.path, table)) {
+            out.append('\n');
+            String indent = "\t".repeat(sub.path.size() - 1);
+            for (String line : sub.comment) {
+               out.append(indent).append('#').append(line).append('\n');
+            }
+
+            out.append(indent).append('[').append(String.join(".", sub.path)).append("]\n");
+            this.write(out, sub.path);
+         }
+      }
+   }
+
+   /** Whether the path is directly in the table (one name more). */
+   private static boolean in(List<String> path, List<String> table) {
+      return path.size() == table.size() + 1 && path.subList(0, table.size()).equals(table);
    }
 
    public static final class Builder {

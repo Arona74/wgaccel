@@ -827,7 +827,7 @@ public final class VoxyAuto {
             if (worker == null) {
                worker = this.writer.worker(this::stopping);
                if (worker == null) {
-                  this.waitFor("GPU fill not ready");
+                  this.waitFor(GpuNoiseFill.StandIns.unavailable());
                   Thread.sleep(2_000L);
                   continue;
                }

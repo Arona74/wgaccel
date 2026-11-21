@@ -10,6 +10,9 @@
     "AllTheLeaksTrackableMixin",
     "AllTheLeaksReportManagerMixin"
   ],
+  "client": [
+    "LssHostHandshakeMixin"
+  ],
   "injectors": {
     "defaultRequire": 0
   }

@@ -99,7 +99,7 @@ public final class SurfaceInputs {
                                                   const int* np, int* out, double* secondary) {
              int t = blockIdx.x * blockDim.x + threadIdx.x;
              if (t >= count) return;
-             const int* r = calls + t * 13;
+             const int* r = calls + t * 14;
              int x = r[0];
              int y = r[1];
              int z = r[2];
