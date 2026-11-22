@@ -59,6 +59,9 @@ public final class Config {
    public static final Setting<Boolean> VOXY_ARBOREA_FORESTS;
    public static final Setting<VoxyFeature> VOXY_PLANTS;
    public static final Setting<VoxyFeature> VOXY_ARONA_LAYERS;
+   public static final Setting<VoxyFeature> VOXY_STRUCTURES;
+   public static final Setting<VoxyFeature> VOXY_TERRAIN_FEATURES;
+   public static final Setting<Integer> VOXY_TERRAIN_COST_LIMIT;
    public static final Setting<Integer> VOXY_REAL_CHUNKS_RADIUS;
    public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
@@ -962,6 +965,22 @@ public final class Config {
             "vanilla density). Layer Supported LOD (LSL) then draws them at their real height. ALL: the far rings too (their",
             "ground is interpolated, so AronaLayers may leave many far columns bare).")
          .defineEnum("voxyAronaLayers", VoxyFeature.NEAR));
+      VOXY_STRUCTURES = Setting.custom(builder
+         .comment("Structures in the LODs (villages, temples, outposts, ruins...): where they start from the seed (the game's own",
+            "structure starts), their pieces placed by their own code on a stand-in of each LOD chunk. Underground ones are left",
+            "out. The full-detail rings for now (FAR and ALL act as NEAR).")
+         .defineEnum("voxyStructures", VoxyFeature.NEAR));
+      VOXY_TERRAIN_FEATURES = Setting.custom(builder
+         .comment("Terrain features in the LODs: each biome's features in its local-modifications, surface-structures and top-layer",
+            "steps (ice spikes and ice patches, icebergs, mossy boulders, desert wells, Still Life's mountain snow, a mod's there),",
+            "run as they are (the game's own freezing is the LODs' snow already). One that costs",
+            "time and never shows is left out. FAR: all rings but the outermost; ALL: every ring (once per chunk).")
+         .defineEnum("voxyTerrainFeatures", VoxyFeature.NEAR));
+      VOXY_TERRAIN_COST_LIMIT = Setting.custom(builder
+         .comment("A terrain feature that costs more than this (milliseconds a chunk run, averaged over its first 256 runs) is left out",
+            "of the LODs from then on (logged): Still Life's cliff and slope rock costs 12 to 30 ms a chunk, as much as the rest of the",
+            "LOD chunk; its peak snow about 9 ms. 0: no limit.")
+         .defineInRange("voxyTerrainCostLimit", 10, 0, 1000));
       builder.pop();
       VOXY_WITH_VWG = Setting.custom(builder
          .comment("With Voxy World Gen V2 (VWG) installed and on (its config/voxyworldgenv2.json, only read):",

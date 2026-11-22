@@ -246,6 +246,10 @@ public final class LodBuilder {
                   c.snow = c.ground + 1 < this.minY + this.height
                      && Mc.coldEnoughToSnow(c.biome.value(), new net.minecraft.core.BlockPos(c.x, c.ground + 1, c.z), seaLevel) && holdsSnow(layers[0])
                      && (cell == null || !decor.snowEroded(cell, c.x, c.z, c.ground, c.biome));
+                  if (c.snow && cell != null) {
+                     // (FreeTerraForged's columns only: its class is not touched without it.)
+                     com.wgaccel.ftf.FtfLodDecor.SNOW_LAYERS.increment();
+                  }
                } else if (features && c.surface != LodColumns.NONE && c.top.is(Blocks.WATER)) {
                   c.ice = Mc.coldEnoughToSnow(c.biome.value(), new net.minecraft.core.BlockPos(c.x, c.surface, c.z), seaLevel);
                }

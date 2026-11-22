@@ -41,6 +41,17 @@ public final class FtfLodDecor {
    private static final boolean FTF = com.wgaccel.platform.Platform.get().isModLoaded("freeterraforged");
    public static final LongAdder COLUMNS = new LongAdder();
    public static final LongAdder CHANGED = new LongAdder();
+   /**
+    * Snow in the LOD columns, for the log: dry columns the scree looked at; their tops that were snow (Still Life's caps)
+    * and of those kept by the bridge; cold columns FTF's snow erosion looked at and of those eroded; columns with a snow
+    * layer.
+    */
+   private static final java.util.concurrent.atomic.AtomicLong LOOKED = new java.util.concurrent.atomic.AtomicLong();
+   private static final LongAdder SNOW_TOPS = new LongAdder();
+   private static final LongAdder SNOW_KEPT = new LongAdder();
+   private static final LongAdder COLD = new LongAdder();
+   private static final LongAdder COLD_ERODED = new LongAdder();
+   public static final LongAdder SNOW_LAYERS = new LongAdder();
    public static final LongAdder BARE = new LongAdder();
    private static volatile boolean broken;
 
@@ -205,7 +216,23 @@ public final class FtfLodDecor {
             this.steepness(cell, x, z);
          }
 
-         if (StillLifeSnow.keep(this.scree, blocks[0], cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue)) {
+         long looked = LOOKED.incrementAndGet();
+         if (looked == 200_000L || looked % 1_000_000L == 0L) {
+            WorldgenAccelerator.LOG.info("WGA LOD columns: snow on {} dry columns the FTF scree looked at: {} snow tops (Still Life's caps), {} of them"
+               + " kept by the Still Life FTF bridge; {} cold columns FTF's snow erosion looked at, {} eroded; {} columns with a snow layer", looked,
+               SNOW_TOPS.sum(), SNOW_KEPT.sum(), COLD.sum(), COLD_ERODED.sum(), SNOW_LAYERS.sum());
+         }
+
+         boolean snowTop = blocks[0].is(Blocks.SNOW_BLOCK) || blocks[0].is(Blocks.POWDER_SNOW);
+         boolean kept = StillLifeSnow.keep(this.scree, blocks[0], cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue);
+         if (snowTop) {
+            SNOW_TOPS.increment();
+            if (kept) {
+               SNOW_KEPT.increment();
+            }
+         }
+
+         if (kept) {
             // The Still Life FTF bridge's snow caps: its hook at erodeColumn's head leaves a snow top off cliffs alone.
             return;
          }
@@ -328,7 +355,13 @@ public final class FtfLodDecor {
          float vModifier = cell.terrain == TerrainType.VOLCANO ? 0.15F : 0.0F;
          float height = cell.height + var + hNoise + vModifier;
          float steepness = cell.gradient + var + sNoise + vModifier;
-         return (Boolean)this.snowErosion.invoke(null, this.snowErode, (float)x, (float)z, steepness, height);
+         boolean eroded = (Boolean)this.snowErosion.invoke(null, this.snowErode, (float)x, (float)z, steepness, height);
+         COLD.increment();
+         if (eroded) {
+            COLD_ERODED.increment();
+         }
+
+         return eroded;
       } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
          broken = true;
          WorldgenAccelerator.LOG.warn("WGA LOD columns: FreeTerraForged's snow erosion failed (LODs without it from now): {}", failure.toString());

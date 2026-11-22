@@ -64,7 +64,9 @@ public final class DiskColumns {
    public static final int DISK_ACTIVE = 1;
 
    public static boolean on() {
-      return !off && Config.FAST_DISK_COLUMNS.get();
+      // Not on a Voxy LOD stand-in level: its chunks are empty, its blocks only from getBlockState (Still Life's snow
+      // disks found no snow there and placed nothing).
+      return !off && Config.FAST_DISK_COLUMNS.get() && !SandboxPlacing.active();
    }
 
    /**

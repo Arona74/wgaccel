@@ -59,6 +59,8 @@ public final class VoxyWriter {
    private final LodTrees trees;
    /** voxyAronaLayers: AronaLayers' own layer placement on a stand-in chunk ({@link LodLayers}). */
    private final LodLayers layers;
+   /** voxyStructures: the structure starts from the seed ({@link LodStructures}). */
+   private final LodStructures structures;
    private final int minY;
    private final int height;
    private final ThreadLocal<Work> works = new ThreadLocal<>();
@@ -95,6 +97,7 @@ public final class VoxyWriter {
       this.builder = new LodBuilder(level, this.minY, this.height, name);
       this.trees = new LodTrees(target::block, level);
       this.layers = new LodLayers(level, target::block);
+      this.structures = new LodStructures(level, new FeatureSandbox(level));
    }
 
    public void maxWriters(int writers) {
@@ -278,6 +281,7 @@ public final class VoxyWriter {
       }
 
       work.byPos.clear();
+      work.around.forget();
       for (int c = 0; c < work.count; c++) {
          work.byPos.put(Mc.key(work.columns[c].pos), work.columns[c]);
       }
@@ -598,6 +602,20 @@ public final class VoxyWriter {
          int x0;
          int z0;
          private ChunkColumns found;
+         /**
+          * The last neighbour asked (a feature reads the same few chunks over and over), for the chunk at (lastX0, lastZ0)
+          * only: the tile's columns are reused for the next tile.
+          */
+         private long lastKey = Long.MIN_VALUE;
+         private int lastX0 = Integer.MIN_VALUE;
+         private int lastZ0 = Integer.MIN_VALUE;
+         private ChunkColumns last;
+
+         /** A new tile: its neighbours are other chunks. */
+         void forget() {
+            this.lastKey = Long.MIN_VALUE;
+            this.last = null;
+         }
 
          private int find(int x, int z) {
             if (x >= this.x0 && x < this.x0 + 16 && z >= this.z0 && z < this.z0 + 16) {
@@ -605,7 +623,19 @@ public final class VoxyWriter {
                return (z - this.z0) << 4 | x - this.x0;
             }
 
-            ChunkColumns other = this.chunk == Work.this.out ? null : Work.this.byPos.get(Mc.key(x >> 4, z >> 4));
+            ChunkColumns other = null;
+            if (this.chunk != Work.this.out) {
+               long key = Mc.key(x >> 4, z >> 4);
+               if (key != this.lastKey || this.x0 != this.lastX0 || this.z0 != this.lastZ0) {
+                  this.last = Work.this.byPos.get(key);
+                  this.lastKey = key;
+                  this.lastX0 = this.x0;
+                  this.lastZ0 = this.z0;
+               }
+
+               other = this.last;
+            }
+
             if (other != null) {
                this.found = other;
                return (z & 15) << 4 | x & 15;
@@ -965,6 +995,83 @@ public final class VoxyWriter {
     * does), its rock and ground cover laid on each chunk around from its own ground up.
     */
    private void ran(Work work, ChunkColumns chunk) {
+      this.features(work, chunk);
+      if (chunk != work.out && Config.VOXY_STRUCTURES.get().on(false, work.lastRing)) {
+         this.built(work, chunk);
+      }
+   }
+
+   /**
+    * voxyStructures (near tiles): the structures' blocks in the chunk ({@link LodStructures#place}), over what the features
+    * put there. Their air clears the trees and plants in them (a house's inside); a column whose top block they set (a
+    * path, a floor) loses the trees and plants standing on it; over the ground their blocks go in as solid, at or under it
+    * into the ground's layers.
+    */
+   private void built(Work work, ChunkColumns chunk) {
+      int cx = Mc.x(chunk.pos);
+      int cz = Mc.z(chunk.pos);
+      int x0 = cx * 16;
+      int z0 = cz * 16;
+      work.around.chunk = chunk;
+      work.around.x0 = x0;
+      work.around.z0 = z0;
+      int lowest = Integer.MAX_VALUE;
+      for (int col = 0; col < 256; col++) {
+         lowest = Math.min(lowest, chunk.ground[col]);
+      }
+
+      List<long[]> blocks = new ArrayList<>();
+      boolean[] paved = new boolean[256];
+      this.structures.place(cx, cz, lowest, work.around, (x, y, z, state) -> {
+         int col = (z - z0) << 4 | x - x0;
+         int dy = y - chunk.ground[col];
+         if (dy <= 0 && dy >= -1 && !state.isAir()) {
+            paved[col] = true;
+         }
+
+         blocks.add(new long[]{col, y, state.isAir() ? 0 : this.target.block(state), dy});
+      });
+      if (blocks.isEmpty()) {
+         return;
+      }
+
+      // Trees and plants on what the structures paved: gone from the ground up (as the game's would not grow there).
+      for (int col = 0; col < 256; col++) {
+         if (paved[col]) {
+            work.leafTop[col] = Integer.MIN_VALUE;
+            for (int y = chunk.ground[col] + 1; ; y++) {
+               int[] section = work.trees.get(y >> 4);
+               int i = (y & 15) << 8 | col;
+               if (section == null || section[i] == 0) {
+                  break;
+               }
+
+               section[i] = 0;
+            }
+         }
+      }
+
+      for (long[] b : blocks) {
+         int col = (int)b[0];
+         int y = (int)b[1];
+         int id = (int)b[2];
+         int dy = (int)b[3];
+         if (dy > 0) {
+            if (id != 0) {
+               put(work, chunk, x0, z0, x0 + (col & 15), y, z0 + (col >> 4), id, true);
+            } else {
+               int[] section = work.trees.get(y >> 4);
+               if (section != null) {
+                  section[(y & 15) << 8 | col] = 0;
+               }
+            }
+         } else if (id != 0 && -dy < LodBuilder.GROUND_DEPTH) {
+            chunk.layers[col * LodBuilder.GROUND_DEPTH - dy] = id;
+         }
+      }
+   }
+
+   private void features(Work work, ChunkColumns chunk) {
       boolean far = chunk == work.out;
       Config.VoxyFeature treeMode = Config.VOXY_TREES.get();
       Config.VoxyFeature lithosMode = Config.VOXY_LITHOS.get();
@@ -974,7 +1081,8 @@ public final class VoxyWriter {
       boolean plants = plantMode.on(far, work.lastRing);
       Config.VoxyFeature layerMode = Config.VOXY_ARONA_LAYERS.get();
       boolean layers = layerMode.on(far, work.lastRing) && LodLayers.available();
-      if (!trees && !lithos && !plants && !layers) {
+      boolean terrain = Config.VOXY_TERRAIN_FEATURES.get().on(far, work.lastRing);
+      if (!trees && !lithos && !plants && !layers && !terrain) {
          return;
       }
 
@@ -991,7 +1099,7 @@ public final class VoxyWriter {
          this.layered(work, chunk, x0, z0, this.layers.run(cx, cz, work.around));
       }
 
-      if (!trees && !lithos && !plants) {
+      if (!trees && !lithos && !plants && !terrain) {
          return;
       }
       if (!far) {
@@ -999,7 +1107,7 @@ public final class VoxyWriter {
             for (int dz = -1; dz <= 1; dz++) {
                ChunkColumns other = dx == 0 && dz == 0 ? chunk : work.byPos.get(Mc.key(cx + dx, cz + dz));
                // The chunk's own biomes (a neighbour outside the tile: this chunk's, as for the trees above).
-               this.runsOf(work, other != null ? other : chunk, trees, lithos, plants);
+               this.runsOf(work, other != null ? other : chunk, trees, lithos, plants, terrain);
                if (!work.runs.isEmpty()) {
                   int[] blocks = this.trees.ran(List.copyOf(work.runs), cx + dx, cz + dz, Mc.key(cx + dx, cz + dz),
                      known(work, cx + dx, cz + dz) ? LodTrees.COMPLETE : LodTrees.PARTIAL, work.around);
@@ -1011,8 +1119,9 @@ public final class VoxyWriter {
          return;
       }
 
-      if (trees) {
-         this.runsOf(work, chunk, true, false, false);
+      if (trees || terrain) {
+         // Trees and terrain features (ice spikes, boulders: each its own, not a sample's) on the chunk's own run.
+         this.runsOf(work, chunk, trees, false, false, terrain);
          if (!work.runs.isEmpty()) {
             this.lay(work, chunk, x0, z0, this.trees.ran(List.copyOf(work.runs), cx, cz, Mc.key(cx, cz), LodTrees.PARTIAL, work.around));
          }
@@ -1020,7 +1129,7 @@ public final class VoxyWriter {
 
       if (lithos || plants) {
          // Lithos's rock and the plants on it, once per sample.
-         this.runsOf(work, chunk, false, lithos, plants);
+         this.runsOf(work, chunk, false, lithos, plants, false);
          if (!work.runs.isEmpty()) {
             // One run per stride x stride blocks (its first chunk written on this thread stands for the others).
             int every = Math.max(1, work.farStep);
@@ -1082,7 +1191,7 @@ public final class VoxyWriter {
    }
 
    /** The chunk's biomes' runs into work.runs (those of the kinds asked), in the game's order. */
-   private void runsOf(Work work, ChunkColumns chunk, boolean trees, boolean lithos, boolean plants) {
+   private void runsOf(Work work, ChunkColumns chunk, boolean trees, boolean lithos, boolean plants, boolean terrain) {
       int n = biomes(chunk, work.seen, 0);
       work.runs.clear();
       for (int b = 0; b < n; b++) {
@@ -1090,6 +1199,7 @@ public final class VoxyWriter {
             boolean on = switch (run.kind()) {
                case LodTrees.LITHOS -> lithos;
                case LodTrees.PLANTS -> plants;
+               case LodTrees.TERRAIN -> terrain;
                default -> trees;
             };
             if (on && LodTrees.enabled(run) && !work.runs.contains(run)) {

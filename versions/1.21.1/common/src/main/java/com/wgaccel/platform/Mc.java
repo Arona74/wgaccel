@@ -372,4 +372,20 @@ public final class Mc {
 
       return null;
    }
+
+   /**
+    * The structure starts the game puts in chunk: its own createStructures (the structure_starts step), the chunk standing in
+    * for the real one. Nothing when the world has structures off.
+    */
+   public static void createStructures(ServerLevel level, net.minecraft.world.level.chunk.ChunkAccess chunk) {
+      if (level.structureManager().shouldGenerateStructures()) {
+         level.getChunkSource().getGenerator().createStructures(level.registryAccess(), level.getChunkSource().getGeneratorState(),
+            level.structureManager(), chunk, level.getStructureManager());
+      }
+   }
+
+   /** A structure manager on level (a stand-in: its starts and references are read from level's chunks), the world's options. */
+   public static net.minecraft.world.level.StructureManager structureManager(net.minecraft.world.level.LevelAccessor level, ServerLevel real) {
+      return new net.minecraft.world.level.StructureManager(level, real.getServer().getWorldData().worldGenOptions(), null);
+   }
 }

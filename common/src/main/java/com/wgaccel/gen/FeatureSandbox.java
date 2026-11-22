@@ -54,6 +54,60 @@ final class FeatureSandbox {
    }
 
    private static final Set<String> SAID = ConcurrentHashMap.newKeySet();
+
+   /**
+    * The stand-in's methods by the names below ({@link ProxyNames}): on Fabric 1.21.1 they run under intermediary names,
+    * which {@link Method#getName} gives, so nothing was recognised there (no feature placed anything).
+    */
+   private static final class Names {
+      static final java.util.Map<Method, String> BY_METHOD = ProxyNames.learn(new Class<?>[]{WorldGenLevel.class}, learner -> {
+         BlockPos pos = BlockPos.ZERO;
+         BlockState air = Blocks.AIR.defaultBlockState();
+         learner.call("getBlockState", () -> learner.<WorldGenLevel>as("getBlockState").getBlockState(pos));
+         learner.call("getFluidState", () -> learner.<WorldGenLevel>as("getFluidState").getFluidState(pos));
+         learner.call("isStateAtPosition", () -> learner.<WorldGenLevel>as("isStateAtPosition").isStateAtPosition(pos, state -> true));
+         learner.call("isFluidAtPosition", () -> learner.<WorldGenLevel>as("isFluidAtPosition").isFluidAtPosition(pos, fluid -> true));
+         learner.call("setBlock", () -> learner.<WorldGenLevel>as("setBlock").setBlock(pos, air, 0));
+         learner.call("setBlock", () -> learner.<WorldGenLevel>as("setBlock").setBlock(pos, air, 0, 0));
+         learner.call("removeBlock", () -> learner.<WorldGenLevel>as("removeBlock").removeBlock(pos, false));
+         learner.call("destroyBlock", () -> learner.<WorldGenLevel>as("destroyBlock").destroyBlock(pos, false));
+         learner.call("destroyBlock", () -> learner.<WorldGenLevel>as("destroyBlock").destroyBlock(pos, false, null));
+         learner.call("destroyBlock", () -> learner.<WorldGenLevel>as("destroyBlock").destroyBlock(pos, false, null, 0));
+         learner.call("getHeight", () -> learner.<WorldGenLevel>as("getHeight").getHeight(Heightmap.Types.WORLD_SURFACE, 0, 0));
+         learner.call("getHeight", () -> learner.<WorldGenLevel>as("getHeight").getHeight());
+         learner.call("getHeightmapPos", () -> learner.<WorldGenLevel>as("getHeightmapPos").getHeightmapPos(Heightmap.Types.WORLD_SURFACE, pos));
+         learner.call("getMinY", () -> com.wgaccel.platform.Mc.minY(learner.<WorldGenLevel>as("getMinY")));
+         learner.call("getSeed", () -> learner.<WorldGenLevel>as("getSeed").getSeed());
+         learner.call("getRandom", () -> learner.<WorldGenLevel>as("getRandom").getRandom());
+         learner.call("registryAccess", () -> learner.<WorldGenLevel>as("registryAccess").registryAccess());
+         learner.call("enabledFeatures", () -> learner.<WorldGenLevel>as("enabledFeatures").enabledFeatures());
+         learner.call("dimensionType", () -> learner.<WorldGenLevel>as("dimensionType").dimensionType());
+         learner.call("getSeaLevel", () -> learner.<WorldGenLevel>as("getSeaLevel").getSeaLevel());
+         learner.call("isClientSide", () -> learner.<WorldGenLevel>as("isClientSide").isClientSide());
+         learner.call("ensureCanWrite", () -> learner.<WorldGenLevel>as("ensureCanWrite").ensureCanWrite(pos));
+         learner.call("hasChunk", () -> learner.<WorldGenLevel>as("hasChunk").hasChunk(0, 0));
+         learner.call("getBlockEntity", () -> learner.<WorldGenLevel>as("getBlockEntity").getBlockEntity(pos));
+         learner.call("getLevelData", () -> learner.<WorldGenLevel>as("getLevelData").getLevelData());
+         learner.call("getBlockTicks", () -> learner.<WorldGenLevel>as("getBlockTicks").getBlockTicks());
+         learner.call("getFluidTicks", () -> learner.<WorldGenLevel>as("getFluidTicks").getFluidTicks());
+         learner.call("getCurrentDifficultyAt", () -> learner.<WorldGenLevel>as("getCurrentDifficultyAt").getCurrentDifficultyAt(pos));
+         learner.call("getRawBrightness", () -> learner.<WorldGenLevel>as("getRawBrightness").getRawBrightness(pos, 0));
+         learner.call("getMaxLocalRawBrightness", () -> learner.<WorldGenLevel>as("getMaxLocalRawBrightness").getMaxLocalRawBrightness(pos));
+         learner.call("getBrightness", () -> learner.<WorldGenLevel>as("getBrightness").getBrightness(net.minecraft.world.level.LightLayer.SKY, pos));
+         learner.call("canSeeSky", () -> learner.<WorldGenLevel>as("canSeeSky").canSeeSky(pos));
+         learner.call("canSeeSkyFromBelowWater", () -> learner.<WorldGenLevel>as("canSeeSkyFromBelowWater").canSeeSkyFromBelowWater(pos));
+         learner.call("getSkyDarken", () -> learner.<WorldGenLevel>as("getSkyDarken").getSkyDarken());
+         learner.call("getLevel", () -> learner.<WorldGenLevel>as("getLevel").getLevel());
+         learner.call("getChunk", () -> learner.<WorldGenLevel>as("getChunk").getChunk(0, 0));
+         learner.call("getChunk", () -> learner.<WorldGenLevel>as("getChunk").getChunk(0, 0,
+            net.minecraft.world.level.chunk.status.ChunkStatus.FULL, false));
+         learner.call("getBiome", () -> learner.<WorldGenLevel>as("getBiome").getBiome(pos));
+         learner.call("getNoiseBiome", () -> learner.<WorldGenLevel>as("getNoiseBiome").getNoiseBiome(0, 0, 0));
+         learner.call("getUncachedNoiseBiome", () -> learner.<WorldGenLevel>as("getUncachedNoiseBiome").getUncachedNoiseBiome(0, 0, 0));
+         learner.call("setCurrentlyGenerating", () -> learner.<WorldGenLevel>as("setCurrentlyGenerating").setCurrentlyGenerating(null));
+         learner.call("addFreshEntity", () -> learner.<WorldGenLevel>as("addFreshEntity").addFreshEntity(null));
+      });
+   }
    private final ServerLevel level;
    private final ChunkGenerator generator;
    private final long seed;
@@ -74,6 +128,11 @@ final class FeatureSandbox {
     * the final state of each block they set to sink. A feature that fails is left out (logged once).
     */
    void run(List<LodTrees.Run> runs, int cx, int cz, Columns columns, Sink sink) {
+      this.run(runs, cx, cz, columns, sink, null);
+   }
+
+   /** As {@link #run}, each run's time (ns) added to nanos[r] when given. */
+   void run(List<LodTrees.Run> runs, int cx, int cz, Columns columns, Sink sink, long[] nanos) {
       int x0 = cx << 4;
       int z0 = cz << 4;
       net.minecraft.world.level.levelgen.WorldgenRandom random = new net.minecraft.world.level.levelgen.WorldgenRandom(
@@ -83,11 +142,27 @@ final class FeatureSandbox {
       stage.cx = cx;
       stage.cz = cz;
       WorldGenLevel fake = (WorldGenLevel)Proxy.newProxyInstance(WorldGenLevel.class.getClassLoader(), new Class<?>[]{WorldGenLevel.class}, stage);
+      SandboxPlacing.enter();
+      try {
+         this.runAll(runs, x0, z0, stage, fake, random, decoration, nanos);
+      } finally {
+         SandboxPlacing.leave();
+      }
+
+      for (it.unimi.dsi.fastutil.longs.Long2ObjectMap.Entry<BlockState> entry : stage.set.long2ObjectEntrySet()) {
+         long pos = entry.getLongKey();
+         sink.set(BlockPos.getX(pos), BlockPos.getY(pos), BlockPos.getZ(pos), entry.getValue(), stage.by.get(pos));
+      }
+   }
+
+   private void runAll(List<LodTrees.Run> runs, int x0, int z0, Stage stage, WorldGenLevel fake,
+         net.minecraft.world.level.levelgen.WorldgenRandom random, long decoration, long[] nanos) {
       for (int r = 0; r < runs.size(); r++) {
          LodTrees.Run run = runs.get(r);
          stage.current = r;
          PlacedFeature placed = run.placed();
          random.setFeatureSeed(decoration, run.index(), run.step());
+         long started = System.nanoTime();
          try {
             // As PlacedFeature.placeWithContext (private; placeWithBiomeCheck would count in the features report): its
             // placement from the chunk's corner, then the feature at each position (none for Arborea's and Lithos's).
@@ -104,12 +179,59 @@ final class FeatureSandbox {
             if (SAID.add("failed " + placed.feature().value().feature().getClass().getName())) {
                WorldgenAccelerator.LOG.warn("WGA Voxy LODs: {} failed outside a world; left out where it fails (said once)", name(placed), failure);
             }
+         } finally {
+            if (nanos != null) {
+               nanos[r] += System.nanoTime() - started;
+            }
+         }
+      }
+   }
+
+   /**
+    * Structure pieces placed in chunk (cx, cz) as the game's decoration does (StructureStart.placeInChunk over the chunk's
+    * full height; before each structure the random of its index in its step: steps[i], indices[i], starts in the game's
+    * order), on the stand-in level; the final state of each block they set to sink (run: the start's index). Pieces ask
+    * their structure manager for nothing real: it is bound to the stand-in (no starts around). A structure that fails is
+    * left out (logged once).
+    */
+   void place(List<net.minecraft.world.level.levelgen.structure.StructureStart> starts, int[] steps, int[] indices, String[] names, int cx, int cz,
+         Columns columns, Sink sink) {
+      int x0 = cx << 4;
+      int z0 = cz << 4;
+      net.minecraft.world.level.levelgen.WorldgenRandom random = new net.minecraft.world.level.levelgen.WorldgenRandom(
+         new net.minecraft.world.level.levelgen.XoroshiroRandomSource(net.minecraft.world.level.levelgen.RandomSupport.generateUniqueSeed()));
+      long decoration = random.setDecorationSeed(this.seed, x0, z0);
+      Stage stage = new Stage(columns, random);
+      stage.cx = cx;
+      stage.cz = cz;
+      WorldGenLevel fake = (WorldGenLevel)Proxy.newProxyInstance(WorldGenLevel.class.getClassLoader(), new Class<?>[]{WorldGenLevel.class}, stage);
+      net.minecraft.world.level.StructureManager manager = com.wgaccel.platform.Mc.structureManager(fake, this.level);
+      // The chunk's writable area, as the game's getWritableArea: its columns, the world's height but its top and bottom.
+      net.minecraft.world.level.levelgen.structure.BoundingBox box = new net.minecraft.world.level.levelgen.structure.BoundingBox(
+         x0, this.minY + 1, z0, x0 + 15, this.minY + this.height - 2, z0 + 15);
+      net.minecraft.world.level.ChunkPos pos = new net.minecraft.world.level.ChunkPos(cx, cz);
+      for (int i = 0; i < starts.size(); i++) {
+         stage.current = i;
+         if (i == 0 || steps[i] != steps[i - 1] || indices[i] != indices[i - 1]) {
+            // Once per structure, as the game (its starts here then share the random in turn).
+            random.setFeatureSeed(decoration, indices[i], steps[i]);
+         }
+
+         SandboxPlacing.enter();
+         try {
+            starts.get(i).placeInChunk(fake, manager, this.generator, random, box, pos);
+         } catch (RuntimeException | LinkageError failure) {
+            if (SAID.add("structure " + names[i])) {
+               WorldgenAccelerator.LOG.warn("WGA Voxy LODs: structure {} failed outside a world; left out where it fails (said once)", names[i], failure);
+            }
+         } finally {
+            SandboxPlacing.leave();
          }
       }
 
-      for (Map.Entry<Long, BlockState> entry : stage.set.entrySet()) {
-         long pos = entry.getKey();
-         sink.set(BlockPos.getX(pos), BlockPos.getY(pos), BlockPos.getZ(pos), entry.getValue(), stage.by.get(pos));
+      for (it.unimi.dsi.fastutil.longs.Long2ObjectMap.Entry<BlockState> entry : stage.set.long2ObjectEntrySet()) {
+         long at = entry.getLongKey();
+         sink.set(BlockPos.getX(at), BlockPos.getY(at), BlockPos.getZ(at), entry.getValue(), stage.by.get(at));
       }
    }
 
@@ -122,9 +244,9 @@ final class FeatureSandbox {
       final Columns columns;
       final RandomSource random;
       /** The blocks set in this run (packed position to state), read back. */
-      final java.util.HashMap<Long, BlockState> set = new java.util.HashMap<>();
+      final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<BlockState> set = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
       /** Which run set each of them last ({@link #current} when it did). */
-      final java.util.HashMap<Long, Integer> by = new java.util.HashMap<>();
+      final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap by = new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
       int current;
       /** The chunk being decorated. */
       int cx;
@@ -187,7 +309,7 @@ final class FeatureSandbox {
 
       @Override
       public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-         String name = method.getName();
+         String name = Names.BY_METHOD.getOrDefault(method, method.getName());
          int n = args == null ? 0 : args.length;
          switch (name) {
             case "getBlockState":
@@ -294,7 +416,27 @@ final class FeatureSandbox {
                }
                break;
             case "getBlockEntity":
-               return null;
+               // None: (pos) null, (pos, type) empty (the desert pyramid's suspicious sand).
+               return n == 2 ? java.util.Optional.empty() : null;
+            case "getBlockTicks":
+            case "getFluidTicks":
+               // Ticks go nowhere (Dynamic Trees' trunks schedule one while their vines ray-trace the branches).
+               if (n == 0) {
+                  return net.minecraft.world.ticks.BlackholeTickAccess.emptyLevelList();
+               }
+               break;
+            case "getLevelData":
+               // The real level's time and weather (a structure's mob asks the moon's phase).
+               if (n == 0) {
+                  return FeatureSandbox.this.level.getLevelData();
+               }
+               break;
+            case "getCurrentDifficultyAt":
+               // The world's difficulty, as for a chunk never lived in (a structure's mob: its equipment).
+               if (n == 1) {
+                  return new net.minecraft.world.DifficultyInstance(FeatureSandbox.this.level.getDifficulty(), 0L, 0L, 0.0F);
+               }
+               break;
             // Light, without a light engine (plants' survival checks: mushrooms want the dark, flowers the sky): full sky
             // light over the column's surface, none at or under its ground; no block light.
             case "getRawBrightness":

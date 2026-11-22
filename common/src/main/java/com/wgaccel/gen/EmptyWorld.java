@@ -16,6 +16,20 @@ import net.minecraft.world.level.material.Fluids;
  */
 public final class EmptyWorld {
    private static final BlockState AIR = Blocks.AIR.defaultBlockState();
+   /** The methods answered, by the interfaces asked for ({@link ProxyNames}: their running names differ on Fabric 1.21.1). */
+   private static final java.util.Map<java.util.List<Class<?>>, java.util.Map<java.lang.reflect.Method, String>> NAMES =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
+   private static java.util.Map<java.lang.reflect.Method, String> names(Class<?>[] types) {
+      return NAMES.computeIfAbsent(java.util.List.of(types), key -> ProxyNames.learn(types, learner -> {
+         if (learner.proxy instanceof net.minecraft.world.level.LevelSimulatedReader reader) {
+            net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.ZERO;
+            learner.call("isStateAtPosition", () -> reader.isStateAtPosition(pos, state -> true));
+            learner.call("isFluidAtPosition", () -> reader.isFluidAtPosition(pos, fluid -> true));
+            learner.call("getHeightmapPos", () -> reader.getHeightmapPos(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, pos));
+         }
+      }));
+   }
 
    private EmptyWorld() {
    }
@@ -25,8 +39,9 @@ public final class EmptyWorld {
       Class<?>[] types = new Class<?>[more.length + 1];
       types[0] = type;
       System.arraycopy(more, 0, types, 1, more.length);
+      java.util.Map<java.lang.reflect.Method, String> names = names(types);
       return (T)Proxy.newProxyInstance(type.getClassLoader(), types, (proxy, method, args) -> {
-         String name = method.getName();
+         String name = names.getOrDefault(method, method.getName());
          Class<?> returns = method.getReturnType();
          switch (name) {
             case "isStateAtPosition":

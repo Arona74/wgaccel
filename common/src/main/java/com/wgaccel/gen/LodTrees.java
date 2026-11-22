@@ -218,10 +218,31 @@ final class LodTrees {
       return setting == null || setting.get();
    }
 
+   /**
+    * An ore (vanilla's ore and scattered ore features, or an ore by its id): left out of the ores step's terrain features,
+    * which keeps its ground disks (Still Life's dirt, moss, gravel and snow; the game's sand, clay and gravel under water).
+    */
+   private static boolean ore(PlacedFeature placed, String name) {
+      net.minecraft.world.level.levelgen.feature.Feature<?> feature = placed.feature().value().feature();
+      return feature instanceof net.minecraft.world.level.levelgen.feature.OreFeature
+         || feature instanceof net.minecraft.world.level.levelgen.feature.ScatteredOreFeature
+         || name.contains(":ore_") || name.contains("/ore/") || name.contains("_ore");
+   }
+
+   /** FreeTerraForged's features the LOD columns work out themselves ({@code ftf/FtfLodDecor}). */
+   private static final java.util.Set<String> FTF_OWN = java.util.Set.of("freeterraforged:decorate_snow", "freeterraforged:scree");
+
    /** What a run is for: trees (voxyTrees), Lithos's rock (voxyLithos), plants (voxyPlants). */
    static final int TREES = 0;
    static final int LITHOS = 1;
    static final int PLANTS = 2;
+   /**
+    * Terrain features (voxyTerrainFeatures): the biome's features in its raw-generation, local-modifications,
+    * surface-structures and top-layer steps, and its ores step's ground disks (Still Life's snow disks on its peaks; its
+    * cliff and slope rock, unless over voxyTerrainCostLimit) (ice spikes and ice patches, icebergs, mossy boulders, desert wells, Still Life's mountain snow; a mod's
+    * in those steps; not the game's own freezing), run as they are.
+    */
+   static final int TERRAIN = 3;
 
    /**
     * Run as it is, by feature id: its kind ({@link #TREES}: Arborea's forests; {@link #LITHOS}: Lithos's; {@link #PLANTS}:
@@ -244,18 +265,48 @@ final class LodTrees {
    private static java.util.concurrent.atomic.LongAdder[] changes(String name) {
       return CHANGES.computeIfAbsent(name, k -> new java.util.concurrent.atomic.LongAdder[]{
          new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(),
-         new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()});
+         new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()});
+   }
+
+   /** Terrain features described once when a costly run of theirs showed nothing. */
+   private static final java.util.Set<String> DESCRIBED = ConcurrentHashMap.newKeySet();
+
+   /** Why a terrain feature's run showed nothing: what it set, and the chunk's ground as the stand-in shows it. */
+   private static void describe(String name, int cx, int cz, FeatureSandbox.Columns columns, long nanos, int setAll, int setAir) {
+      Map<String, Integer> tops = new java.util.TreeMap<>();
+      int low = Integer.MAX_VALUE;
+      int high = Integer.MIN_VALUE;
+      int wet = 0;
+      for (int z = 0; z < 16; z++) {
+         for (int x = 0; x < 16; x++) {
+            int g = columns.ground((cx << 4) + x, (cz << 4) + z);
+            low = Math.min(low, g);
+            high = Math.max(high, g);
+            wet += columns.surface((cx << 4) + x, (cz << 4) + z) > g ? 1 : 0;
+            BlockState top = columns.layer((cx << 4) + x, (cz << 4) + z, 0);
+            tops.merge(top == null ? "null (stone)" : String.valueOf(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(top.getBlock())), 1, Integer::sum);
+         }
+      }
+
+      WorldgenAccelerator.LOG.info("WGA Voxy LODs: {} showed nothing in chunk {}, {} ({} ms): it set {} blocks ({} air, the rest outside the"
+         + " chunk's columns or under its ground); the chunk's ground y {} to {}, {} columns under water, top blocks {}", name, cx, cz,
+         String.format(java.util.Locale.ROOT, "%.1f", nanos / 1.0e6), setAll, setAir, low, high, wet, tops);
    }
 
    /** The counts so far as a log line (each feature: per chunk run). */
    private static void logChanges(long runs) {
       StringBuilder line = new StringBuilder();
-      CHANGES.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {
+      double[] total = {0};
+      // Slowest first: what costs the LODs most, and what it shows for it.
+      CHANGES.entrySet().stream().sorted((a, b) -> Long.compare(b.getValue()[4].sum(), a.getValue()[4].sum())).forEach(e -> {
          java.util.concurrent.atomic.LongAdder[] c = e.getValue();
          double n = Math.max(1, c[3].sum());
+         double ms = c[4].sum() / 1.0e6 / n;
+         total[0] += ms;
          line.append(line.length() == 0 ? "" : "; ").append(e.getKey()).append(String.format(java.util.Locale.ROOT,
-            " %.1f top blocks, %.1f side blocks (1-4 under), %.1f over the ground", c[0].sum() / n, c[1].sum() / n, c[2].sum() / n));
+            " %.2f ms: %.1f top blocks, %.1f side blocks (1-4 under), %.1f over the ground", ms, c[0].sum() / n, c[1].sum() / n, c[2].sum() / n));
       });
+      line.insert(0, String.format(java.util.Locale.ROOT, "%.1f ms a chunk run in all; ", total[0]));
       WorldgenAccelerator.LOG.info("WGA Voxy LODs: what the run features change that the LODs show, per chunk, after {} chunk runs: {}", runs, line);
    }
 
@@ -300,6 +351,56 @@ final class LodTrees {
          }
       });
 
+   /** Chunk runs a feature is watched before it may be left out ({@link #idle}). */
+   private static final int WATCHED = 256;
+   /** Time (ns a chunk run) under which a feature that shows nothing is still run (cheap; may show rarely). */
+   private static final long IDLE_COST = 250_000L;
+
+   /** Each run's chunk runs, time (ns) and blocks it showed in its own chunk: [0] runs, [1] ns, [2] shown. */
+   private final Map<Run, java.util.concurrent.atomic.LongAdder[]> watch = new ConcurrentHashMap<>();
+   /** Runs left out: costly, and nothing of them showed in {@link #WATCHED} chunk runs (palm crowns where no palm grows). */
+   private final java.util.Set<Run> idle = ConcurrentHashMap.newKeySet();
+
+   private java.util.concurrent.atomic.LongAdder[] watch(Run run) {
+      return this.watch.computeIfAbsent(run, k -> new java.util.concurrent.atomic.LongAdder[]{
+         new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()});
+   }
+
+   /** Adds a chunk run to run's watch; leaves it out once it has cost time for nothing. */
+   private void watched(Run run, long nanos, int shown) {
+      java.util.concurrent.atomic.LongAdder[] w = this.watch(run);
+      w[0].increment();
+      w[1].add(nanos);
+      w[2].add(shown);
+      long n = w[0].sum();
+      if (n >= WATCHED && w[2].sum() == 0 && w[1].sum() / n >= IDLE_COST && this.idle.add(run)) {
+         WorldgenAccelerator.LOG.info("WGA Voxy LODs: {} left out where it ran ({} ms a chunk run, nothing shown in {} chunk runs)",
+            run.name(), String.format(java.util.Locale.ROOT, "%.2f", w[1].sum() / 1.0e6 / n), n);
+      }
+
+      int limit = com.wgaccel.Config.VOXY_TERRAIN_COST_LIMIT.get();
+      if (run.kind() == TERRAIN && limit > 0 && n >= WATCHED && w[1].sum() / n > limit * 1_000_000L && this.idle.add(run)) {
+         WorldgenAccelerator.LOG.info("WGA Voxy LODs: {} left out where it ran: {} ms a chunk run, over voxyTerrainCostLimit ({} ms; it showed {}"
+            + " blocks a chunk run)", run.name(), String.format(java.util.Locale.ROOT, "%.2f", w[1].sum() / 1.0e6 / n), limit,
+            String.format(java.util.Locale.ROOT, "%.1f", w[2].sum() / (double)n));
+      }
+   }
+
+   /** The generator's step lists with the game's feature indices ({@link FeatureIndex}), read once. */
+   private volatile List<net.minecraft.world.level.biome.FeatureSorter.StepFeatureData> globalSteps;
+   private volatile boolean globalRead;
+
+   private List<net.minecraft.world.level.biome.FeatureSorter.StepFeatureData> globalSteps(net.minecraft.world.level.chunk.ChunkGenerator generator) {
+      if (!this.globalRead) {
+         this.globalSteps = FeatureIndex.steps(generator);
+         this.globalRead = true;
+         WorldgenAccelerator.LOG.info("WGA Voxy LODs: features seeded {}", this.globalSteps != null
+            ? "by their index in the generator's decoration steps, as the game" : "by their place in each biome (the steps were not readable)");
+      }
+
+      return this.globalSteps;
+   }
+
    LodTrees(ToIntFunction<BlockState> ids, ServerLevel level) {
       this.ids = ids;
       this.level = level;
@@ -325,18 +426,44 @@ final class LodTrees {
       RunKey at = new RunKey(key, runs, context);
       int[] blocks = ran.get(at);
       if (blocks == null) {
+         if (!this.idle.isEmpty()) {
+            List<Run> busy = new ArrayList<>(runs.size());
+            for (Run run : runs) {
+               if (!this.idle.contains(run)) {
+                  busy.add(run);
+               }
+            }
+
+            if (busy.size() < runs.size()) {
+               runs = busy;
+               if (runs.isEmpty()) {
+                  ran.put(at, NO_BLOCKS);
+                  return NO_BLOCKS;
+               }
+            }
+         }
+
+         List<Run> running = runs;
          int[][] list = {new int[256 * 5]};
          int[] count = {0};
          int x0 = cx << 4;
          int z0 = cz << 4;
+         int[] shown = new int[runs.size()];
+         // Every block each run set (air and outside this chunk included), its air among them: for describing a terrain
+         // feature that showed nothing.
+         int[] setAll = new int[runs.size()];
+         int[] setAir = new int[runs.size()];
          java.util.concurrent.atomic.LongAdder[][] counts = new java.util.concurrent.atomic.LongAdder[runs.size()][];
          for (int r = 0; r < counts.length; r++) {
             counts[r] = changes(runs.get(r).name());
             counts[r][3].increment();
          }
 
+         long[] nanos = new long[runs.size()];
          this.sandbox.run(runs, cx, cz, columns, (x, y, z, state, r) -> {
+            setAll[r]++;
             if (state.isAir()) {
+               setAir[r]++;
                return;
             }
 
@@ -345,13 +472,16 @@ final class LodTrees {
             if (x >> 4 == cx && z >> 4 == cz) {
                if (dy > 0) {
                   counts[r][2].increment();
+                  shown[r]++;
                } else if (dy >= -4 && state != columns.layer(x, z, -dy)) {
                   counts[r][dy == 0 ? 0 : 1].increment();
+                  shown[r]++;
                }
             }
 
-            if (dy <= -GROUND_KEPT || dy <= 0 && runs.get(r).kind() == PLANTS) {
-               // Too deep to show; plants' blocks in the ground (lichen, roots...) are not kept.
+            if (dy <= -GROUND_KEPT || dy <= 0 && running.get(r).kind() == PLANTS && !state.canOcclude()) {
+               // Too deep to show; plants' thin blocks in the ground (lichen, roots...) are not kept (their whole ones are:
+               // Still Life's rooted dirt, podzol and coarse dirt patches in the vegetal step).
                return;
             }
 
@@ -365,8 +495,15 @@ final class LodTrees {
             a[count[0]++] = z - z0;
             a[count[0]++] = this.id(state);
             // 0 leaves (into air), 1 logs, rock... (over them), 2 plants (into air only, no snow on them).
-            a[count[0]++] = runs.get(r).kind() == PLANTS ? 2 : state.is(net.minecraft.tags.BlockTags.LEAVES) ? 0 : 1;
-         });
+            a[count[0]++] = running.get(r).kind() == PLANTS ? 2 : state.is(net.minecraft.tags.BlockTags.LEAVES) ? 0 : 1;
+         }, nanos);
+         for (int r = 0; r < nanos.length; r++) {
+            counts[r][4].add(nanos[r]);
+            this.watched(runs.get(r), nanos[r], shown[r]);
+            if (shown[r] == 0 && running.get(r).kind() == TERRAIN && nanos[r] > 2_000_000L && DESCRIBED.add(running.get(r).name())) {
+               describe(running.get(r).name(), cx, cz, columns, nanos[r], setAll[r], setAir[r]);
+            }
+         }
          blocks = count[0] == 0 ? NO_BLOCKS : java.util.Arrays.copyOf(list[0], count[0]);
          ran.put(at, blocks);
          long done = CHANGE_RUNS.incrementAndGet();
@@ -631,14 +768,30 @@ final class LodTrees {
          // A mod's trees that are all its own code: the feature itself, in a stand-in level, whichever step it is in (mods
          // add theirs in code).
          List<Run> runs = new ArrayList<>();
-         List<net.minecraft.core.HolderSet<PlacedFeature>> all = biome.value().getGenerationSettings().features();
+         // The biome's features as the generator decorates it (FreeTerraForged: its plan's), each seeded by its index in
+         // the step across all biomes, as the game's decoration (its place in this biome's list gave other spots).
+         net.minecraft.world.level.chunk.ChunkGenerator generator = this.level.getChunkSource().getGenerator();
+         List<net.minecraft.world.level.biome.FeatureSorter.StepFeatureData> global = this.globalSteps(generator);
+         List<net.minecraft.core.HolderSet<PlacedFeature>> all = generator.getBiomeGenerationSettings(biome).features();
          for (int step = 0; step < all.size(); step++) {
             int at = 0;
             for (Holder<PlacedFeature> placed : all.get(step)) {
                Integer kind = runs(FeatureSandbox.name(placed.value()));
                if (kind != null) {
-                  runs.add(new Run(placed.value(), at, step, kind, placed.getRegisteredName()));
+                  runs.add(new Run(placed.value(), FeatureIndex.index(global, step, placed.value(), at), step, kind, placed.getRegisteredName()));
                   described.add(placed.getRegisteredName() + " [run as it is, in a stand-in level]");
+               } else if (FTF_OWN.contains(placed.getRegisteredName())) {
+                  // FreeTerraForged's own snow decorator and scree: the LOD columns work them out already.
+               } else if (step == GenerationStep.Decoration.RAW_GENERATION.ordinal()
+                  || step == GenerationStep.Decoration.LOCAL_MODIFICATIONS.ordinal()
+                  || step == GenerationStep.Decoration.SURFACE_STRUCTURES.ordinal()
+                  || step == GenerationStep.Decoration.UNDERGROUND_ORES.ordinal() && !ore(placed.value(), placed.getRegisteredName())
+                  || step == GenerationStep.Decoration.TOP_LAYER_MODIFICATION.ordinal()
+                     && !"minecraft:freeze_top_layer".equals(placed.getRegisteredName())) {
+                  // Ice spikes, icebergs, boulders, wells: what stands on the ground (one that never shows is left out
+                  // by the idle rule). The top layer's mods' snow too (Still Life's mountain snow); the game's own
+                  // freezing is the LODs' snow and ice already.
+                  runs.add(new Run(placed.value(), FeatureIndex.index(global, step, placed.value(), at), step, TERRAIN, placed.getRegisteredName()));
                }
 
                at++;
@@ -656,7 +809,8 @@ final class LodTrees {
             this.collect(placed.value(), 1.0F, chances, kinds, 0);
             if (kinds.isEmpty()) {
                // Not trees: plants (flowers, grass, bushes, Conquest's patches), run as they are (voxyPlants).
-               runs.add(new Run(placed.value(), index - 1, GenerationStep.Decoration.VEGETAL_DECORATION.ordinal(), PLANTS,
+               int vegetal = GenerationStep.Decoration.VEGETAL_DECORATION.ordinal();
+               runs.add(new Run(placed.value(), FeatureIndex.index(global, vegetal, placed.value(), index - 1), vegetal, PLANTS,
                   placed.getRegisteredName()));
 
                Cover cover = found.isEmpty() ? this.cover(index, placed) : null;

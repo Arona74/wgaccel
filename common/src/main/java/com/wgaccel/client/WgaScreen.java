@@ -285,7 +285,7 @@ public final class WgaScreen extends CanvasScreen {
 
    /** The tab's settings (its Defaults button resets them). */
    private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_PERFORMANCE, Config.VOXY_THREADS,
-      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_LITHOS, Config.VOXY_LITHOS_STRATA, Config.VOXY_LITHOS_LAYERED_STONE, Config.VOXY_LITHOS_CLIFF_STONE, Config.VOXY_LITHOS_GROUND_COVER, Config.VOXY_LITHOS_VEGETATION_FILL, Config.VOXY_ARBOREA_FORESTS, Config.VOXY_PLANTS, Config.VOXY_ARONA_LAYERS, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
+      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_LITHOS, Config.VOXY_LITHOS_STRATA, Config.VOXY_LITHOS_LAYERED_STONE, Config.VOXY_LITHOS_CLIFF_STONE, Config.VOXY_LITHOS_GROUND_COVER, Config.VOXY_LITHOS_VEGETATION_FILL, Config.VOXY_ARBOREA_FORESTS, Config.VOXY_PLANTS, Config.VOXY_ARONA_LAYERS, Config.VOXY_STRUCTURES, Config.VOXY_TERRAIN_FEATURES, Config.VOXY_TERRAIN_COST_LIMIT, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
       Config.VOXY_OVERLAY_HIDE_WHEN_DONE, Config.VOXY_OVERLAY_ANIMATION);
 
    private int lods(List<Placed> widgets) {
@@ -339,6 +339,15 @@ public final class WgaScreen extends CanvasScreen {
       y += this.setting(widgets, Config.VOXY_PLANTS, "Plants",
          "Each biome's own plants (flowers, grass, bushes, Conquest's ground cover), run as the game places them, into the empty cells over the"
             + " ground. FAR: all rings but the outermost; ALL: every ring (far rings once per sample). New LODs only (/wgaccel lod voxy reset).", y);
+      y += this.setting(widgets, Config.VOXY_TERRAIN_FEATURES, "Terrain features",
+         "Ice spikes, icebergs, mossy boulders, desert wells, mods' snow cover such as Still Life's (each biome's own, run as the game places them). FAR: all rings but the"
+            + " outermost; ALL: every ring. New LODs only (/wgaccel lod voxy reset).", y);
+      y += this.setting(widgets, Config.VOXY_TERRAIN_COST_LIMIT, "Terrain feature cost limit (ms)",
+         "A terrain feature costing more than this a chunk is left out (Still Life's cliff rock costs about 20 ms). 0: no limit."
+            + " New LODs only (/wgaccel lod voxy reset).", y);
+      y += this.setting(widgets, Config.VOXY_STRUCTURES, "Structures (in progress)",
+         "Villages, temples, outposts and ruins in the LODs: found from the seed and placed by their own code (underground ones left out)."
+            + " Full-detail rings for now. New LODs only (/wgaccel lod voxy reset).", y);
       if (com.wgaccel.platform.Platform.get().isModLoaded("aronalayers")) {
          y += this.setting(widgets, Config.VOXY_ARONA_LAYERS, "AronaLayers layers",
             "AronaLayers' layers on the LODs' ground, placed by AronaLayers itself (needs its LayersApi version 2). With Layer Supported LOD they"
