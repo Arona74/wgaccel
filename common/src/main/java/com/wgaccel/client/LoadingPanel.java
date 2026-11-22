@@ -43,6 +43,7 @@ public final class LoadingPanel {
    private static final int SCENE = 40;
    /** The scene's own time, at normal speed while the world loads. */
    private static final ChaseScene.Clock CLOCK = new ChaseScene.Clock();
+   private static final ChaseScene.View VIEW = new ChaseScene.View();
 
    public static void render(Canvas canvas, Font font, int width, int height) {
       top(canvas, font, width);
@@ -51,7 +52,7 @@ public final class LoadingPanel {
          // The chase under the title and the bar, as wide as the bar; the columns under it.
          int sceneWidth = Math.min(240, width - 32);
          int sceneTop = gpuOn() ? 34 : 24;
-         ChaseScene.draw(canvas, width / 2 - sceneWidth / 2, sceneTop, sceneWidth, SCENE, CLOCK.advance(1.0));
+         VIEW.draw(canvas, width / 2 - sceneWidth / 2, sceneTop, sceneWidth, SCENE, CLOCK.advance(1.0));
          y = sceneTop + SCENE + 10;
       }
 

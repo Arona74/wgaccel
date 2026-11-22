@@ -50,6 +50,15 @@ public final class Config {
    public static final Setting<VoxyDither> VOXY_HEIGHT_DITHER;
    public static final Setting<Boolean> VOXY_STEP_SIDES;
    public static final Setting<VoxyFeature> VOXY_TREES;
+   public static final Setting<VoxyFeature> VOXY_LITHOS;
+   public static final Setting<Boolean> VOXY_LITHOS_STRATA;
+   public static final Setting<Boolean> VOXY_LITHOS_LAYERED_STONE;
+   public static final Setting<Boolean> VOXY_LITHOS_CLIFF_STONE;
+   public static final Setting<Boolean> VOXY_LITHOS_GROUND_COVER;
+   public static final Setting<Boolean> VOXY_LITHOS_VEGETATION_FILL;
+   public static final Setting<Boolean> VOXY_ARBOREA_FORESTS;
+   public static final Setting<VoxyFeature> VOXY_PLANTS;
+   public static final Setting<VoxyFeature> VOXY_ARONA_LAYERS;
    public static final Setting<Integer> VOXY_REAL_CHUNKS_RADIUS;
    public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
@@ -898,8 +907,47 @@ public final class Config {
       VOXY_TREES = Setting.custom(builder
          .comment("Trees: each biome's own trees and huge mushrooms, grown by the game's own trunk and leaf placers",
             "(FreeTerraForged: its tree templates), about as many as the game makes and in its pattern, not its exact spots.",
-            "Real chunks replace them. Mods' own non-vanilla tree features are left out. About 6% slower in the far rings.")
+            "Real chunks replace them. Conquest of Arborea's forests: its own feature, run as it is (its real trees; it costs",
+            "what it costs the game, a lot slower far rings: NEAR keeps them fast). Other mods' own tree features are left out.",
+            "About 6% slower in the far rings.")
          .defineEnum("voxyTrees", VoxyFeature.ALL));
+      VOXY_LITHOS = Setting.custom(builder
+         .comment("Lithos (when installed): its own features run as they are, its rock strata, cliff stone and ground cover on the",
+            "LODs' ground. A run costs what it costs the game (about 25 ms a chunk in Conquest): about 3 times slower near",
+            "rings. ALL: the far rings too, one run per sample (one per 2 x 2 chunks at stride 32, 4 x 4 at stride 64) laid on",
+            "the chunks around it.")
+         .defineEnum("voxyLithos", VoxyFeature.NEAR));
+      VOXY_LITHOS_STRATA = Setting.custom(builder
+         .comment("Lithos's strata in the LODs (with voxyLithos on): its rock layers. Changes no top block, only the sides of steps",
+            "and slopes (about 270 blocks a chunk), and is its costliest feature (about 20 ms a chunk): off by default.")
+         .define("voxyLithosStrata", false));
+      VOXY_LITHOS_LAYERED_STONE = Setting.custom(builder
+         .comment("Lithos's layered stone in the LODs (with voxyLithos on): its stone bands, mostly under the surface the LODs show",
+            "(about 5 ms a chunk): off by default.")
+         .define("voxyLithosLayeredStone", false));
+      VOXY_LITHOS_CLIFF_STONE = Setting.custom(builder
+         .comment("Lithos's cliff stone in the LODs (with voxyLithos on): stone on steep ground.")
+         .define("voxyLithosCliffStone", true));
+      VOXY_LITHOS_GROUND_COVER = Setting.custom(builder
+         .comment("Lithos's ground cover in the LODs (with voxyLithos on): the surface blocks and what lies on them.")
+         .define("voxyLithosGroundCover", true));
+      VOXY_LITHOS_VEGETATION_FILL = Setting.custom(builder
+         .comment("Lithos's vegetation fill in the LODs (with voxyLithos on): the plants it adds.")
+         .define("voxyLithosVegetationFill", true));
+      VOXY_ARBOREA_FORESTS = Setting.custom(builder
+         .comment("Conquest of Arborea's forests in the LODs (with voxyTrees on): its own tree feature run as it is.")
+         .define("voxyArboreaForests", true));
+      VOXY_PLANTS = Setting.custom(builder
+         .comment("Plants: each biome's own plant features (flowers, grass, bushes; Conquest's ground cover and shore plants), run",
+            "as they are with their own placement, into the empty cells over the ground (under trees and rock). A run costs what",
+            "it costs the game. ALL: the far rings too, once per sample (with Lithos's) laid on the chunks around it.")
+         .defineEnum("voxyPlants", VoxyFeature.NEAR));
+      VOXY_ARONA_LAYERS = Setting.custom(builder
+         .comment("AronaLayers (with its LayersApi.placeLayers, API version 2): its layers on the LODs' ground, placed by",
+            "AronaLayers itself on a stand-in chunk of each LOD chunk (its own settings and backend: TerraForged, Tellus or the",
+            "vanilla density). Layer Supported LOD (LSL) then draws them at their real height. ALL: the far rings too (their",
+            "ground is interpolated, so AronaLayers may leave many far columns bare).")
+         .defineEnum("voxyAronaLayers", VoxyFeature.NEAR));
       builder.pop();
       VOXY_WITH_VWG = Setting.custom(builder
          .comment("With Voxy World Gen V2 (VWG) installed and on (its config/voxyworldgenv2.json, only read):",
@@ -936,8 +984,8 @@ public final class Config {
       VOXY_OVERLAY_ANIMATION = Setting.custom(builder
          .comment("The little scene under the panel's title (a cheetah chasing a hare through the biomes), also on the world-loading",
             "screen. In the panel it runs at the generator's speed (normal: 300 chunks/s at full detail, 1,500 at stride 32, 3,000",
-            "at 64) and stands still while it waits.")
-         .define("voxyOverlayAnimation", true));
+            "at 64) and stands still while it waits. Off by default.")
+         .define("voxyOverlayAnimation", false));
       builder.pop();
       SPEC = builder.build();
       SPEC.onLoad(Setting::invalidate);

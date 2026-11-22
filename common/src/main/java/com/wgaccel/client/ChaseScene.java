@@ -58,7 +58,7 @@ final class ChaseScene {
    }
 
    /** The scene at (x, y), w x h GUI pixels, at its time t (seconds of normal-speed running). */
-   static void draw(Canvas c, int x, int y, int w, int h, double t) {
+   static void draw(Pixels c, int x, int y, int w, int h, double t) {
       double scroll = t * SPEED;
       int ground = y + h - GROUND_FROM_BOTTOM;
       int first = (int)Math.floor(scroll / SEGMENT);
@@ -90,7 +90,7 @@ final class ChaseScene {
       c.endScissor();
    }
 
-   static void backdrop(Canvas c, Biome b, int kind, int x, int y, int w, int ground, int h, double scroll, double t) {
+   static void backdrop(Pixels c, Biome b, int kind, int x, int y, int w, int ground, int h, double scroll, double t) {
       int half = (ground - y) / 2;
       c.fill(x, y, x + w, y + half, b.skyTop);
       c.fill(x, y + half, x + w, ground, b.skyLow);
@@ -146,7 +146,7 @@ final class ChaseScene {
    }
 
    /** The far layer's object: acacia, pine, dune, snowy spruce, mesa. */
-   static void far(Canvas c, int kind, int fx, int ground, long r) {
+   static void far(Pixels c, int kind, int fx, int ground, long r) {
       switch (kind) {
          case 0 -> {
             if ((r & 0x300) != 0) {
@@ -199,7 +199,7 @@ final class ChaseScene {
    }
 
       /** Near decorations: grass tufts, bushes, cacti, snow lumps, dead bushes. */
-   static void near(Canvas c, int kind, int nx, int ground, long r) {
+   static void near(Pixels c, int kind, int nx, int ground, long r) {
       if ((r & 0x30) == 0) {
          return;
       }
@@ -236,7 +236,7 @@ final class ChaseScene {
       }
    }
 
-   static void dust(Canvas c, int x, int ground, double t) {
+   static void dust(Pixels c, int x, int ground, double t) {
       for (int k = 0; k < 5; k++) {
          double age = (t * 2.5 + k / 5.0) % 1.0;
          int px = x - (int)(age * 18);
@@ -247,7 +247,7 @@ final class ChaseScene {
       }
    }
 
-   static void sprite(Canvas c, String[] rows, int x, int y) {
+   static void sprite(Pixels c, String[] rows, int x, int y) {
       for (int r = 0; r < rows.length; r++) {
          String row = rows[r];
          for (int col = 0; col < row.length(); col++) {
@@ -273,6 +273,36 @@ final class ChaseScene {
    }
 
    /** A scene's own time: real time times a speed factor (0 stands still), so a change of speed does not jump. */
+   /**
+    * The scene as one texture on a panel ({@link Pixels}): drawn again at most 30 times a second, and not while it stands
+    * still; each frame only draws the texture.
+    */
+   static final class View {
+      private static final long FRAME_NANOS = 1_000_000_000L / 30;
+      private Pixels pixels;
+      private double drawnTime = Double.NaN;
+      private long drawnAt;
+
+      void draw(Canvas canvas, int x, int y, int w, int h, double t) {
+         if (this.pixels == null) {
+            this.pixels = new Pixels(w, h);
+         } else if (this.pixels.width() != w || this.pixels.height() != h) {
+            this.pixels.resize(w, h);
+            this.drawnTime = Double.NaN;
+         }
+
+         long now = System.nanoTime();
+         if (t != this.drawnTime && (Double.isNaN(this.drawnTime) || now - this.drawnAt >= FRAME_NANOS)) {
+            ChaseScene.draw(this.pixels, 0, 0, w, h, t);
+            this.pixels.version++;
+            this.drawnTime = t;
+            this.drawnAt = now;
+         }
+
+         canvas.pixels(this.pixels, x, y);
+      }
+   }
+
    static final class Clock {
       private double time = 1.0;
       private long last;

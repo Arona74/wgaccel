@@ -132,7 +132,12 @@ public final class VoxyLodGenerator {
          for (int z = centerZ - radius; z <= centerZ + radius; z++) {
             net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(x, z);
             if (chunk != null) {
-               counts[access.ingest(chunk) ? 0 : 1]++;
+               boolean taken = access.ingest(chunk);
+               counts[taken ? 0 : 1]++;
+               if (taken) {
+                  // Voxy has it now: the generator leaves it alone.
+                  VoxyAuto.sent(level, chunk.getPos());
+               }
             }
          }
       }

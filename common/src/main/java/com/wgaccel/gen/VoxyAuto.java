@@ -62,6 +62,19 @@ public final class VoxyAuto {
    private final Path regionDir;
    private final Path doneFile;
    private final Set<Long> done = ConcurrentHashMap.newKeySet();
+   /**
+    * The overworld chunks sent to a player (or handed to Voxy's ingest by us): Voxy has those from the real chunks.
+    * Guarded by itself.
+    */
+   private final it.unimi.dsi.fastutil.longs.LongOpenHashSet received = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+   /**
+    * A world played before the sent chunks were kept (its data file has none, or none existed and the world is not new):
+    * its loaded and saved finished chunks count as Voxy's, as before (else we would write over the real LODs of the
+    * places explored). The ring of chunks finished past the view distance, never sent, stays a hole there.
+    */
+   private volatile boolean legacy;
+   /** The send hook ran this game (if it never does, the old rule: loaded or saved finished counts as Voxy's). */
+   private static volatile boolean sendsSeen;
    private final LongAdder covered = new LongAdder();
    private final List<Thread> workers = new ArrayList<>();
    private volatile boolean stopped;
@@ -214,6 +227,8 @@ public final class VoxyAuto {
 
       int count = auto.done.size();
       auto.done.clear();
+      // Made again from now on: only the chunks sent to a player count as Voxy's (the holes of an older world filled).
+      auto.legacy = false;
       auto.dirty = true;
       auto.plan = null;
       auto.save();
@@ -583,6 +598,30 @@ public final class VoxyAuto {
       }
    }
 
+   /** A chunk sent to a player in level (PlayerChunkSender.sendChunk), or handed to Voxy's ingest by us: Voxy has it. */
+   public static void sent(ServerLevel level, net.minecraft.world.level.ChunkPos pos) {
+      sendsSeen = true;
+      VoxyAuto auto = instance;
+      if (auto == null || level != auto.level) {
+         return;
+      }
+
+      boolean added;
+      synchronized (auto.received) {
+         added = auto.received.add(com.wgaccel.platform.Mc.key(com.wgaccel.platform.Mc.x(pos), com.wgaccel.platform.Mc.z(pos)));
+      }
+
+      if (added) {
+         auto.dirty = true;
+      }
+   }
+
+   private boolean received(long key) {
+      synchronized (this.received) {
+         return this.received.contains(key);
+      }
+   }
+
    /** A chunk being saved (ChunkSerializer.write / SerializableChunkData.copyOf): handed to Voxy while our Chunky task runs. */
    public static void saved(ServerLevel level, net.minecraft.world.level.chunk.ChunkAccess chunk) {
       VoxyAuto auto = instance;
@@ -594,6 +633,7 @@ public final class VoxyAuto {
          VoxyAccess access = VoxyAccess.get();
          if (access != null && access.ingest(full)) {
             auto.realIngested.increment();
+            sent(level, full.getPos());
          }
       } catch (RuntimeException failure) {
          // Never break saving.
@@ -887,15 +927,24 @@ public final class VoxyAuto {
             return false;
          }
 
-         // Loaded (Voxy takes them from the real chunks), or saved finished. A chunk saved at an earlier step (around finished
-         // chunks: structure starts reach 8 chunks out) is never shown to the client, so Voxy never gets it: written here.
-         if (this.level.getChunkSource().hasChunk(x, z)) {
+         // Sent to a player: Voxy takes it from the real chunk. Loaded or saved finished but never sent (the ring the server
+         // finishes past the view distance, the spawn area made before anyone joined): Voxy never gets it, written here.
+         // A chunk saved at an earlier step (around finished chunks: structure starts reach 8 chunks out) never is either.
+         if (this.received(com.wgaccel.platform.Mc.key(x, z))) {
             return false;
          }
 
-         java.util.concurrent.CompletableFuture<Boolean> full = saved.get(com.wgaccel.platform.Mc.key(x, z));
-         if (full != null && full.join()) {
-            return false;
+         // A world from before the sent chunks were kept (or no send seen yet): loaded or saved finished counts as Voxy's.
+         boolean old = this.legacy || !sendsSeen;
+         if (this.level.getChunkSource().hasChunk(x, z)) {
+            if (old) {
+               return false;
+            }
+         } else if (old) {
+            java.util.concurrent.CompletableFuture<Boolean> full = saved.get(com.wgaccel.platform.Mc.key(x, z));
+            if (full != null && full.join()) {
+               return false;
+            }
          }
 
          // A far tile leaves the chunks of near tiles already done (finer) alone.
@@ -937,18 +986,39 @@ public final class VoxyAuto {
    // ---- the tiles done, in the world folder ----
 
    private void load() {
+      // No file: a new world (a minute of game time or less) keeps the sent chunks from the start; an older one is legacy.
+      this.legacy = this.level.getGameTime() > 1200L;
       if (!Files.exists(this.doneFile)) {
+         this.dirty = true;
          return;
       }
 
       try (DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(Files.newInputStream(this.doneFile)))) {
-         if (in.readInt() != MAGIC || in.readInt() != 1) {
+         int magic = in.readInt();
+         int version = in.readInt();
+         if (magic != MAGIC || version != 1 && version != 2) {
             return;
          }
 
+         // Version 1 (before 0.70.5) kept no sent chunks: legacy.
+         this.legacy = version == 1 || in.readBoolean();
          int count = in.readInt();
          for (int i = 0; i < count; i++) {
             this.done.add(in.readLong());
+         }
+
+         if (version >= 2) {
+            int sent = in.readInt();
+            synchronized (this.received) {
+               for (int i = 0; i < sent; i++) {
+                  this.received.add(in.readLong());
+               }
+            }
+         }
+
+         if (this.legacy) {
+            WorldgenAccelerator.LOG.info("WGA Voxy LOD generator: a world from before the sent chunks were kept: its loaded and saved"
+               + " chunks count as Voxy's (a chunk finished but never sent stays a hole; /wgaccel lod voxy reset fills those)");
          }
       } catch (IOException failure) {
          WorldgenAccelerator.LOG.warn("WGA Voxy LOD generator: {} could not be read; its tiles will be made again", this.doneFile, failure);
@@ -966,11 +1036,22 @@ public final class VoxyAuto {
          Files.createDirectories(this.doneFile.getParent());
          Path temp = this.doneFile.resolveSibling(FILE + ".tmp");
          List<Long> keys = new ArrayList<>(this.done);
+         long[] sent;
+         synchronized (this.received) {
+            sent = this.received.toLongArray();
+         }
+
          try (DataOutputStream out = new DataOutputStream(new java.io.BufferedOutputStream(Files.newOutputStream(temp)))) {
             out.writeInt(MAGIC);
-            out.writeInt(1);
+            out.writeInt(2);
+            out.writeBoolean(this.legacy);
             out.writeInt(keys.size());
             for (long key : keys) {
+               out.writeLong(key);
+            }
+
+            out.writeInt(sent.length);
+            for (long key : sent) {
                out.writeLong(key);
             }
          }

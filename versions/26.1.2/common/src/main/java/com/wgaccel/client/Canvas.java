@@ -62,6 +62,62 @@ public final class Canvas {
          textureHeight);
    }
 
+   /**
+    * A picture drawn in memory, at x, y, one texel per GUI pixel: one texture draw (uploaded again only when the picture
+    * changed).
+    */
+   public void pixels(Pixels pixels, int x, int y) {
+      PixelTexture texture = pixels.handle instanceof PixelTexture own ? own : null;
+      if (texture == null || texture.width != pixels.width || texture.height != pixels.height) {
+         if (texture != null) {
+            texture.release();
+         }
+
+         texture = new PixelTexture(pixels.width, pixels.height);
+         pixels.handle = texture;
+      }
+
+      if (texture.version != pixels.version) {
+         com.mojang.blaze3d.platform.NativeImage image = texture.texture.getPixels();
+         if (image != null) {
+            for (int py = 0; py < pixels.height; py++) {
+               for (int px = 0; px < pixels.width; px++) {
+                  image.setPixel(px, py, pixels.argb[py * pixels.width + px]);
+               }
+            }
+
+            texture.texture.upload();
+         }
+
+         texture.version = pixels.version;
+      }
+
+      this.graphics.blit(RenderPipelines.GUI_TEXTURED, texture.id, x, y, 0.0F, 0.0F, pixels.width, pixels.height, pixels.width, pixels.height,
+         pixels.width, pixels.height);
+   }
+
+   /** A Pixels' texture (registered under its own id). */
+   private static final class PixelTexture {
+      private static final java.util.concurrent.atomic.AtomicInteger COUNT = new java.util.concurrent.atomic.AtomicInteger();
+      final int width;
+      final int height;
+      final net.minecraft.client.renderer.texture.DynamicTexture texture;
+      final Identifier id;
+      int version = -1;
+
+      PixelTexture(int width, int height) {
+         this.width = width;
+         this.height = height;
+         this.texture = new net.minecraft.client.renderer.texture.DynamicTexture(() -> "wgaccel panel picture", width, height, false);
+         this.id = Identifier.fromNamespaceAndPath("wgaccel", "dynamic/picture_" + COUNT.incrementAndGet());
+         net.minecraft.client.Minecraft.getInstance().getTextureManager().register(this.id, this.texture);
+      }
+
+      void release() {
+         net.minecraft.client.Minecraft.getInstance().getTextureManager().release(this.id);
+      }
+   }
+
    /** As 1.21.1's Font: a colour with (almost) no alpha is opaque. */
    private static int opaque(int color) {
       return (color & 0xFC000000) == 0 ? color | 0xFF000000 : color;

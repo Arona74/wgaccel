@@ -41,6 +41,7 @@ public final class VoxyOverlay {
    private static final int SCENE = 40;
    /** The scene's own time: it runs at the generator's speed against the normal one for the ring's detail. */
    private static final ChaseScene.Clock CLOCK = new ChaseScene.Clock();
+   private static final ChaseScene.View VIEW = new ChaseScene.View();
    /** The usage colours: green (low) to yellow (80%), orange from 80%, red from 95%. */
    private static final int LOW = 0x46A758;
    private static final int HIGH = 0xFFE629;
@@ -144,8 +145,24 @@ public final class VoxyOverlay {
       return Math.max(0.25, Math.min(4.0, progress.chunksPerSecond() / normal));
    }
 
-   /** The game's CPU use: the process's share of all the CPU's threads, 0-100, or -1 when not known. */
+   private static volatile long cpuSampledAt;
+   private static volatile double cpuSample = -1.0;
+
+   /**
+    * The game's CPU use: the process's share of all the CPU's threads, 0-100, or -1 when not known. Asked of the system
+    * once a second (a slow call on Windows; the panel and F3 read it every frame).
+    */
    private static double cpuPercent() {
+      long now = System.nanoTime();
+      if (cpuSampledAt == 0L || now - cpuSampledAt >= 1_000_000_000L) {
+         cpuSampledAt = now;
+         cpuSample = sampleCpu();
+      }
+
+      return cpuSample;
+   }
+
+   private static double sampleCpu() {
       try {
          if (java.lang.management.ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
             double load = os.getProcessCpuLoad();
@@ -211,7 +228,23 @@ public final class VoxyOverlay {
    }
 
    /** As wide as the longest line (a gap of 12 between a line's left and right parts), within MIN_WIDTH-MAX_WIDTH. */
+   private static VoxyProgress widthFor;
+   private static long widthCpuAt;
+   private static int widthCached;
+
    private static int width(Font font, VoxyProgress progress) {
+      // Worked out again only for a new snapshot or CPU sample (its text changes the width), not every frame.
+      if (progress == widthFor && cpuSampledAt == widthCpuAt) {
+         return widthCached;
+      }
+
+      widthCached = measure(font, progress);
+      widthFor = progress;
+      widthCpuAt = cpuSampledAt;
+      return widthCached;
+   }
+
+   private static int measure(Font font, VoxyProgress progress) {
       int widest = font.width(TITLE_TEXT) + 12 + font.width(rate(progress));
       widest = Math.max(widest, font.width(usageLine()) + 12 + font.width(api()));
       int inner = 0;
@@ -251,7 +284,7 @@ public final class VoxyOverlay {
       line += LINE + 2;
       if (Config.VOXY_OVERLAY_ANIMATION.get()) {
          // The chase, as wide as the panel's lines.
-         ChaseScene.draw(canvas, left, line, right - left, SCENE, CLOCK.advance(speed(progress)));
+         VIEW.draw(canvas, left, line, right - left, SCENE, CLOCK.advance(speed(progress)));
          line += SCENE + 2;
       }
 

@@ -285,7 +285,7 @@ public final class WgaScreen extends CanvasScreen {
 
    /** The tab's settings (its Defaults button resets them). */
    private static final List<Setting<?>> LOD_SETTINGS = List.of(Config.VOXY_GENERATOR, Config.VOXY_RINGS, Config.VOXY_PERFORMANCE, Config.VOXY_THREADS,
-      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
+      Config.VOXY_PAUSE_ABOVE_MSPT, Config.VOXY_HEIGHT_DITHER, Config.VOXY_STEP_SIDES, Config.VOXY_TREES, Config.VOXY_LITHOS, Config.VOXY_LITHOS_STRATA, Config.VOXY_LITHOS_LAYERED_STONE, Config.VOXY_LITHOS_CLIFF_STONE, Config.VOXY_LITHOS_GROUND_COVER, Config.VOXY_LITHOS_VEGETATION_FILL, Config.VOXY_ARBOREA_FORESTS, Config.VOXY_PLANTS, Config.VOXY_ARONA_LAYERS, Config.VOXY_WITH_VWG, Config.VOXY_VWG_TASKS, Config.VOXY_VWG_AFTER_RADIUS, Config.VOXY_REAL_CHUNKS, Config.VOXY_REAL_CHUNKS_RADIUS, Config.VOXY_PROGRESS, Config.VOXY_OVERLAY_CORNER,
       Config.VOXY_OVERLAY_HIDE_WHEN_DONE, Config.VOXY_OVERLAY_ANIMATION);
 
    private int lods(List<Placed> widgets) {
@@ -336,6 +336,35 @@ public final class WgaScreen extends CanvasScreen {
       y += this.setting(widgets, Config.VOXY_TREES, "Trees",
          "Each biome's own trees and huge mushrooms, shaped as the game grows them, about as many as it makes. ALL: every ring; NEAR: the full-detail rings; OFF."
             + " New LODs only (/wgaccel lod voxy reset).", y);
+      y += this.setting(widgets, Config.VOXY_PLANTS, "Plants",
+         "Each biome's own plants (flowers, grass, bushes, Conquest's ground cover), run as the game places them, into the empty cells over the"
+            + " ground. ALL: far rings too, once per sample. New LODs only (/wgaccel lod voxy reset).", y);
+      if (com.wgaccel.platform.Platform.get().isModLoaded("aronalayers")) {
+         y += this.setting(widgets, Config.VOXY_ARONA_LAYERS, "AronaLayers layers",
+            "AronaLayers' layers on the LODs' ground, placed by AronaLayers itself (needs its LayersApi version 2). With Layer Supported LOD they"
+               + " show at their real height. ALL: far rings too. New LODs only (/wgaccel lod voxy reset).", y);
+      }
+
+      if (com.wgaccel.platform.Platform.get().isModLoaded("lithos")) {
+         y += this.setting(widgets, Config.VOXY_LITHOS, "Lithos rock",
+            "Lithos's own rock strata, cliff stone and ground cover on the LODs' ground (its features run as they are; slow: about 3 times"
+               + " slower near rings). ALL: far rings too, one run per sample. New LODs only (/wgaccel lod voxy reset).", y);
+         y += this.setting(widgets, Config.VOXY_LITHOS_STRATA, "  Strata",
+            "Lithos's rock layers. No top block changes, only the sides of steps and slopes; its costliest feature (about 20 ms a chunk)."
+               + " New LODs only.", y);
+         y += this.setting(widgets, Config.VOXY_LITHOS_LAYERED_STONE, "  Layered stone",
+            "Lithos's stone bands, mostly under the surface the LODs show (about 5 ms a chunk). New LODs only.", y);
+         y += this.setting(widgets, Config.VOXY_LITHOS_CLIFF_STONE, "  Cliff stone", "Lithos's stone on steep ground. New LODs only.", y);
+         y += this.setting(widgets, Config.VOXY_LITHOS_GROUND_COVER, "  Ground cover",
+            "Lithos's surface blocks and what lies on them. New LODs only.", y);
+         y += this.setting(widgets, Config.VOXY_LITHOS_VEGETATION_FILL, "  Vegetation fill", "The plants Lithos adds. New LODs only.", y);
+      }
+
+      if (com.wgaccel.platform.Platform.get().isModLoaded("conquest-of-arborea")) {
+         y += this.setting(widgets, Config.VOXY_ARBOREA_FORESTS, "Arborea forests",
+            "Conquest of Arborea's own forests (its tree feature run as it is), with Trees on. New LODs only (/wgaccel lod voxy reset).", y);
+      }
+
       return y;
    }
 

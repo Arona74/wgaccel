@@ -194,10 +194,188 @@ final class LodTrees {
    /** Voxy ids of the states the game's placers set (logs' axes, leaves' distances...). */
    private final Map<BlockState, Integer> stateIds = new ConcurrentHashMap<>();
 
+   /**
+    * Features run as they are ({@link FeatureSandbox}), by feature id: their spots, kinds and shapes are all the mod's own
+    * code (Conquest of Arborea's forests: forest cells, 1,577 schematics), and Lithos's (every feature of its namespace:
+    * strata, layered and cliff stone, ground cover; voxyLithos).
+    */
+   static final java.util.Set<String> RUN = java.util.Set.of("conquest-of-arborea:tree_forest");
+
+   /**
+    * Whether a run's feature is on (its own config switch: Lithos's five, Arborea's forests; a feature without one is on).
+    * Read when the runs are picked, so a change applies to the LODs made from then on.
+    */
+   static boolean enabled(Run run) {
+      com.wgaccel.Setting<Boolean> setting = switch (run.name()) {
+         case "lithos:strata" -> com.wgaccel.Config.VOXY_LITHOS_STRATA;
+         case "lithos:layered_stone" -> com.wgaccel.Config.VOXY_LITHOS_LAYERED_STONE;
+         case "lithos:cliff_stone" -> com.wgaccel.Config.VOXY_LITHOS_CLIFF_STONE;
+         case "lithos:ground_cover" -> com.wgaccel.Config.VOXY_LITHOS_GROUND_COVER;
+         case "lithos:vegetation_fill" -> com.wgaccel.Config.VOXY_LITHOS_VEGETATION_FILL;
+         case "conquest-of-arborea:tree_forest" -> com.wgaccel.Config.VOXY_ARBOREA_FORESTS;
+         default -> null;
+      };
+      return setting == null || setting.get();
+   }
+
+   /** What a run is for: trees (voxyTrees), Lithos's rock (voxyLithos), plants (voxyPlants). */
+   static final int TREES = 0;
+   static final int LITHOS = 1;
+   static final int PLANTS = 2;
+
+   /**
+    * Run as it is, by feature id: its kind ({@link #TREES}: Arborea's forests; {@link #LITHOS}: Lithos's; {@link #PLANTS}:
+    * Arborea's others, its ground cover and shore plants), or null (the vegetal step's plants are found apart).
+    */
+   static Integer runs(String feature) {
+      return RUN.contains(feature) ? (Integer)TREES : feature.startsWith("lithos:") ? (Integer)LITHOS
+         : feature.startsWith("conquest-of-arborea:") ? (Integer)PLANTS : null;
+   }
+
+   /**
+    * What each run feature changes that the LODs show, by placed feature: [0] columns whose top block it changed, [1]
+    * blocks it changed 1 to 4 under the top (steps' sides), [2] blocks over the ground it set; [3] chunk runs it was in.
+    * Its final state only (a block a later feature set again counts for that one), and only where it differs from the
+    * LOD's own ground.
+    */
+   private static final Map<String, java.util.concurrent.atomic.LongAdder[]> CHANGES = new ConcurrentHashMap<>();
+   private static final java.util.concurrent.atomic.AtomicLong CHANGE_RUNS = new java.util.concurrent.atomic.AtomicLong();
+
+   private static java.util.concurrent.atomic.LongAdder[] changes(String name) {
+      return CHANGES.computeIfAbsent(name, k -> new java.util.concurrent.atomic.LongAdder[]{
+         new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder(),
+         new java.util.concurrent.atomic.LongAdder(), new java.util.concurrent.atomic.LongAdder()});
+   }
+
+   /** The counts so far as a log line (each feature: per chunk run). */
+   private static void logChanges(long runs) {
+      StringBuilder line = new StringBuilder();
+      CHANGES.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {
+         java.util.concurrent.atomic.LongAdder[] c = e.getValue();
+         double n = Math.max(1, c[3].sum());
+         line.append(line.length() == 0 ? "" : "; ").append(e.getKey()).append(String.format(java.util.Locale.ROOT,
+            " %.1f top blocks, %.1f side blocks (1-4 under), %.1f over the ground", c[0].sum() / n, c[1].sum() / n, c[2].sum() / n));
+      });
+      WorldgenAccelerator.LOG.info("WGA Voxy LODs: what the run features change that the LODs show, per chunk, after {} chunk runs: {}", runs, line);
+   }
+
+   /** Ground edits kept: this many blocks under each column's top (what the LODs show of the ground). */
+   static final int GROUND_KEPT = 16;
+
+   /**
+    * A feature run as it is: the placed feature, its index in the biome's step and that step (the game's feature random),
+    * and whether it is Lithos's (voxyLithos) rather than trees (voxyTrees).
+    */
+   record Run(PlacedFeature placed, int index, int step, int kind, String name) {
+   }
+
+   /** Runs in the game's order: step, then index. */
+   static final java.util.Comparator<Run> ORDER = java.util.Comparator.comparingInt(Run::step).thenComparingInt(Run::index);
+
+   /** A run's context: its 3 x 3 chunks all known ({@link #COMPLETE}), some guessed ({@link #PARTIAL}), or a far sample's. */
+   static final int COMPLETE = 0;
+   static final int PARTIAL = 1;
+   static final int SAMPLED = 2;
+
+   private record RunKey(long chunk, List<Run> runs, int context) {
+   }
+
+   /** Some biome has features run as they are (the near tiles then work out the chunks around them too). */
+   private volatile boolean anyRuns;
+
+   boolean anyRuns() {
+      return this.anyRuns;
+   }
+
+   private static final Run[] NO_RUNS = new Run[0];
+   private static final int[] NO_BLOCKS = new int[0];
+   private final Map<Holder<Biome>, Run[]> runs = new ConcurrentHashMap<>();
+   private final FeatureSandbox sandbox;
+   /** Each worker thread's last runs (see {@link #ran}), asked by each of the 3 x 3 chunks around. */
+   private final ThreadLocal<java.util.LinkedHashMap<RunKey, int[]>> ran = ThreadLocal.withInitial(
+      () -> new java.util.LinkedHashMap<>(256, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(Map.Entry<RunKey, int[]> eldest) {
+            return this.size() > 256;
+         }
+      });
+
    LodTrees(ToIntFunction<BlockState> ids, ServerLevel level) {
       this.ids = ids;
       this.level = level;
       this.seed = level.getSeed();
+      this.sandbox = new FeatureSandbox(level);
+   }
+
+   /** The biome's features run as they are. */
+   Run[] runs(Holder<Biome> biome) {
+      this.sources.computeIfAbsent(biome, this::sources);
+      return this.runs.getOrDefault(biome, NO_RUNS);
+   }
+
+   /**
+    * The blocks the runs (in {@link #ORDER}) set when started in chunk (cx, cz), the level around read from columns: x and
+    * z from the chunk's corner, y from that column's ground (1 the block over it, 0 its top block...), Voxy id, solid (1:
+    * logs, rock...; 0: leaves). Air and ground more than {@link #GROUND_KEPT} deep are left out. Once per chunk on this
+    * thread, under key and its context ({@link #COMPLETE}, {@link #PARTIAL}: some chunks around guessed, kept apart so a
+    * guess never stands for the complete run; {@link #SAMPLED}: a far chunk's run standing for the chunks around it).
+    */
+   int[] ran(List<Run> runs, int cx, int cz, long key, int context, FeatureSandbox.Columns columns) {
+      java.util.LinkedHashMap<RunKey, int[]> ran = this.ran.get();
+      RunKey at = new RunKey(key, runs, context);
+      int[] blocks = ran.get(at);
+      if (blocks == null) {
+         int[][] list = {new int[256 * 5]};
+         int[] count = {0};
+         int x0 = cx << 4;
+         int z0 = cz << 4;
+         java.util.concurrent.atomic.LongAdder[][] counts = new java.util.concurrent.atomic.LongAdder[runs.size()][];
+         for (int r = 0; r < counts.length; r++) {
+            counts[r] = changes(runs.get(r).name());
+            counts[r][3].increment();
+         }
+
+         this.sandbox.run(runs, cx, cz, columns, (x, y, z, state, r) -> {
+            if (state.isAir()) {
+               return;
+            }
+
+            int dy = y - columns.ground(x, z);
+            // What it changed that the LODs show (in this chunk's columns: a neighbour's are counted by its own run).
+            if (x >> 4 == cx && z >> 4 == cz) {
+               if (dy > 0) {
+                  counts[r][2].increment();
+               } else if (dy >= -4 && state != columns.layer(x, z, -dy)) {
+                  counts[r][dy == 0 ? 0 : 1].increment();
+               }
+            }
+
+            if (dy <= -GROUND_KEPT || dy <= 0 && runs.get(r).kind() == PLANTS) {
+               // Too deep to show; plants' blocks in the ground (lichen, roots...) are not kept.
+               return;
+            }
+
+            if (count[0] + 5 > list[0].length) {
+               list[0] = java.util.Arrays.copyOf(list[0], list[0].length * 2);
+            }
+
+            int[] a = list[0];
+            a[count[0]++] = x - x0;
+            a[count[0]++] = dy;
+            a[count[0]++] = z - z0;
+            a[count[0]++] = this.id(state);
+            // 0 leaves (into air), 1 logs, rock... (over them), 2 plants (into air only, no snow on them).
+            a[count[0]++] = runs.get(r).kind() == PLANTS ? 2 : state.is(net.minecraft.tags.BlockTags.LEAVES) ? 0 : 1;
+         });
+         blocks = count[0] == 0 ? NO_BLOCKS : java.util.Arrays.copyOf(list[0], count[0]);
+         ran.put(at, blocks);
+         long done = CHANGE_RUNS.incrementAndGet();
+         if (done == 500 || done % 5000 == 0) {
+            logChanges(done);
+         }
+      }
+
+      return blocks;
    }
 
    /** The trees biome's tree features put in chunk (cx, cz) (the caller checks the biome and ground at each). */
@@ -450,12 +628,37 @@ final class LodTrees {
          List<Cover> covers = new ArrayList<>();
          List<String> described = new ArrayList<>();
          int index = 0;
+         // A mod's trees that are all its own code: the feature itself, in a stand-in level, whichever step it is in (mods
+         // add theirs in code).
+         List<Run> runs = new ArrayList<>();
+         List<net.minecraft.core.HolderSet<PlacedFeature>> all = biome.value().getGenerationSettings().features();
+         for (int step = 0; step < all.size(); step++) {
+            int at = 0;
+            for (Holder<PlacedFeature> placed : all.get(step)) {
+               Integer kind = runs(FeatureSandbox.name(placed.value()));
+               if (kind != null) {
+                  runs.add(new Run(placed.value(), at, step, kind, placed.getRegisteredName()));
+                  described.add(placed.getRegisteredName() + " [run as it is, in a stand-in level]");
+               }
+
+               at++;
+            }
+         }
+
          for (Holder<PlacedFeature> placed : vegetation) {
             index++;
+            if (runs(FeatureSandbox.name(placed.value())) != null) {
+               continue;
+            }
+
             List<float[]> chances = new ArrayList<>();
             List<Kind> kinds = new ArrayList<>();
             this.collect(placed.value(), 1.0F, chances, kinds, 0);
             if (kinds.isEmpty()) {
+               // Not trees: plants (flowers, grass, bushes, Conquest's patches), run as they are (voxyPlants).
+               runs.add(new Run(placed.value(), index - 1, GenerationStep.Decoration.VEGETAL_DECORATION.ordinal(), PLANTS,
+                  placed.getRegisteredName()));
+
                Cover cover = found.isEmpty() ? this.cover(index, placed) : null;
                if (cover != null) {
                   covers.add(cover);
@@ -470,6 +673,7 @@ final class LodTrees {
 
             List<PlacementModifier> placement = new ArrayList<>();
             List<String> skipped = new ArrayList<>();
+
             for (PlacementModifier modifier : placed.value().placement()) {
                if (this.counted(modifier)) {
                   placement.add(modifier);
@@ -499,6 +703,10 @@ final class LodTrees {
             found.add(new Source(index, List.copyOf(placement), chance, kinds.toArray(new Kind[0]), context, this.picks(placed.value())));
          }
 
+         this.runs.put(biome, runs.toArray(NO_RUNS));
+         if (!runs.isEmpty()) {
+            this.anyRuns = true;
+         }
          // Only worth laying out when one of them blocks trees.
          this.covers.put(biome, covers.stream().anyMatch(Cover::blocking) ? covers.toArray(NO_COVERS) : NO_COVERS);
          WorldgenAccelerator.LOG.info("WGA Voxy LOD trees: {}: {}", biome.getRegisteredName(),

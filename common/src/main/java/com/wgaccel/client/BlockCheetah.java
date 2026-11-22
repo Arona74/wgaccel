@@ -59,7 +59,7 @@ final class BlockCheetah {
    }
 
    /** The cheetah with its feet on the ground line (screen y), its rear at about x, at run phase p (0-1). */
-   static void draw(Canvas c, int x, int ground, double p, int scale) {
+   static void draw(Pixels c, int x, int ground, double p, int scale) {
       // First the pose with the waist at 0, only measured: the lowest point (a paw); then drawn with that paw on the
       // ground, less the flight's lift.
       Painter measure = new Painter(null, 0, 0, 1, false);
@@ -134,7 +134,7 @@ final class BlockCheetah {
 
    /** Draws textured boxes: each screen cell in the box's bounds takes the texel its centre falls in. */
    static final class Painter {
-      final Canvas c;
+      final Pixels c;
       final int x;
       final int ground;
       final int scale;
@@ -142,7 +142,7 @@ final class BlockCheetah {
       /** Measuring (no canvas): the lowest model y any box reaches. */
       double lowest = -Double.MAX_VALUE;
 
-      Painter(Canvas c, int x, int ground, int scale, boolean dark) {
+      Painter(Pixels c, int x, int ground, int scale, boolean dark) {
          this.c = c;
          this.x = x;
          this.ground = ground;

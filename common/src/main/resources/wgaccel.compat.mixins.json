@@ -8,7 +8,8 @@
     "OreVeinTestMixin",
     "InterpolatedNoiseFieldMixin",
     "AllTheLeaksTrackableMixin",
-    "AllTheLeaksReportManagerMixin"
+    "AllTheLeaksReportManagerMixin",
+    "VoxySentChunksMixin"
   ],
   "client": [
     "LssHostHandshakeMixin"
