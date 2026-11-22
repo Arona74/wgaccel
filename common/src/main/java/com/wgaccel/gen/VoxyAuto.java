@@ -244,8 +244,8 @@ public final class VoxyAuto {
    private void schedule() {
       long nextLog = System.nanoTime() + 60_000_000_000L;
       long nextSave = System.nanoTime() + 30_000_000_000L;
-      long[] times = new long[11];
-      long[] counts = new long[11];
+      long[] times = new long[21];
+      long[] counts = new long[21];
       int sample = 0;
       boolean wasOn = false;
       while (!this.stopping()) {
@@ -275,14 +275,15 @@ public final class VoxyAuto {
             WorldgenAccelerator.LOG.warn("WGA Voxy LOD generator: planning failed", failure);
          }
 
-         // The rate over the last 5 s (11 samples, 0.5 s apart).
+         // The rate over the last 10 s (21 samples, 0.5 s apart), from the chunks written one by one.
          long now = System.nanoTime();
+         VoxyWriter counting = this.writer;
          times[sample % times.length] = now;
-         counts[sample % counts.length] = this.covered.sum();
+         counts[sample % counts.length] = counting != null ? counting.written.sum() : 0L;
          int oldest = sample >= times.length - 1 ? (sample + 1) % times.length : 0;
          sample++;
          double seconds = (now - times[oldest]) / 1.0e9;
-         double rate = seconds > 0.4 ? (counts[(sample - 1) % counts.length] - counts[oldest]) / seconds : 0.0;
+         double rate = seconds > 0.4 ? Math.max(0L, counts[(sample - 1) % counts.length] - counts[oldest]) / seconds : 0.0;
          this.measureRings(now);
          VoxyProgress progress = this.progress(this.state == VoxyProgress.State.RUNNING ? rate : 0.0);
          if (progress != null && !VoxyLodGenerator.running()) {
@@ -761,32 +762,37 @@ public final class VoxyAuto {
       return best;
    }
 
-   /** Each ring's rate from its count's change since the last step (only while it moves: the ring being made). */
+   /**
+    * The rate of the ring being made (the innermost not done), at its stride: the chunks written since the last step,
+    * every step counted (a step with no tile finished too: skipping those, as before, read far rings' rate up to twice
+    * too high), averaged over about 20 s.
+    */
    private void measureRings(long now) {
       Plan plan = this.plan;
-      if (plan == null) {
+      VoxyWriter counting = this.writer;
+      if (plan == null || counting == null || this.state != VoxyProgress.State.RUNNING) {
          this.ratePlan = null;
          return;
       }
 
-      long[] done = new long[plan.done.length];
-      for (int r = 0; r < done.length; r++) {
-         done[r] = plan.done[r].sum();
-      }
-
-      if (plan == this.ratePlan && this.rateDone != null && now > this.rateTime) {
-         double seconds = (now - this.rateTime) / 1.0e9;
-         for (int r = 0; r < done.length; r++) {
-            long delta = done[r] - this.rateDone[r];
-            if (delta > 0) {
-               double instant = delta / seconds;
-               this.strideRates.merge(plan.strides[r], instant, (old, add) -> old * 0.9 + add * 0.1);
-            }
+      long written = counting.written.sum();
+      int ring = -1;
+      for (int r = 0; r < plan.done.length; r++) {
+         if (plan.done[r].sum() < plan.totals[r]) {
+            ring = r;
+            break;
          }
       }
 
+      if (plan == this.ratePlan && this.rateDone != null && now > this.rateTime && ring >= 0 && ring == (int)this.rateDone[1]) {
+         double seconds = (now - this.rateTime) / 1.0e9;
+         double instant = Math.max(0L, written - this.rateDone[0]) / seconds;
+         double weight = 1.0 - Math.exp(-seconds / 20.0);
+         this.strideRates.merge(plan.strides[ring], instant, (old, add) -> old + (add - old) * weight);
+      }
+
       this.ratePlan = plan;
-      this.rateDone = done;
+      this.rateDone = new long[]{written, ring};
       this.rateTime = now;
    }
 
@@ -922,7 +928,9 @@ public final class VoxyAuto {
 
       Plan plan = this.plan;
       int vwg = this.vwgRadius;
-      this.writer.tile(worker, job.tx, job.tz, job.stride, (x, z) -> {
+      Plan current = this.plan;
+      boolean lastRing = current != null && job.ring == current.radii.length - 1;
+      this.writer.tile(worker, job.tx, job.tz, job.stride, lastRing, (x, z) -> {
          if (plan != null && inVwg(plan.centres, vwg, x, z)) {
             return false;
          }

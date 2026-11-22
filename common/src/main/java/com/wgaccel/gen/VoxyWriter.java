@@ -63,6 +63,11 @@ public final class VoxyWriter {
    private final int height;
    private final ThreadLocal<Work> works = new ThreadLocal<>();
    public final LongAdder chunks = new LongAdder();
+   /**
+    * Chunks written so far, counted one by one as each is written (the rate shown: a far tile is hundreds of chunks and
+    * takes a thread many seconds, so counting whole tiles made it jump between 0 and several times the real rate).
+    */
+   public final LongAdder written = new LongAdder();
    public final LongAdder sections = new LongAdder();
    public final LongAdder columnNanos = new LongAdder();
    public final LongAdder writeNanos = new LongAdder();
@@ -182,6 +187,12 @@ public final class VoxyWriter {
     * were written.
     */
    public int tile(LodBuilder.Worker worker, int tx, int tz, int stride, ChunkTest test) {
+      return this.tile(worker, tx, tz, stride, false, test);
+   }
+
+   /** As {@link #tile}, the tile in the outermost ring or not (voxyTrees and the others at FAR leave that one out). */
+   public int tile(LodBuilder.Worker worker, int tx, int tz, int stride, boolean lastRing, ChunkTest test) {
+      this.work().lastRing = lastRing;
       try {
          return stride > 16 ? this.farTile(worker, tx, tz, stride, test) : this.nearTile(worker, tx, tz, stride, test);
       } finally {
@@ -565,6 +576,8 @@ public final class VoxyWriter {
       int count;
       /** The launch's column spacing (a column fills stride x stride block columns). */
       int stride;
+      /** The tile is in the outermost ring (the features at FAR leave it out). */
+      boolean lastRing;
       /** Far tiles: the chunks between two sample columns (the ring's stride / 16). */
       int farStep = 1;
       ChunkColumns current;
@@ -694,6 +707,7 @@ public final class VoxyWriter {
 
    /** The chunk's sections from under lowest up to one whole air section over the one holding highest; returns the insert time. */
    private long writeChunk(Work work, ChunkColumns chunk, int lowest, int highest) {
+      this.written.increment();
       int cx = Mc.x(chunk.pos);
       int cz = Mc.z(chunk.pos);
       shape(chunk, work);
@@ -783,7 +797,7 @@ public final class VoxyWriter {
       Arrays.fill(work.leafTop, Integer.MIN_VALUE);
       Arrays.fill(work.layerTop, Integer.MIN_VALUE);
       Config.VoxyFeature mode = Config.VOXY_TREES.get();
-      if (mode == Config.VoxyFeature.OFF || mode == Config.VoxyFeature.NEAR && chunk == work.out) {
+      if (!mode.on(chunk == work.out, work.lastRing)) {
          // Lithos may still be on.
          this.ran(work, chunk);
          return;
@@ -954,12 +968,12 @@ public final class VoxyWriter {
       boolean far = chunk == work.out;
       Config.VoxyFeature treeMode = Config.VOXY_TREES.get();
       Config.VoxyFeature lithosMode = Config.VOXY_LITHOS.get();
-      boolean trees = treeMode == Config.VoxyFeature.ALL || treeMode == Config.VoxyFeature.NEAR && !far;
-      boolean lithos = lithosMode == Config.VoxyFeature.ALL || lithosMode == Config.VoxyFeature.NEAR && !far;
+      boolean trees = treeMode.on(far, work.lastRing);
+      boolean lithos = lithosMode.on(far, work.lastRing);
       Config.VoxyFeature plantMode = Config.VOXY_PLANTS.get();
-      boolean plants = plantMode == Config.VoxyFeature.ALL || plantMode == Config.VoxyFeature.NEAR && !far;
+      boolean plants = plantMode.on(far, work.lastRing);
       Config.VoxyFeature layerMode = Config.VOXY_ARONA_LAYERS.get();
-      boolean layers = (layerMode == Config.VoxyFeature.ALL || layerMode == Config.VoxyFeature.NEAR && !far) && LodLayers.available();
+      boolean layers = layerMode.on(far, work.lastRing) && LodLayers.available();
       if (!trees && !lithos && !plants && !layers) {
          return;
       }

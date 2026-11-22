@@ -190,10 +190,22 @@ public final class Config {
    }
 
    /** Which of the Voxy LOD generator's rings get an added feature (trees...): none, the full-detail ones, all. */
+   /** Which Voxy LOD rings get a feature: none, the full-detail ones (stride 16 or finer), all but the outermost, all. */
    public enum VoxyFeature {
       OFF,
       NEAR,
-      ALL
+      FAR,
+      ALL;
+
+      /** On for a tile: far (stride over 16), in the outermost ring. */
+      public boolean on(boolean far, boolean lastRing) {
+         return switch (this) {
+            case OFF -> false;
+            case NEAR -> !far;
+            case FAR -> !lastRing;
+            case ALL -> true;
+         };
+      }
    }
 
    /** How the Voxy LOD generator works with Voxy World Gen V2 (real chunks around the players). */
@@ -902,15 +914,17 @@ public final class Config {
             "that replace them. Applies to LODs made from now on.")
          .define("voxyStepSides", false));
       builder.pop();
-      builder.comment("What the LODs show besides the terrain. Each: OFF, NEAR (the rings of stride 16 and under), ALL (every ring).",
+      builder.comment("What the LODs show besides the terrain. Each: OFF, NEAR (the rings of stride 16 and under), FAR (every ring but the",
+         "outermost: the costly features skip the biggest ring), ALL (every ring).",
          "Applies to LODs made from now on (/wgaccel lod voxy reset to make them again).").push("features");
       VOXY_TREES = Setting.custom(builder
          .comment("Trees: each biome's own trees and huge mushrooms, grown by the game's own trunk and leaf placers",
             "(FreeTerraForged: its tree templates), about as many as the game makes and in its pattern, not its exact spots.",
             "Real chunks replace them. Conquest of Arborea's forests: its own feature, run as it is (its real trees; it costs",
-            "what it costs the game, a lot slower far rings: NEAR keeps them fast). Other mods' own tree features are left out.",
+            "what it costs the game, a lot slower far rings: FAR, the default, leaves the outermost ring without trees, NEAR all far",
+            "rings). Other mods' own tree features are left out.",
             "About 6% slower in the far rings.")
-         .defineEnum("voxyTrees", VoxyFeature.ALL));
+         .defineEnum("voxyTrees", VoxyFeature.FAR));
       VOXY_LITHOS = Setting.custom(builder
          .comment("Lithos (when installed): its own features run as they are, its rock strata, cliff stone and ground cover on the",
             "LODs' ground. A run costs what it costs the game (about 25 ms a chunk in Conquest): about 3 times slower near",

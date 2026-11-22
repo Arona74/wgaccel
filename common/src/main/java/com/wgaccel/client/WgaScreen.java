@@ -334,21 +334,21 @@ public final class WgaScreen extends CanvasScreen {
       y += 6;
       y += this.text(Component.literal("Features").withStyle(ChatFormatting.BOLD), left, y, this.width - left - 8, WHITE) + 4;
       y += this.setting(widgets, Config.VOXY_TREES, "Trees",
-         "Each biome's own trees and huge mushrooms, shaped as the game grows them, about as many as it makes. ALL: every ring; NEAR: the full-detail rings; OFF."
+         "Each biome's own trees and huge mushrooms, shaped as the game grows them, about as many as it makes. ALL: every ring; FAR: all but the outermost ring; NEAR: the full-detail rings; OFF."
             + " New LODs only (/wgaccel lod voxy reset).", y);
       y += this.setting(widgets, Config.VOXY_PLANTS, "Plants",
          "Each biome's own plants (flowers, grass, bushes, Conquest's ground cover), run as the game places them, into the empty cells over the"
-            + " ground. ALL: far rings too, once per sample. New LODs only (/wgaccel lod voxy reset).", y);
+            + " ground. FAR: all rings but the outermost; ALL: every ring (far rings once per sample). New LODs only (/wgaccel lod voxy reset).", y);
       if (com.wgaccel.platform.Platform.get().isModLoaded("aronalayers")) {
          y += this.setting(widgets, Config.VOXY_ARONA_LAYERS, "AronaLayers layers",
             "AronaLayers' layers on the LODs' ground, placed by AronaLayers itself (needs its LayersApi version 2). With Layer Supported LOD they"
-               + " show at their real height. ALL: far rings too. New LODs only (/wgaccel lod voxy reset).", y);
+               + " show at their real height. FAR: all rings but the outermost; ALL: every ring. New LODs only (/wgaccel lod voxy reset).", y);
       }
 
       if (com.wgaccel.platform.Platform.get().isModLoaded("lithos")) {
          y += this.setting(widgets, Config.VOXY_LITHOS, "Lithos rock",
             "Lithos's own rock strata, cliff stone and ground cover on the LODs' ground (its features run as they are; slow: about 3 times"
-               + " slower near rings). ALL: far rings too, one run per sample. New LODs only (/wgaccel lod voxy reset).", y);
+               + " slower near rings). FAR: all rings but the outermost; ALL: every ring (far rings one run per sample). New LODs only (/wgaccel lod voxy reset).", y);
          y += this.setting(widgets, Config.VOXY_LITHOS_STRATA, "  Strata",
             "Lithos's rock layers. No top block changes, only the sides of steps and slopes; its costliest feature (about 20 ms a chunk)."
                + " New LODs only.", y);
