@@ -63,6 +63,9 @@ public final class Config {
    public static final Setting<VoxyFeature> VOXY_TERRAIN_FEATURES;
    public static final Setting<Integer> VOXY_TERRAIN_COST_LIMIT;
    public static final Setting<Integer> VOXY_REAL_CHUNKS_RADIUS;
+   public static final Setting<Boolean> VOXY_FOR_VSS;
+   public static final Setting<Integer> VOXY_VSS_REAL_RADIUS;
+   public static final Setting<java.util.List<? extends String>> VOXY_VSS_RINGS;
    public static final Setting<Integer> VOXY_PAUSE_ABOVE_MSPT;
    public static final Setting<VoxyProgressDisplay> VOXY_PROGRESS;
    public static final Setting<VoxyOverlayCorner> VOXY_OVERLAY_CORNER;
@@ -1004,6 +1007,22 @@ public final class Config {
       VOXY_REAL_CHUNKS_RADIUS = Setting.custom(builder
          .comment("How far the real chunks go, in chunks from the player (a square). 0: the first ring's radius.")
          .defineInRange("voxyRealChunksRadius", 0, 0, 1024));
+      VOXY_FOR_VSS = Setting.custom(builder
+         .comment("On a server with Voxy Server Side (LOD Server Support) installed: the chunks it would generate to send its players'",
+            "distant LODs are made from the GPU columns instead (as the generator above makes Voxy's: voxyVssRings' strides by the",
+            "distance from the player, the features as set below), much faster than generating them. Chunks already generated",
+            "are still sent as they are, and a chunk generated later replaces its LOD. Needs VSS's generation.enabled (its",
+            "default); raising its generation.concurrency lets more go at once. Overworld only; needs the GPU noise fill.")
+         .define("voxyForVss", true));
+      VOXY_VSS_REAL_RADIUS = Setting.custom(builder
+         .comment("voxyForVss: within this many chunks of the player VSS still generates the real chunks (trees, structures and all).",
+            "0: everything VSS asks for is made from the GPU columns.")
+         .defineInRange("voxyVssRealRadius", 0, 0, 4096));
+      VOXY_VSS_RINGS = Setting.custom(builder
+         .comment("voxyForVss: the rings as voxyRings (\"radius:stride\", chunks from the player when VSS asks). Full detail everywhere by",
+            "default: VSS sends a column once and keeps it (the client is not sent it again when the player comes closer), so a",
+            "coarse far column would stay coarse; VSS's own pace (a few hundred columns a second) is well under full detail's.")
+         .defineListAllowEmpty("voxyVssRings", java.util.List.of("2048:1"), () -> "2048:1", value -> value instanceof String));
       VOXY_PROGRESS = Setting.custom(builder
          .comment("Where the generator's progress shows in the game: OVERLAY a panel in a corner of the screen (rings, chunks/s, time",
             "left), F3 lines in the debug screen, BOTH, or OFF. In the game only (on a dedicated server, the log).")

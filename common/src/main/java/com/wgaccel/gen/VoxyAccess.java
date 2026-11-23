@@ -206,7 +206,7 @@ public final class VoxyAccess {
    }
 
    /** One level's Voxy world while the generator writes to it. */
-   public final class Target {
+   public final class Target implements LodTarget {
       private final Object engine;
       private final Object mapper;
       private final ConcurrentHashMap<BlockState, Integer> blocks = new ConcurrentHashMap<>();

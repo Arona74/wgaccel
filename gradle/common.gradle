@@ -65,6 +65,9 @@ dependencies {
     compileOnly fileTree(dir: rootProject.file(minecraft_version == '1.21.1' ? 'libs/c2me' : "libs/c2me-${minecraft_version}"), include: '*.jar')
     // Optional at run time: No Man's Land's ore veins and noise fields (mixin/compat; copy its jar into libs/ to build).
     compileOnly rootProject.files('libs/nomansland-1.6.2.jar')
+    // Optional at run time: Voxy Server Side / LOD Server Support (MIT; its generation service and column translation,
+    // mixin/compat/VssGenerationMixin). Its common classes and the server ones keep their names on every loader.
+    compileOnly rootProject.files('libs/lod-server-support-neoforge-0.23.0-beta.1+1.21.1.jar')
     // Optional at run time: Distant Horizons' API (its world generator override, gen/DhLodGenerator). Only its
     // com.seibel.distanthorizons.api and .coreapi packages, copied out of the Distant Horizons jar into this one; the
     // API has no Minecraft classes, so one jar serves every Minecraft version.

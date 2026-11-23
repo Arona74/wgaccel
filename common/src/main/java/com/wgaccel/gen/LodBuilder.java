@@ -90,6 +90,8 @@ public final class LodBuilder {
       public boolean snow;
       public boolean ice;
       public Holder<Biome> biome;
+      /** From the CPU's heights only (the chunk's GPU stand-in could not be made): bare ground of the default block. */
+      public boolean rough;
    }
 
    /** Where a launch's columns go. */
@@ -211,6 +213,7 @@ public final class LodBuilder {
                c.surface = columns.surface()[column];
                c.snow = false;
                c.ice = false;
+               c.rough = false;
                if (out == null) {
                   c.top = columns.top()[column];
                   c.groundTop = columns.groundTop()[column];
@@ -288,6 +291,7 @@ public final class LodBuilder {
             c.layers = null;
             c.snow = false;
             c.ice = false;
+            c.rough = true;
             c.biome = this.biomeAt(c.x, c.surface, c.z);
             sink.column(pos, i, j, c);
             this.cpuColumns.increment();

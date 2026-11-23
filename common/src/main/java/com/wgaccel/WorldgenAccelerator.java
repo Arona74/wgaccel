@@ -192,6 +192,7 @@ public final class WorldgenAccelerator {
       Reporter.start();
       com.wgaccel.stats.MemoryWatch.reset();
       com.wgaccel.gen.VoxyAuto.start(started);
+      com.wgaccel.gen.VssLods.start(started);
       if (Config.GPU_MODE.get() != Config.GpuMode.OFF && !com.wgaccel.gpu.Lwjgl.PRESENT) {
          LOG.warn("WGA GPU unavailable: {}; everything runs on the CPU", com.wgaccel.gpu.Lwjgl.MISSING);
       } else if (Config.GPU_MODE.get() != Config.GpuMode.OFF) {
@@ -217,6 +218,7 @@ public final class WorldgenAccelerator {
    public static void onServerStopping() {
       // First: its workers use the GPU fill, released below.
       com.wgaccel.gen.VoxyAuto.stop();
+      com.wgaccel.gen.VssLods.stop();
       Reporter.stop();
       GpuNoiseFill.stopLookAhead();
       com.wgaccel.gen.BiomesAhead.shutdown();

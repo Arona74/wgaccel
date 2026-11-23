@@ -9,7 +9,8 @@
     "InterpolatedNoiseFieldMixin",
     "AllTheLeaksTrackableMixin",
     "AllTheLeaksReportManagerMixin",
-    "VoxySentChunksMixin"
+    "VoxySentChunksMixin",
+    "VssGenerationMixin"
   ],
   "client": [
     "LssHostHandshakeMixin"

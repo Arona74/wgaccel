@@ -509,7 +509,7 @@ public final class VoxyAuto {
    }
 
    /** The mean of the server's last 20 tick times (ms): the average over 100 ticks hides a server that just fell behind. */
-   private static double recentMspt(MinecraftServer server) {
+   static double recentMspt(MinecraftServer server) {
       long[] times = server.getTickTimesNanos();
       int count = server.getTickCount();
       int n = Math.min(20, Math.min(times.length, count));
@@ -662,7 +662,7 @@ public final class VoxyAuto {
    }
 
    /** "radius:stride" entries, checked: radii increasing, strides powers of two 1-256. Bad entries are left out (logged). */
-   private static List<int[]> rings(String text) {
+   static List<int[]> rings(String text) {
       List<int[]> rings = new ArrayList<>();
       int last = -1;
       for (String entry : text.split(",")) {

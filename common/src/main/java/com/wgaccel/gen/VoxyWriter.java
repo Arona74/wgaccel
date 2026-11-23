@@ -54,7 +54,7 @@ public final class VoxyWriter {
 
    final ServerLevel level;
    final LodBuilder builder;
-   final VoxyAccess.Target target;
+   final LodTarget target;
    /** voxyTrees: the stand-in trees ({@link LodTrees}). */
    private final LodTrees trees;
    /** voxyAronaLayers: AronaLayers' own layer placement on a stand-in chunk ({@link LodLayers}). */
@@ -89,7 +89,7 @@ public final class VoxyWriter {
    /** The threads writing into Voxy now, and since when (System.nanoTime): a write that never returns shows here. */
    private final java.util.concurrent.ConcurrentHashMap<Thread, Long> writingSince = new java.util.concurrent.ConcurrentHashMap<>();
 
-   public VoxyWriter(ServerLevel level, VoxyAccess.Target target, String name) {
+   public VoxyWriter(ServerLevel level, LodTarget target, String name) {
       this.level = level;
       this.target = target;
       this.minY = Mc.minY(level);
@@ -434,6 +434,7 @@ public final class VoxyWriter {
             ChunkColumns c11 = work.columns[(a + 1) * 8 + b + 1];
             out.pos = Mc.chunk(Mc.key(cx, cz));
             out.highest = Integer.MIN_VALUE;
+            out.rough = c00.rough || c10.rough || c01.rough || c11.rough;
             int lowest = Math.min(Math.min(c00.ground[0], c10.ground[0]), Math.min(c01.ground[0], c11.ground[0]));
             for (int x = 0; x < 16; x++) {
                double fx = (cx * 16 + x - originX - a * span) / (double)span;
@@ -503,6 +504,8 @@ public final class VoxyWriter {
       final BlockState[] fluidState = new BlockState[256];
       int lowest;
       int highest;
+      /** Some of its columns are rough ({@link LodBuilder.Column#rough}). */
+      boolean rough;
    }
 
    /** One thread's buffers; the sink the builder hands a launch's columns to. */
@@ -682,12 +685,13 @@ public final class VoxyWriter {
          chunk.pos = pos;
          chunk.lowest = Integer.MAX_VALUE;
          chunk.highest = Integer.MIN_VALUE;
+         chunk.rough = false;
          this.current = chunk;
       }
 
       @Override
       public void column(ChunkPos pos, int i, int j, LodBuilder.Column c) {
-         VoxyAccess.Target target = VoxyWriter.this.target;
+         LodTarget target = VoxyWriter.this.target;
          ChunkColumns chunk = this.current;
          int bottom = VoxyWriter.this.minY - 1;
          int ground = c.ground == LodColumns.NONE ? bottom : c.ground;
@@ -732,6 +736,7 @@ public final class VoxyWriter {
 
          chunk.lowest = Math.min(chunk.lowest, ground);
          chunk.highest = Math.max(chunk.highest, c.snow ? surface + 1 : surface);
+         chunk.rough |= c.rough;
       }
    }
 
@@ -767,6 +772,10 @@ public final class VoxyWriter {
             insertNanos += System.nanoTime() - insert;
             this.sections.increment();
          }
+
+         long done = System.nanoTime();
+         this.target.chunkDone(cx, cz, chunk.rough);
+         insertNanos += System.nanoTime() - done;
       } finally {
          this.leave();
       }
