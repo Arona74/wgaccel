@@ -50,7 +50,7 @@ public final class VersionSupport {
       new SupportedMod("mr_still_life", "Still Life (FTF edition)", Category.BIOME, "0.3.0", "0.3.99", "0.3-ftf"),
       new SupportedMod("still_life", "Still Life", Category.BIOME, "0.3.0", "0.3.99", "0.3 - 0.3.5"),
       new SupportedMod("stilllife", "Still Life", Category.BIOME, "0.3.0", "0.3.99", "0.3 - 0.3.5"),
-      new SupportedMod("stilllife_ftf_bridge", "Still Life x FreeTerraForged Bridge", Category.BIOME, "3.3.0", "5.5.99", "3.3.0, 5.5.0"),
+      new SupportedMod("stilllife_ftf_bridge", "Still Life x FreeTerraForged Bridge", Category.BIOME, "3.3.0", "5.6.99", "3.3.0, 5.5.0, 5.6.0"),
       new SupportedMod("nomansland", "No Man's Land", Category.BIOME, "1.6.0", "1.6.99", "1.6.2"),
       new SupportedMod("terrablender", "TerraBlender", Category.BIOME, "4.1.0.0", "4.1.0.99", "4.1.0.8"),
       new SupportedMod("lithostitched", "Lithostitched", Category.BIOME, "1.8.0", "1.8.99", "1.8.0 - 1.8.1"),
