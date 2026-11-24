@@ -127,11 +127,16 @@ Dedicated servers do **not** include LWJGL core (`org.lwjgl.system`), which **al
 4. Check `logs/latest.log` for `WGA GPU backend: OpenCL` and `WGA GPU self-test: BIT-IDENTICAL`. Players joining the server do **not** need WGAccel installed.
 
 <details>
-<summary>Optional backends: CUDA, HIP, Linux ROCm & weak/integrated GPUs</summary>
+<summary>Optional backends: CUDA, HIP, Linux AMD / ROCm & weak/integrated GPUs</summary>
 
 - **OpenCL is faster than CUDA** on this branch and needs no SDK. To override manually, use the in-game Settings screen or `-Dwgaccel.gpuBackend=opencl|cuda|hip`:
   - **CUDA (NVIDIA):** Requires CUDA Toolkit `12.x` (`12.8+` for RTX 50xx) or `13.x` (`nvrtc64_*.dll`). Override via `-Dwgaccel.nvrtc=<path>`.
   - **HIP (AMD Windows / Linux ROCm):** Requires HIP SDK `6.4+` on Windows (`-Dwgaccel.hiprtc=<path>`) or ROCm (`hip-runtime-amd` + `rocm-opencl-runtime`, user in `render,video` groups; older integrated RDNA2 like 680M/660M may need `HSA_OVERRIDE_GFX_VERSION=10.3.0`).
+- **Linux with an AMD GPU (OpenCL through ROCm):** Mesa's default drivers bring no usable OpenCL, so the log shows `CL_PLATFORM_NOT_FOUND_KHR` and the mod runs on the CPU only. Tested on MX Linux 25 / Debian 13 with an RX 6700 XT:
+  1. `sudo apt install rocm-opencl-icd clinfo`, then `sudo usermod -aG render,video $USER` and log out and back in. `clinfo -l` should list the GPU (e.g. `gfx1031`).
+  2. `sudo apt install libclang-common-17-dev`: Debian's ROCm compiler needs its headers but does not install them (otherwise `CL_BUILD_PROGRAM_FAILURE` with `malformed or corrupted AST file ... opencl-c-base.h`).
+  3. With integrated graphics as well (any Ryzen 7000 or later), hide it from ROCm, or creating the GPU queue fails with `CL_OUT_OF_HOST_MEMORY`: `echo 'export ROCR_VISIBLE_DEVICES=0' >> ~/.profile`, then log out and back in. It is an environment variable, not a JVM argument. `ROCR_VISIBLE_DEVICES=0 clinfo -l` should list the discrete GPU only.
+  4. Check `logs/latest.log` for `WGA GPU self-test: BIT-IDENTICAL` and `noise fill done, surface done`.
 - **GPU selection & weak GPUs:** Multi-GPU machines pick discrete GPUs automatically. Integrated Intel GPUs and GPUs under 8 compute units are skipped by default because CPUs are faster on them. Mesa `rusticl` is also skipped automatically (`RUSTICL_ENABLE=radeonsi` + `RUSTICL_FEATURES=fp64` only if forced).
 - **In-game UI:** Open Settings via the WGAccel button next to FOV in Options (or NeoForge Mods → Config) to inspect System Info, toggle passes, or switch GPUs.
 

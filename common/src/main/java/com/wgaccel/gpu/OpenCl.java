@@ -101,6 +101,8 @@ public final class OpenCl {
 
    private static volatile List<Device> devices;
    private static volatile boolean started;
+   /** Why the start failed after the context was made (the first queue), thrown again to every later caller. */
+   private static volatile RuntimeException startFailure;
    private static Device chosen;
    private static long context;
    private static long defaultQueue;
@@ -391,6 +393,7 @@ public final class OpenCl {
    /** Creates the context and its own queue on the chosen device ({@link GpuDevice}), once. */
    public static void init() {
       if (started) {
+         failedStart();
          return;
       }
 
@@ -401,8 +404,17 @@ public final class OpenCl {
       start();
    }
 
+   /** Throws again why the context's start failed (after it was made), so later callers get the cause, not a null queue. */
+   private static void failedStart() {
+      RuntimeException failure = startFailure;
+      if (failure != null) {
+         throw new IllegalStateException(failure.getMessage(), failure);
+      }
+   }
+
    private static synchronized void start() {
       if (started) {
+         failedStart();
          return;
       }
 
@@ -440,10 +452,26 @@ public final class OpenCl {
       }
       checkLaunches = !device.generic() || Boolean.getBoolean("wgaccel.openclCheckLaunches");
       buffers = device.nvidia() || Boolean.getBoolean("wgaccel.openclBuffers");
+      // Started before the first queue: createQueue calls init. A queue that failed left it started with no queue, and the
+      // self-test then failed on a null queue in clEnqueueSVMMemcpy instead of the cause (24 Nov 2026, Debian 13, ROCm
+      // with an RX 6700 XT and a Raphael iGPU: CL_OUT_OF_HOST_MEMORY until ROCR_VISIBLE_DEVICES=0 hid the iGPU).
       started = true;
-      defaultQueue = createQueue(-1);
-      if (buffers) {
-         initBuffers();
+      try {
+         defaultQueue = createQueue(-1);
+         if (buffers) {
+            initBuffers();
+         }
+      } catch (RuntimeException e) {
+         startFailure = e;
+         for (long queue : QUEUES) {
+            clReleaseCommandQueue(queue);
+         }
+
+         QUEUES.clear();
+         defaultQueue = 0L;
+         clReleaseContext(context);
+         context = 0L;
+         throw e;
       }
    }
 
