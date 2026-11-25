@@ -418,9 +418,23 @@ public final class SurfaceTap {
          return null;
       }
 
+      if (node instanceof Map<?, ?> map) {
+         for (Object each : map.values()) {
+            Object found = find(each, seen);
+            if (found != null) {
+               return found;
+            }
+         }
+
+         return null;
+      }
+
       String name = Names.className(node.getClass());
-      boolean ftfWrapper = name.equals("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule");
-      if ((!name.contains("SurfaceRules$") && !ftfWrapper) || name.contains("Context")) {
+      // FreeTerraForged's FastStrataSequenceRule, and TerraBlender's NamespacedRule (terrablender:merged, when a mod adds
+      // a region with its own surface rules, YUNG's Cave Biomes for one): its base rule and the per-namespace map.
+      boolean wrapper = name.equals("etcodehome.freeterraforged.world.worldgen.surface.rule.FastStrataSequenceRule")
+         || name.equals("terrablender.worldgen.surface.NamespacedSurfaceRuleSource$NamespacedRule");
+      if ((!name.contains("SurfaceRules$") && !wrapper) || name.contains("Context")) {
          return null;
       }
 
