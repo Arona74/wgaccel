@@ -146,8 +146,8 @@ public abstract class WorldGenRegionChunksMixin implements RegionExtras {
          table = this.wgaccel$heights = RegionHeights.table(Mc.x(pos), Mc.z(pos), this.generatingStep.directDependencies().size() - 1);
       }
 
-      int[] heights = table == null || RegionHeights.off() ? null : RegionHeights.heights(table, type);
-      int i = heights == null ? -1 : RegionHeights.index(table, x, z);
+      int[] heights = table == null || RegionHeights.off() ? null : RegionHeights.heights(table, type, x, z);
+      int i = heights == null ? -1 : RegionHeights.index(x, z);
       int kept = i < 0 ? 0 : heights[i];
       if (i >= 0 && RegionHeights.known(kept) && (++this.wgaccel$heightCalls & 255) != 0) {
          return kept;

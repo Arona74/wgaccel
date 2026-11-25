@@ -27,22 +27,24 @@ public final class RegionHeights {
    private RegionHeights() {
    }
 
-   /** A region's kept heights: its chunks within radius of the centre chunk, one array per worldgen heightmap. */
+   /**
+    * A region's kept heights: its chunks within radius of the centre chunk, per worldgen heightmap one array of 256 heights
+    * per chunk, made when the chunk's first height is read. Until 0.70.10 two whole-region arrays filled at once per region
+    * (25 Nov 2026 Conquest profile: 3.3% of all memory allocated, while Lithos reads only the few chunks around the centre).
+    */
    public static final class Table {
       final int minX;
       final int minZ;
-      final int width;
-      final int[] surface;
-      final int[] oceanFloor;
+      final int chunks;
+      final int[][] surface;
+      final int[][] oceanFloor;
 
-      Table(int minX, int minZ, int width) {
+      Table(int minX, int minZ, int chunks) {
          this.minX = minX;
          this.minZ = minZ;
-         this.width = width;
-         this.surface = new int[width * width];
-         this.oceanFloor = new int[width * width];
-         Arrays.fill(this.surface, UNKNOWN);
-         Arrays.fill(this.oceanFloor, UNKNOWN);
+         this.chunks = chunks;
+         this.surface = new int[chunks * chunks][];
+         this.oceanFloor = new int[chunks * chunks][];
       }
    }
 
@@ -57,19 +59,38 @@ public final class RegionHeights {
 
    /** The table for a region centred on chunk (chunkX, chunkZ) that hands out chunks up to radius chunks away. */
    public static Table table(int chunkX, int chunkZ, int radius) {
-      return new Table((chunkX - radius) << 4, (chunkZ - radius) << 4, (2 * radius + 1) << 4);
+      return new Table((chunkX - radius) << 4, (chunkZ - radius) << 4, 2 * radius + 1);
    }
 
-   /** The kept heights of a worldgen heightmap; null for the others (they change as features place blocks). */
-   public static int[] heights(Table table, Heightmap.Types type) {
-      return type == Heightmap.Types.WORLD_SURFACE_WG ? table.surface : type == Heightmap.Types.OCEAN_FLOOR_WG ? table.oceanFloor : null;
+   /**
+    * The kept heights of the chunk holding column (x, z) for a worldgen heightmap (made on first use, all unknown); null
+    * for the other heightmaps (they change as features place blocks) and outside the table (the region answers as usual).
+    */
+   public static int[] heights(Table table, Heightmap.Types type, int x, int z) {
+      int[][] all = type == Heightmap.Types.WORLD_SURFACE_WG ? table.surface : type == Heightmap.Types.OCEAN_FLOOR_WG ? table.oceanFloor : null;
+      if (all == null) {
+         return null;
+      }
+
+      int cx = (x - table.minX) >> 4;
+      int cz = (z - table.minZ) >> 4;
+      if (cx < 0 || cz < 0 || cx >= table.chunks || cz >= table.chunks) {
+         return null;
+      }
+
+      int c = cz * table.chunks + cx;
+      int[] heights = all[c];
+      if (heights == null) {
+         heights = all[c] = new int[256];
+         Arrays.fill(heights, UNKNOWN);
+      }
+
+      return heights;
    }
 
-   /** The column's slot, -1 outside the table (then the region answers as usual). */
-   public static int index(Table table, int x, int z) {
-      int dx = x - table.minX;
-      int dz = z - table.minZ;
-      return dx >= 0 && dz >= 0 && dx < table.width && dz < table.width ? dz * table.width + dx : -1;
+   /** The column's slot in its chunk's heights. */
+   public static int index(int x, int z) {
+      return (z & 15) << 4 | x & 15;
    }
 
    /** Whether the slot holds a height. */

@@ -259,6 +259,15 @@ public final class Mc {
    }
 
    /** A features step's region was made, before any feature is placed (nothing here: Lithos is 26.1.2 only). */
+   /** A features step starts on this thread: a mark for {@link #featuresEnd} (26.1.2: Lithos noise tables handed back). */
+   public static int featuresMark() {
+      return 0;
+   }
+
+   /** The features step started at mark has ended (its regions are done with). */
+   public static void featuresEnd(int mark) {
+   }
+
    public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
    }
 

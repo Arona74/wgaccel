@@ -64,7 +64,13 @@ public abstract class ChunkStatusTasksMixin {
 
    @WrapMethod(method = "generateFeatures")
    private static CompletableFuture<ChunkAccess> wgaccel$features(WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> cache, ChunkAccess chunk, Operation<CompletableFuture<ChunkAccess>> original) {
-      return Stats.timeFuture(Stage.FEATURES, () -> original.call(context, step, cache, chunk));
+      // The step runs here, synchronously: its regions are done with when it returns.
+      int mark = com.wgaccel.platform.Mc.featuresMark();
+      try {
+         return Stats.timeFuture(Stage.FEATURES, () -> original.call(context, step, cache, chunk));
+      } finally {
+         com.wgaccel.platform.Mc.featuresEnd(mark);
+      }
    }
 
    @WrapMethod(method = "initializeLight")

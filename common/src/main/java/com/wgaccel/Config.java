@@ -28,6 +28,7 @@ public final class Config {
    public static final Setting<Boolean> FAST_REGION_CHUNKS;
    public static final Setting<Boolean> FAST_REGION_HEIGHTS;
    public static final Setting<Boolean> FAST_ARBOREA_CELLS;
+   public static final Setting<Boolean> FAST_LITHOS_ROCKS;
    public static final Setting<Boolean> FAST_SURFACE_LEVELS;
    public static final Setting<Boolean> FAST_CLIMATE_SEARCH;
    public static final Setting<Boolean> FAST_CLIMATE_COLUMNS;
@@ -419,6 +420,12 @@ public final class Config {
             "out again; the same answers, as they depend on the seed and the cell alone. Every 256th kept cell is compared with",
             "Arborea's own.")
          .define("fastArboreaCells", true), true, true).under(CPU_IMPROVEMENTS, false);
+      FAST_LITHOS_ROCKS = Setting.of(builder
+         .comment("Minecraft 26.1.2 with Lithos: the rock type of a block (Lithos looks the block's id up and builds a string for",
+            "every rock type it compares, block after block: 8% of all memory allocated in a Conquest run, 25 Nov 2026) kept once",
+            "worked out per block and handed out again; the same answers, as they depend on the block alone. Every 256th kept",
+            "answer is compared with Lithos's own.")
+         .define("fastLithosRocks", true), true, true).under(CPU_IMPROVEMENTS, false);
       FAST_SURFACE_LEVELS = Setting.of(builder
          .comment("Minecraft 26.1.2: the preliminary surface levels (the terrain's rough height every 4 blocks, which aquifers ask for",
             "around their cells, past the chunk's edges) shared by the chunks of a world instead of worked out again by every chunk",

@@ -9,10 +9,13 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import net.minecraft.server.level.WorldGenRegion;
@@ -29,7 +32,10 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  * which no longer changes then. So as each features region is made, its chunk's samples (ROWS heights per column from
  * 4 above the floor's top block, {@link LithosNoiseGpu}) are queued for the GPU thread; the first of Lithos's calls in
  * that region waits for them, the rest read the table (positions outside it, or a chunk whose table failed, go Lithos's
- * way). Every 64th answer from the table is compared with Lithos's own function; a difference turns this off.
+ * way). Every 64th answer from the table is compared with Lithos's own function; a difference turns this off. Each
+ * table's samples are 1.2 MB: when the features step that made the region ends, its table's array goes back to a small
+ * pool for the next chunk (25 Nov 2026 Conquest profile: a new array per chunk was 4% of all memory allocated, in a run
+ * whose threads waited on the garbage collector), and a table the GPU has not reached yet is skipped.
  */
 public final class LithosNoise {
    /** Heights per column: 4 above the floor's top block, the top block, then strata's 96 below it. */
@@ -44,6 +50,14 @@ public final class LithosNoise {
    private static volatile MethodHandle[] originals;
    private static volatile MethodHandle noiseForSeed;
    private static final LinkedBlockingQueue<Table> QUEUE = new LinkedBlockingQueue<>();
+   /** Sample arrays of ended features steps, for the next tables (at most POOL_MAX kept). */
+   private static final ConcurrentLinkedQueue<double[]> POOL = new ConcurrentLinkedQueue<>();
+   private static final AtomicInteger POOLED = new AtomicInteger();
+   private static final int POOL_MAX = 32;
+   /** This thread's running features steps (nested ones count too) and the tables their regions made, nested ones on top. */
+   private static final ThreadLocal<Steps> STEPS = ThreadLocal.withInitial(Steps::new);
+   private static final LongAdder REUSED = new LongAdder();
+   private static final LongAdder SKIPPED = new LongAdder();
    private static final LongAdder TABLES = new LongAdder();
    private static final LongAdder WAIT_NANOS = new LongAdder();
    private static final LongAdder WAITED = new LongAdder();
@@ -70,6 +84,8 @@ public final class LithosNoise {
       boolean waited;
       /** While Lithos's own function runs for a compared answer. */
       boolean bypass;
+      /** Its features step has ended: the GPU skips it if it has not started it. */
+      volatile boolean ended;
       long hits;
 
       Table(long seed, int minX, int minZ) {
@@ -94,7 +110,49 @@ public final class LithosNoise {
 
       ((RegionExtras)region).wgaccel$extra(table);
       start();
+      Steps steps = STEPS.get();
+      if (steps.running > 0) {
+         // Handed back when the step ends; a region made outside a features step (none in the game) keeps its array to the GC.
+         steps.made.add(table);
+      }
+
       QUEUE.add(table);
+   }
+
+   private static final class Steps {
+      int running;
+      final ArrayList<Table> made = new ArrayList<>();
+   }
+
+   /** A features step starts on this thread (ChunkStatusTasks' features wrapper): where its list of tables stands. */
+   public static int featuresMark() {
+      Steps steps = STEPS.get();
+      steps.running++;
+      return steps.made.size();
+   }
+
+   /**
+    * A features step started at {@code mark} has ended: the tables its regions made are done with. Their sample arrays go
+    * back to the pool once the GPU has filled them; one the GPU has not reached is skipped by it.
+    */
+   public static void featuresEnd(int mark) {
+      Steps steps = STEPS.get();
+      steps.running--;
+      ArrayList<Table> made = steps.made;
+      for (int i = made.size() - 1; i >= mark; i--) {
+         Table table = made.remove(i);
+         table.ended = true;
+         table.values = null;
+         if (table.done.getCount() == 0) {
+            double[] values = table.made;
+            table.made = null;
+            if (values != null && POOLED.incrementAndGet() <= POOL_MAX) {
+               POOL.offer(values);
+            } else if (values != null) {
+               POOLED.decrementAndGet();
+            }
+         }
+      }
    }
 
    private static boolean present = true;
@@ -166,6 +224,11 @@ public final class LithosNoise {
                throw new IllegalStateException("off");
             }
 
+            if (table.ended) {
+               SKIPPED.increment();
+               continue;
+            }
+
             if (gpu == null || seed != table.seed) {
                if (gpu != null) {
                   gpu.close();
@@ -181,7 +244,14 @@ public final class LithosNoise {
             }
 
             long begin = System.nanoTime();
-            double[] values = new double[256 * ROWS * LithosNoiseGpu.SAMPLES];
+            double[] values = POOL.poll();
+            if (values != null) {
+               POOLED.decrementAndGet();
+               REUSED.increment();
+            } else {
+               values = new double[256 * ROWS * LithosNoiseGpu.SAMPLES];
+            }
+
             gpu.run(table.minX, table.minZ, table.tops, values);
             GPU_NANOS.add(System.nanoTime() - begin);
             TABLES.increment();
@@ -313,8 +383,8 @@ public final class LithosNoise {
       long hits = HITS.sum();
       long misses = MISSES.sum();
       return String.format(Locale.ROOT,
-         "WGA Lithos noise: %,d chunk tables (GPU %.2f ms each, Lithos waited %.2f ms per chunk), about %,d answers from the tables, %,d outside them (%.1f%%), checked %,d: %s",
-         TABLES.sum(), GPU_NANOS.sum() / 1.0e6 / tables, WAIT_NANOS.sum() / 1.0e6 / waited, hits, misses, 100.0 * misses / Math.max(1, hits + misses), CHECKED.sum(),
+         "WGA Lithos noise: %,d chunk tables (%,d of them in reused arrays, %,d skipped as their step had ended; GPU %.2f ms each, Lithos waited %.2f ms per chunk), about %,d answers from the tables, %,d outside them (%.1f%%), checked %,d: %s",
+         TABLES.sum(), REUSED.sum(), SKIPPED.sum(), GPU_NANOS.sum() / 1.0e6 / tables, WAIT_NANOS.sum() / 1.0e6 / waited, hits, misses, 100.0 * misses / Math.max(1, hits + misses), CHECKED.sum(),
          DIFFERENT.sum() == 0 ? "IDENTICAL" : DIFFERENT.sum() + " DIFFER (off)");
    }
 }

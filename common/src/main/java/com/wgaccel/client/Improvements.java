@@ -91,6 +91,8 @@ final class Improvements {
          "Conquest ReTerraForged: each column's landform worked out once for the trees that ask for it again and again.", null),
       new Improvement(Config.FAST_ARBOREA_CELLS, "Fast Arborea forest cells",
          "Conquest of Arborea (26.1.2): each forest cell its trees look up worked out once instead of for every column around it.", null),
+      new Improvement(Config.FAST_LITHOS_ROCKS, "Fast Lithos rock types",
+         "Lithos (26.1.2): each block's rock type worked out once instead of by building and comparing names for every block it places.", null),
       new Improvement(Config.FAST_CLIMATE_SEARCH, "Fast climate search",
          "Biome tables searched on a flat copy of their search tree: the same biomes, about twice as fast.", null),
       new Improvement(Config.FAST_CHUNK_PACK, "Fast chunk packing",

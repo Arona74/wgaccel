@@ -247,6 +247,16 @@ public final class Mc {
    }
 
    /** A features step's region was made, before any feature is placed (the Lithos noise table is queued for its chunk). */
+   /** A features step starts on this thread: a mark for {@link #featuresEnd} (26.1.2: Lithos noise tables handed back). */
+   public static int featuresMark() {
+      return com.wgaccel.gen.LithosNoise.featuresMark();
+   }
+
+   /** The features step started at mark has ended (its regions are done with). */
+   public static void featuresEnd(int mark) {
+      com.wgaccel.gen.LithosNoise.featuresEnd(mark);
+   }
+
    public static void featuresStart(net.minecraft.server.level.WorldGenRegion region) {
       com.wgaccel.gen.LithosNoise.featuresStart(region);
    }

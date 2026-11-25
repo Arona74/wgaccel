@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Conquest of Arborea 1.0.0's forest cells, kept once made. Its trees find their forest cell by asking a cell function
- * (obfuscated: trees.d.h.a(long seed, int cellX, int cellZ)) for every cell of a square around the column's own, column
+ * (obfuscated: trees.d.i.a(long seed, int cellX, int cellZ); trees.d.h.a in jars before 1 Nov 2026) for every cell of a square around the column's own, column
  * after column; each answer is a new java.util.Random seeded from (seed, cellX, cellZ) and ten nextDouble calls into an
  * immutable record (28 Oct 2026 profile: 22.5% of Arborea's time). The answer depends on those three numbers alone, so
  * the record is kept in a table shared by all threads (immutable entries: a slot read whole or not at all) and handed out
@@ -64,8 +64,17 @@ public final class ForestCells {
          return;
       }
 
+      if (!announced) {
+         announced = true;
+         WorldgenAccelerator.LOG.info("WGA Arborea forest cells: on (Arborea's cell function {} found; kept cells handed out, every 256th compared)",
+            cell.getClass().getName());
+      }
+
       TABLE[slot] = new Entry(seed, x, z, cell);
    }
+
+   /** The first kept cell was logged (a renamed function matches nothing: without this line the log says nothing). */
+   private static volatile boolean announced;
 
    private static void check(Object kept, Object real, int x, int z) {
       CHECKED.increment();

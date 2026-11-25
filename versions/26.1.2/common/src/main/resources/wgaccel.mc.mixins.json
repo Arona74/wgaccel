@@ -16,7 +16,8 @@
     "SinglePoolElementMixin",
     "compat.ConquestLandformsMixin",
     "compat.LithosNoiseMixin",
-    "compat.ArboreaCellsMixin"
+    "compat.ArboreaCellsMixin",
+    "compat.LithosRocksMixin"
   ],
   "injectors": {
     "defaultRequire": 1
