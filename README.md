@@ -120,11 +120,22 @@ WGAccel includes `[version_support]` checks (`warnUnsupportedVersions = true` by
 4. Join a world and check `logs/latest.log` for `WGA GPU backend: OpenCL`, `WGA GPU self-test: BIT-IDENTICAL`, and `WGA GPU noise fill: ready`.
 
 ### Dedicated server
-Dedicated servers do **not** include LWJGL core (`org.lwjgl.system`), which **all GPU backends (including the OpenCL default, CUDA, and HIP)** require. For OpenCL on a server you only need an up-to-date GPU driver plus the two `lwjgl-3.3.3` jars below — **no CUDA Toolkit or HIP SDK is needed** unless you explicitly switch away from OpenCL. *(Without LWJGL, the server still starts cleanly and runs all CPU optimizations.)*
+Dedicated servers do **not** include LWJGL core (`org.lwjgl.system`), which **all GPU backends (including the OpenCL default, CUDA, and HIP)** require. For OpenCL on a server you only need an up-to-date GPU driver plus the **server-only LWJGL jar** below. **No CUDA Toolkit or HIP SDK is needed** unless you explicitly switch away from OpenCL. *(Without LWJGL, the server still starts cleanly and runs all CPU optimizations.)*
+
+| Minecraft | Server-only LWJGL jar (from the release page) |
+| --- | --- |
+| `1.21.1` | `wgaccel-lwjgl-server-3.3.3.jar` |
+| `26.1.2` | `wgaccel-lwjgl-server-3.4.1.jar` |
+
+The jar depends only on the Minecraft version: download it once and keep it when you update WGAccel. It works on NeoForge and Fabric, on Windows, Linux and macOS (x64 and arm64).
+
 1. Put WGAccel (and FreeTerraForged, C2ME, Lithium, ScalableLux, FerriteCore) in the server's `mods/` folder.
-2. Copy `lwjgl-3.3.3.jar` and `lwjgl-3.3.3-natives-windows.jar` (or `natives-linux`) from a client's `libraries/org/lwjgl/lwjgl/3.3.3/` into the server's `libraries/org/lwjgl/lwjgl/3.3.3/`.
-3. Append both jars (separated by `;` on Windows or `:` on Linux) to `-DlegacyClassPath=` in `libraries/net/neoforged/neoforge/<version>/win_args.txt` (or `unix_args.txt`).
-4. Check `logs/latest.log` for `WGA GPU backend: OpenCL` and `WGA GPU self-test: BIT-IDENTICAL`. Players joining the server do **not** need WGAccel installed.
+2. Put the `wgaccel-lwjgl-server-<version>.jar` for your Minecraft version in the same `mods/` folder.
+3. Start the server and check `logs/latest.log` for `WGA GPU backend: OpenCL` and `WGA GPU self-test: BIT-IDENTICAL`. Players joining the server do **not** need WGAccel installed.
+
+> **Server only.** Never put `wgaccel-lwjgl-server` in a client's `mods/` folder (clients already have LWJGL). Fabric clients skip it, but on NeoForge a client with it does not start. Watch out when copying a server's `mods/` folder to a client.
+
+*Already added LWJGL by hand to `-DlegacyClassPath` (NeoForge `win_args.txt` / `unix_args.txt`) or Fabric's `-cp`? Remove it when you switch to the jar, so LWJGL isn't loaded twice. If the log says `LWJGL x.y.z is loaded but this build ... needs LWJGL a.b.c`, the jar is for another Minecraft version.*
 
 <details>
 <summary>Optional backends: CUDA, HIP, Linux AMD / ROCm & weak/integrated GPUs</summary>

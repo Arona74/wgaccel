@@ -16,11 +16,11 @@ loom {
     accessWidenerPath = file('src/main/resources/wgaccel.accesswidener')
 }
 
-// The mixin configs' Java level is the version's (JAVA_21, JAVA_25).
+// The mixin configs' Java level is the version's (JAVA_21, JAVA_25); the LWJGL version for gpu/Lwjgl's check.
 processResources {
-    def properties = [mixin_java: mixin_java]
+    def properties = [mixin_java: mixin_java, lwjgl_version: lwjgl_version]
     inputs.properties properties
-    filesMatching('*.mixins.json') {
+    filesMatching(['*.mixins.json', 'wgaccel-lwjgl.properties']) {
         expand properties
     }
 }

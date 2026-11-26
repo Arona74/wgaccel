@@ -237,3 +237,113 @@ apply plugin: 'base'
 tasks.named('build') {
     dependsOn 'collectJars'
 }
+
+// The server-only LWJGL download: build/libs/wgaccel-lwjgl-server-<lwjgl version>.jar, one per LWJGL version the included
+// Minecraft versions use (3.3.3 for 1.21.1, 3.4.1 for 26.1.2), the same for every wgaccel release on that version.
+// A dedicated server has no LWJGL core, and the shaded OpenCL classes need the game's own (its natives are bound to
+// org.lwjgl.system's names, so it cannot be relocated like them). The jar is LWJGL's core with its natives for the usual
+// server platforms, unrelocated; NeoForge loads it as a game library (FMLModType: GAMELIBRARY), Fabric as a
+// server-only mod ("environment": "server", so a Fabric client skips it). On a NeoForge client it would clash with
+// the game's LWJGL: the README says server only. gpu/Lwjgl checks the loaded version against the one built for.
+repositories {
+    mavenCentral()
+}
+
+def lwjglServerNatives = ['natives-windows', 'natives-windows-arm64', 'natives-linux', 'natives-linux-arm64', 'natives-macos', 'natives-macos-arm64']
+def lwjglLicense = '''Copyright (c) 2012-present Lightweight Java Game Library
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+- Redistributions of source code must retain the above copyright
+  notice, this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
+
+- Neither the name Lightweight Java Game Library nor the names of
+  its contributors may be used to endorse or promote products derived
+  from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+'''
+def lwjglServerVersions = providers.provider {
+    subprojects.findAll { it.parent == rootProject }.collect { it.property('lwjgl_version') as String }.unique()
+}
+tasks.register('lwjglServerJars') {
+    group = 'build'
+    description = 'Builds the server-only LWJGL jars (build/libs/wgaccel-lwjgl-server-<version>.jar).'
+    def libs = layout.buildDirectory.dir('libs')
+    def versions = lwjglServerVersions.get()
+    def sources = versions.collectEntries { v ->
+        [(v): configurations.detachedConfiguration(
+            ([dependencies.create("org.lwjgl:lwjgl:${v}")] + lwjglServerNatives.collect { dependencies.create("org.lwjgl:lwjgl:${v}:${it}") }) as Dependency[]
+        ).setTransitive(false)]
+    }
+    sources.values().each { inputs.files(it) }
+    outputs.files(versions.collect { v -> libs.map { it.file("wgaccel-lwjgl-server-${v}.jar") } })
+    doLast {
+        sources.each { String v, Configuration files ->
+            def out = libs.get().file("wgaccel-lwjgl-server-${v}.jar").asFile
+            out.parentFile.mkdirs()
+            def manifest = new java.util.jar.Manifest()
+            def main = manifest.mainAttributes
+            main.putValue('Manifest-Version', '1.0')
+            main.putValue('Specification-Title', 'Lightweight Java Game Library - Core')
+            main.putValue('Specification-Version', v)
+            main.putValue('Specification-Vendor', 'lwjgl.org')
+            main.putValue('Implementation-Title', 'lwjgl')
+            main.putValue('Implementation-Vendor', 'lwjgl.org')
+            main.putValue('Multi-Release', 'true')
+            main.putValue('Automatic-Module-Name', 'org.lwjgl')
+            main.putValue('FMLModType', 'GAMELIBRARY')
+            def zip = new java.util.jar.JarOutputStream(new FileOutputStream(out), manifest)
+            def written = new HashSet<String>(['META-INF/', 'META-INF/MANIFEST.MF'])
+            def put = { String name, byte[] bytes ->
+                if (written.add(name)) {
+                    zip.putNextEntry(new java.util.zip.ZipEntry(name))
+                    zip.write(bytes)
+                    zip.closeEntry()
+                }
+            }
+            try {
+                put('fabric.mod.json', groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                    schemaVersion: 1, id: 'wgaccel_lwjgl', version: v, name: "LWJGL ${v} for Worldgen Accelerator (server only)",
+                    description: "LWJGL's core for Worldgen Accelerator's GPU parts on dedicated servers, which have none.",
+                    license: 'BSD-3-Clause', environment: 'server'])).getBytes('UTF-8'))
+                put('META-INF/LICENSE-lwjgl.txt', lwjglLicense.getBytes('UTF-8'))
+                files.files.sort { it.name }.each { File jar ->
+                    def input = new java.util.zip.ZipFile(jar)
+                    try {
+                        input.entries().toList().each { entry ->
+                            def name = entry.name
+                            // Their own manifests, indexes and module descriptors are left out (one automatic module, org.lwjgl).
+                            if (entry.directory || name == 'META-INF/MANIFEST.MF' || name == 'META-INF/INDEX.LIST' || name.endsWith('module-info.class')) {
+                                return
+                            }
+                            put(name, input.getInputStream(entry).bytes)
+                        }
+                    } finally {
+                        input.close()
+                    }
+                }
+            } finally {
+                zip.close()
+            }
+            logger.lifecycle("lwjglServerJars: ${out} (${out.length() >> 10} KiB)")
+        }
+    }
+}
