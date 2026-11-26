@@ -90,16 +90,27 @@ public final class VoxyOverlay {
             return;
          }
 
-         VoxyProgress progress = shown();
-         if (progress == null) {
-            return;
-         }
-
          Config.VoxyOverlayCorner corner = Config.VOXY_OVERLAY_CORNER.get();
          boolean left = corner == Config.VoxyOverlayCorner.TOP_LEFT || corner == Config.VoxyOverlayCorner.BOTTOM_LEFT;
          boolean top = corner == Config.VoxyOverlayCorner.TOP_LEFT || corner == Config.VoxyOverlayCorner.TOP_RIGHT;
          if (debugShown && top) {
             // F3's text covers the top corners; its lines carry the progress then.
+            return;
+         }
+
+         VoxyProgress progress = shown();
+         if (progress == null) {
+            // On a server our generator does not run: the LODs come from the server's Voxy Server Side, if it has it.
+            VssStatus.View vss = vssShown();
+            if (vss != null) {
+               List<Row> rows = vssRows(vss);
+               int width = vssWidth(font, rows);
+               int height = PAD + vssHeight(rows) + PAD - 2;
+               int x = left ? MARGIN : screenWidth - width - MARGIN;
+               int y = top ? MARGIN : screenHeight - height - MARGIN - 40;
+               drawVss(canvas, font, vss, rows, x, y, width, height);
+            }
+
             return;
          }
 
@@ -331,6 +342,203 @@ public final class VoxyOverlay {
       }
    }
 
+   // ---- Voxy Server Side: the LODs a server sends (VssStatus) ----
+
+   private static final String VSS_TITLE = "WGA Voxy LODs from the server";
+   private static final int WARN = 0xE5484D;
+   private static volatile long vssDoneSince;
+
+   /** One line of the VSS card: text left and right (each in its colour); a bar under it when fraction is 0-1. */
+   private record Row(String left, int leftColor, String right, int rightColor, double fraction, int barColor) {
+      static Row text(String left, int color) {
+         return new Row(left, color, "", DIM, -1, 0);
+      }
+   }
+
+   /** The VSS state to show, or none (no VSS, a server without it, up to date long enough with voxyOverlayHideWhenDone). */
+   private static VssStatus.View vssShown() {
+      VssStatus.View view = VssStatus.current();
+      if (view == null || VssStatus.NO_VSS.equals(view.why())) {
+         vssDoneSince = 0;
+         return null;
+      }
+
+      if (view.state() != VssStatus.State.UP_TO_DATE) {
+         vssDoneSince = 0;
+         return view;
+      }
+
+      long now = System.nanoTime();
+      if (vssDoneSince == 0) {
+         vssDoneSince = now;
+      }
+
+      return Config.VOXY_OVERLAY_HIDE_WHEN_DONE.get() && now - vssDoneSince > DONE_SHOWN_NANOS ? null : view;
+   }
+
+   private static int vssAccent(VssStatus.State state) {
+      return switch (state) {
+         case RECEIVING -> ACTIVE;
+         case IDLE -> PAUSED;
+         case UP_TO_DATE -> DONE;
+         case WAITING -> WAITING;
+         case NO_LODS -> 0xFF000000 | WARN;
+      };
+   }
+
+   private static String vssRate(VssStatus.View view) {
+      return switch (view.state()) {
+         case RECEIVING -> String.format(Locale.ROOT, "%,.0f columns/s", Math.max(0, view.receiveRate()));
+         case IDLE -> "idle";
+         case UP_TO_DATE -> "up to date";
+         case WAITING -> "joining";
+         case NO_LODS -> "no LODs";
+      };
+   }
+
+   private static String vssHeadline(VssStatus.State state) {
+      return switch (state) {
+         case RECEIVING -> "Getting Voxy LODs from the server";
+         case IDLE -> "VSS connected, no requests";
+         case UP_TO_DATE -> "VSS connected, LODs up to date";
+         case WAITING -> "Joining the server's Voxy Server Side";
+         case NO_LODS -> "No LODs from this server";
+      };
+   }
+
+   /** The card's lines under the title, in order. */
+   private static List<Row> vssRows(VssStatus.View view) {
+      List<Row> rows = new ArrayList<>();
+      rows.add(Row.text(vssHeadline(view.state()), TEXT));
+      if (view.distance() > 0 && view.ring() >= 0) {
+         int ring = Math.min(view.ring(), view.distance());
+         int color = view.state() == VssStatus.State.UP_TO_DATE ? DONE : view.state() == VssStatus.State.RECEIVING ? ACTIVE : WAITING;
+         rows.add(new Row(String.format(Locale.ROOT, "ring %,d of %,d chunks", ring, view.distance()), TEXT,
+            String.format(Locale.ROOT, "%.0f%%", 100.0 * view.fraction()), TEXT, view.fraction(), color));
+      }
+
+      if (view.held() >= 0) {
+         // Waiting: asked, not answered yet (goes up and down as answers come); asks/s: how fast VSS asks (answers
+         // "already up to date" included, so above the columns/s).
+         String left = view.pending() >= 0 ? String.format(Locale.ROOT, "%,d waiting", view.pending()) : "";
+         if (view.requestRate() >= 0) {
+            left += String.format(Locale.ROOT, "%s%,.0f asks/s", left.isEmpty() ? "" : ", ", view.requestRate());
+         }
+
+         if (view.answerMs() >= 0) {
+            left += String.format(Locale.ROOT, "%sanswer %.0f ms", left.isEmpty() ? "" : ", ", view.answerMs());
+         }
+
+         String right = view.pingMs() >= 0 ? String.format(Locale.ROOT, "ping %.0f ms", view.pingMs()) : "";
+         rows.add(new Row(left, DIM, right, view.pingMs() >= 150 ? VERY_HIGH : DIM, -1, 0));
+         rows.add(Row.text(String.format(Locale.ROOT, "%,d columns held, %,d this session", view.held(), Math.max(0, view.session())), DIM));
+      }
+
+      if (!view.why().isEmpty()) {
+         rows.add(Row.text(view.why(), view.state() == VssStatus.State.NO_LODS ? TEXT : DIM));
+      }
+
+      // VSS's cache only says which columns the client has; when Voxy lost them (another storage, deleted), they are
+      // never asked again and the LODs stay missing where the player already was.
+      if (view.heldAtJoin() > 0 && (view.state() == VssStatus.State.IDLE || view.state() == VssStatus.State.UP_TO_DATE)) {
+         rows.add(Row.text("No LODs showing? " + view.command() + " clearcache gets them again", DIM));
+      }
+
+      if (!view.warning().isEmpty()) {
+         rows.add(Row.text(view.warning(), WARN));
+      }
+
+      return rows;
+   }
+
+   private static int vssHeight(List<Row> rows) {
+      int height = LINE + 2;
+      for (Row row : rows) {
+         height += row.fraction() >= 0 ? LINE + BAR + 4 : LINE;
+      }
+
+      return height;
+   }
+
+   private static int vssWidth(Font font, List<Row> rows) {
+      int widest = font.width(VSS_TITLE) + 12 + font.width("99,999 columns/s");
+      for (Row row : rows) {
+         widest = Math.max(widest, font.width(row.left()) + (row.right().isEmpty() ? 0 : 12 + font.width(row.right())));
+      }
+
+      return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, widest + 2 * PAD + 2));
+   }
+
+   private static void drawVss(Canvas canvas, Font font, VssStatus.View view, List<Row> rows, int x, int y, int width, int height) {
+      int accent = vssAccent(view.state());
+      canvas.fill(x, y, x + width, y + height, CARD);
+      canvas.fill(x, y, x + width, y + 1, EDGE);
+      canvas.fill(x, y + height - 1, x + width, y + height, EDGE);
+      canvas.fill(x + width - 1, y, x + width, y + height, EDGE);
+      canvas.fill(x, y, x + 2, y + height, accent);
+      int left = x + PAD + 2;
+      int right = x + width - PAD;
+      int line = y + PAD;
+      canvas.text(font, VSS_TITLE, left, line, TITLE);
+      String rate = vssRate(view);
+      canvas.text(font, rate, right - font.width(rate), line, accent & 0xFFFFFF);
+      line += LINE + 2;
+      for (Row row : rows) {
+         int room = right - left - (row.right().isEmpty() ? 0 : font.width(row.right()) + 12);
+         canvas.text(font, trim(font, row.left(), room), left, line, row.leftColor());
+         if (!row.right().isEmpty()) {
+            canvas.text(font, row.right(), right - font.width(row.right()), line, row.rightColor());
+         }
+
+         line += LINE;
+         if (row.fraction() >= 0) {
+            canvas.fill(left, line, right, line + BAR, TRACK);
+            int filled = (int)Math.round((right - left) * Math.min(1.0, row.fraction()));
+            if (filled > 0) {
+               canvas.fill(left, line, left + filled, line + BAR, row.barColor());
+            }
+
+            line += BAR + 4;
+         }
+      }
+   }
+
+   /** F3's VSS lines (on a server, when our generator does not run). */
+   private static void vssDebugLines(List<String> lines) {
+      VssStatus.View view = VssStatus.current();
+      if (view == null) {
+         return;
+      }
+
+      String color = switch (view.state()) {
+         case RECEIVING -> "§e";
+         case IDLE -> "§6";
+         case UP_TO_DATE -> "§a";
+         case WAITING -> "§7";
+         case NO_LODS -> "§c";
+      };
+      lines.add("§6WGA Voxy LODs from the server§r " + color + vssRate(view));
+      lines.add("§f" + vssHeadline(view.state()));
+      if (view.distance() > 0 && view.ring() >= 0) {
+         lines.add(String.format(Locale.ROOT, "§fring %,d of %,d chunks: %s%.0f%%", Math.min(view.ring(), view.distance()), view.distance(), color,
+            100.0 * view.fraction()));
+      }
+
+      if (view.held() >= 0) {
+         lines.add(String.format(Locale.ROOT, "§f%,d waiting, %,.0f asks/s, answer %.0f ms, ping %.0f ms", Math.max(0, view.pending()),
+            Math.max(0, view.requestRate()), Math.max(0, view.answerMs()), Math.max(0, view.pingMs())));
+         lines.add(String.format(Locale.ROOT, "§f%,d columns held, %,d this session", view.held(), Math.max(0, view.session())));
+      }
+
+      if (!view.why().isEmpty()) {
+         lines.add("§7" + view.why());
+      }
+
+      if (!view.warning().isEmpty()) {
+         lines.add("§c" + view.warning());
+      }
+   }
+
    private static String trim(Font font, String text, int width) {
       if (font.width(text) <= width) {
          return text;
@@ -357,6 +565,7 @@ public final class VoxyOverlay {
 
          VoxyProgress progress = VoxyProgress.current();
          if (progress == null) {
+            vssDebugLines(lines);
             return lines;
          }
 
