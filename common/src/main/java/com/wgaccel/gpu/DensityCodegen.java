@@ -957,6 +957,46 @@ public final class DensityCodegen {
       return this.children.contains(unwrap(node));
    }
 
+   /**
+    * The vanilla positional random under Exotic Worlds' CanonicalRandomFactory (a record of the vanilla factory and the
+    * world's wrap): its at(x, y, z) wraps a position past the world's edge, then asks the vanilla factory. Chunks past the
+    * edge are never generated (Exotic Worlds folds their keys first), so for every generated block it is the vanilla
+    * factory's draw, which the GPU has; the noise fill and surface checks compare with the game's anyway. Anything else
+    * is returned as it is.
+    */
+   public static Object vanillaRandom(Object factory) {
+      if (factory != null && Names.className(factory.getClass()).endsWith("CanonicalRandomFactory") && factory.getClass().isRecord()) {
+         try {
+            java.lang.reflect.Method vanilla = factory.getClass().getMethod("vanilla");
+            Object inner = vanilla.invoke(factory);
+            if (inner != null) {
+               return inner;
+            }
+         } catch (ReflectiveOperationException ignored) {
+         }
+      }
+
+      return factory;
+   }
+
+   /**
+    * Whether a positional random is Exotic Worlds' CanonicalRandomFactory over a looped world (its fold's isWrapped). There
+    * every vanilla noise (ImprovedNoise, PerlinNoise, SimplexNoise, BlendedNoise, NormalNoise) is made periodic with the
+    * loop, which the GPU's noises are not: 0.70.14's test, 512-block loop on FreeTerraForged, every checked chunk differed.
+    */
+   public static boolean wrappedWorld(Object factory) {
+      if (factory == null || !Names.className(factory.getClass()).endsWith("CanonicalRandomFactory")) {
+         return false;
+      }
+
+      try {
+         Object fold = factory.getClass().getMethod("fold").invoke(factory);
+         return fold == null || (Boolean)fold.getClass().getMethod("isWrapped").invoke(fold);
+      } catch (ReflectiveOperationException | RuntimeException unknown) {
+         return true;
+      }
+   }
+
    /** A node with its holder and C2ME wrappers taken off (what is actually worked out). */
    public static Object unwrap(Object node) {
       try {

@@ -82,6 +82,7 @@ public final class SurfaceCheck {
          LinkedBlockingQueue<SurfaceTap.Tap> taps = new LinkedBlockingQueue<>();
          SurfaceTap.enable(codegen, biomes, CHUNKS, taps::add);
          Inputs inputs = null;
+         boolean inputsOff = false;
          Strata strata = null;
          Loop loop = null;
          long calls = 0;
@@ -119,12 +120,16 @@ public final class SurfaceCheck {
 
             MemoryUtil.memFree(out);
             try {
-               if (inputs == null) {
-                  inputs = new Inputs(new SurfaceInputs(system, biomes, tap.zoomSeed));
-               }
+               if (!inputsOff) {
+                  if (inputs == null) {
+                     inputs = new Inputs(new SurfaceInputs(system, biomes, tap.zoomSeed));
+                  }
 
-               inputs.check(tap, chunks);
+                  inputs.check(tap, chunks);
+               }
             } catch (DensityCodegen.Unsupported unsupported) {
+               // Said once: the same world part stops it for every chunk after.
+               inputsOff = true;
                com.wgaccel.WgaChat.warnOff("WGA GPU surface input check off: {} has no GPU version", unsupported.kind);
             } catch (Throwable failure) {
                WorldgenAccelerator.LOG.warn("WGA GPU surface input check failed: {}", failure.toString());

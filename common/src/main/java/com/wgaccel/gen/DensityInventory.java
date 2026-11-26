@@ -77,7 +77,7 @@ public final class DensityInventory {
             boolean aquifers = overworld.getChunkSource().getGenerator() instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator generator2
                && generator2.generatorSettings().value().isAquifersEnabled();
             WorldgenAccelerator.LOG.info("WGA overworld noise settings: ore veins {}, aquifers {}", veins ? "on" : "off", aquifers ? "on" : "off");
-            DensityCheck.start(new ArrayList<>(noises), functions, router, overworld.getChunkSource().randomState().oreRandom(), veins, spawn.getX(), spawn.getZ(),
+            DensityCheck.start(new ArrayList<>(noises), functions, router, com.wgaccel.gpu.DensityCodegen.vanillaRandom(overworld.getChunkSource().randomState().oreRandom()), veins, spawn.getX(), spawn.getZ(),
                Mc.minY(overworld), overworld.getHeight());
          }
       } catch (Exception | LinkageError failure) {

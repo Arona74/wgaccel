@@ -43,7 +43,12 @@ public final class SurfaceInputs {
 
       String surfaceNoise = this.noises.normalNoise(SurfaceCodegen.field(surfaceSystem, "surfaceNoise"));
       String secondaryNoise = this.noises.normalNoise(SurfaceCodegen.field(surfaceSystem, "surfaceSecondaryNoise"));
-      Object random = SurfaceCodegen.field(surfaceSystem, "noiseRandom");
+      Object wrapped = SurfaceCodegen.field(surfaceSystem, "noiseRandom");
+      if (DensityCodegen.wrappedWorld(wrapped)) {
+         throw new DensityCodegen.Unsupported("Exotic Worlds' looped world (its noises repeat with the loop)");
+      }
+
+      Object random = DensityCodegen.vanillaRandom(wrapped);
       if (!Names.className(random.getClass()).endsWith("XoroshiroPositionalRandomFactory")) {
          throw new DensityCodegen.Unsupported("surface positional random " + Names.className(random.getClass()));
       }

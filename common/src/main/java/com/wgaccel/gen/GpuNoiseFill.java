@@ -92,6 +92,13 @@ public final class GpuNoiseFill {
    }
    private static final BlockState AIR = Blocks.AIR.defaultBlockState();
 
+   /** A part of the world with no GPU version, found before any compiling: said plainly, not as a GPU failure. */
+   private static final class NoGpuVersion extends RuntimeException {
+      NoGpuVersion(String what) {
+         super(what, null, false, false);
+      }
+   }
+
    private record Program(RandomState random, FillGpu gpu, com.wgaccel.gpu.FillBatcher batcher, List<Object> cellSamplers, long seedLo, long seedHi,
          boolean veins, int aquiferKind, BlockState[] table, boolean[] fluid, double[] noise, int[] permutations, int interpolators, int columns,
          ServerLevel level, NoiseBasedChunkGenerator generator, java.util.function.Supplier<Aquifer.FluidPicker> fluidPicker) {
@@ -277,6 +284,9 @@ public final class GpuNoiseFill {
          } catch (DensityCodegen.Unsupported unsupported) {
             task.failed(unsupported.kind);
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: the density function kind {} has no GPU version", unsupported.kind);
+         } catch (NoGpuVersion missing) {
+            task.failed(missing.getMessage());
+            com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: {} has no GPU version; chunks fill on the CPU", missing.getMessage());
          } catch (Throwable failure) {
             task.failed(failure.toString());
             com.wgaccel.WgaChat.warnOff("WGA GPU noise fill off: {}", com.wgaccel.gpu.GpuSelfTest.describe(failure));
@@ -363,9 +373,17 @@ public final class GpuNoiseFill {
       } catch (Exception ignored) {
       }
 
-      Object oreRandom = random.oreRandom();
+      if (DensityCodegen.wrappedWorld(random.oreRandom())) {
+         throw new NoGpuVersion("Exotic Worlds' looped world (its noises repeat with the loop)");
+      }
+
+      Object oreRandom = DensityCodegen.vanillaRandom(random.oreRandom());
       boolean veins = generator.generatorSettings().value().oreVeinsEnabled();
       // The vein seeds only when there are veins: the Nether and the End use the legacy random (no seedLo / seedHi).
+      // A mod's own positional random (Exotic Worlds' CanonicalRandomFactory) has no seedLo / seedHi: no GPU ore veins.
+      if (veins && !Names.className(oreRandom.getClass()).endsWith("XoroshiroPositionalRandomFactory")) {
+         throw new NoGpuVersion("the world's ore vein random (" + Names.className(oreRandom.getClass()) + ")");
+      }
       long seedLo = veins ? (Long)field(oreRandom, "seedLo") : 0L;
       long seedHi = veins ? (Long)field(oreRandom, "seedHi") : 0L;
       int aquiferKind = Mc.VANILLA_AQUIFER;
