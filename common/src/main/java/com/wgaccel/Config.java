@@ -337,7 +337,7 @@ public final class Config {
          "    - Biomes O' Plenty (biomesoplenty): 21.1.0.14 (with TerraBlender 4.1.0.8, GlitchCore 2.1.0.2)",
          "    - Regions Unexplored (regions_unexplored): 0.6.2 (with Lithostitched 1.8.0 - 1.8.1)",
          "    - Terralith (terralith): 2.6.2 (with Lithostitched 1.8.0)",
-         "    - Still Life (mr_still_life / still_life): 0.3-ftf (with stilllife_ftf_bridge 3.3.0, 5.5.0 or 5.6.0, VanillaBackport 1.2.1 - 1.2.2) or 0.3 / 0.3.5 (with Lithosphere 1.8.2)",
+         "    - Still Life (mr_still_life / still_life): 0.3-ftf - 0.3.8-ftf (with Lifeforged / stilllife_ftf_bridge 3.3.0, 5.5.0, 5.6.0 or 6.0.0, Still Life: Naturalized 1.3.2-ftf, VanillaBackport 1.2.1 - 1.2.2) or 0.3 / 0.3.5 (with Lithosphere 1.8.2)",
          "    - No Man's Land (nomansland): 1.6.2 (with Biolith 3.0.14)",
          "    - Supporting / Companion Worldgen Mods: TerraBlender 4.1.0.8, Lithostitched 1.8.0 - 1.8.1, Biolith 3.0.14,",
          "      VanillaBackport 1.2.1 - 1.2.2 (with Platform 1.4.2), Worldgen Patches 1.1.0, Streams Reflowing 2.15.2").push("version_support");

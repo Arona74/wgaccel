@@ -87,6 +87,11 @@ final class LodTrees {
        * when there are none (one tree at the spot).
        */
       List<PlacementModifier> inner;
+      /**
+       * Lifeforged's terrain filters of the placed features between the source and this tree (Still Life's groups),
+       * checked at each of its spots ({@link #allowed}); empty when there are none.
+       */
+      List<PlacementModifier> innerFilters = List.of();
 
       Kind(List<com.wgaccel.ftf.FtfTrees.Shape[]> templates, int radius, String names) {
          this.config = null;
@@ -154,7 +159,8 @@ final class LodTrees {
    }
 
    /** One placed tree feature of a biome: its placement and the trees it picks (probabilities; the rest: no tree). */
-   private record Source(int index, List<PlacementModifier> placement, float[] chances, Kind[] kinds, PlacementContext context, Pick[] picks) {
+   private record Source(int index, List<PlacementModifier> placement, List<PlacementModifier> filters, float[] chances, Kind[] kinds,
+         PlacementContext context, Pick[] picks) {
    }
 
    /**
@@ -539,6 +545,9 @@ final class LodTrees {
             // Without a spread (FreeTerraForged's plains, savanna and badlands trees), the chunk's corner, as in the game.
             int x = spot.getX();
             int z = spot.getZ();
+            if (!this.allowed(source.filters, x, z, h)) {
+               continue;
+            }
 
             // The tree from the spot alone: the same whichever chunk is being written.
             RandomSource own = new LegacyRandomSource(mix(h ^ mix(x * 0x632BE59BD9B4E019L + z)));
@@ -586,15 +595,97 @@ final class LodTrees {
             }
 
             if (kind.inner == null) {
-               this.tree(kind, x, z, own, out);
+               if (this.allowed(kind.innerFilters, x, z, h)) {
+                  this.tree(kind, x, z, own, out);
+               }
             } else {
                // The chosen entry's own counts and spread, from this spot (as the game runs a nested placed feature).
                for (BlockPos at : this.spots(kind.inner, source.context, own, spot)) {
+                  if (!this.allowed(kind.innerFilters, at.getX(), at.getZ(), h)) {
+                     continue;
+                  }
+
                   this.tree(kind, at.getX(), at.getZ(), new LegacyRandomSource(mix(own.nextLong() ^ mix(at.getX() * 0x632BE59BD9B4E019L + at.getZ()))), out);
                }
             }
          }
       }
+   }
+
+   /** The thread's placement context on a stand-in level for Lifeforged's terrain filters ({@link #allowed}). */
+   private final ThreadLocal<PlacementContext> filterContext = ThreadLocal.withInitial(this::newFilterContext);
+
+   private PlacementContext newFilterContext() {
+      java.util.LinkedHashMap<Long, net.minecraft.world.level.chunk.ChunkAccess> chunks = new java.util.LinkedHashMap<>(64, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(java.util.Map.Entry<Long, net.minecraft.world.level.chunk.ChunkAccess> eldest) {
+            return this.size() > 64;
+         }
+      };
+      // Empty chunks (before the noise step: the filter reads FreeTerraForged's model, not blocks), their cells made by
+      // FreeTerraForged when asked, their noise biomes the biome source's (the filter's climate asks the chunk).
+      net.minecraft.world.level.biome.BiomeSource source = this.level.getChunkSource().getGenerator().getBiomeSource();
+      net.minecraft.world.level.biome.Climate.Sampler sampler = this.level.getChunkSource().randomState().sampler();
+      net.minecraft.world.level.biome.BiomeResolver biomes = (qx, qy, qz, unused) -> source.getNoiseBiome(qx, qy, qz, sampler);
+      net.minecraft.world.level.WorldGenLevel standIn = new FeatureSandbox(this.level).cellsLevel(key -> chunks.computeIfAbsent(key,
+         k -> com.wgaccel.platform.Mc.columnChunk(com.wgaccel.platform.Mc.chunk(k), this.level, this.level.registryAccess(), biomes)));
+      return new PlacementContext(standIn, this.level.getChunkSource().getGenerator(), Optional.empty());
+   }
+
+   private static final java.util.concurrent.atomic.LongAdder FILTERED = new java.util.concurrent.atomic.LongAdder();
+   private static final java.util.concurrent.atomic.LongAdder FILTER_PASSED = new java.util.concurrent.atomic.LongAdder();
+   private static final java.util.concurrent.atomic.LongAdder FILTER_FAILED = new java.util.concurrent.atomic.LongAdder();
+   private static final java.util.concurrent.atomic.AtomicLong FILTER_LOGGED = new java.util.concurrent.atomic.AtomicLong();
+   private volatile boolean filterWarned;
+
+   /**
+    * Whether a tree spot at (x, z) passes Lifeforged's terrain filters (Still Life's treeline, slopes, talus, clearings),
+    * run as they are at FreeTerraForged's model ground on a stand-in level; their random from the spot and the source's
+    * seed h (theirs in the game is the feature's: the same share skipped, not the same spots). A filter that fails lets
+    * the spot through.
+    */
+   private boolean allowed(List<PlacementModifier> filters, int x, int z, long h) {
+      if (filters.isEmpty()) {
+         return true;
+      }
+
+      int y = com.wgaccel.ftf.LifeforgedLod.modelSurface(this.level, x, z);
+      if (y == Integer.MIN_VALUE) {
+         return true;
+      }
+
+      BlockPos pos = new BlockPos(x, y, z);
+      RandomSource random = new LegacyRandomSource(mix(h ^ mix(x * 0x2545F4914F6CDD1DL + z * 0x9E3779B97F4A7C15L)));
+      boolean passed = true;
+      try {
+         PlacementContext context = this.filterContext.get();
+         for (PlacementModifier filter : filters) {
+            if (filter.getPositions(context, random, pos).findAny().isEmpty()) {
+               passed = false;
+               break;
+            }
+         }
+      } catch (RuntimeException | LinkageError failure) {
+         FILTER_FAILED.increment();
+         if (!this.filterWarned) {
+            this.filterWarned = true;
+            WorldgenAccelerator.LOG.warn("WGA Voxy LOD trees: Lifeforged's terrain filter failed outside the world; trees let through where it fails (said once)",
+               failure);
+         }
+      }
+
+      FILTERED.increment();
+      if (passed) {
+         FILTER_PASSED.increment();
+      }
+
+      long n = FILTERED.sum();
+      if (n >= 10_000L && FILTER_LOGGED.compareAndSet(0L, 1L) || n >= 1_000_000L && FILTER_LOGGED.compareAndSet(1L, 2L)) {
+         WorldgenAccelerator.LOG.info("WGA Voxy LOD trees: Lifeforged's terrain filter let {} of {} tree spots through ({} of them because it failed)",
+            FILTER_PASSED.sum(), n, FILTER_FAILED.sum());
+      }
+
+      return passed;
    }
 
    /** A tree of this kind at (x, z): its height and crown from the random. */
@@ -826,11 +917,14 @@ final class LodTrees {
             }
 
             List<PlacementModifier> placement = new ArrayList<>();
+            List<PlacementModifier> filters = new ArrayList<>();
             List<String> skipped = new ArrayList<>();
 
             for (PlacementModifier modifier : placed.value().placement()) {
                if (this.counted(modifier)) {
                   placement.add(modifier);
+               } else if (this.ftf && com.wgaccel.ftf.LifeforgedLod.terrainFilter(modifier)) {
+                  filters.add(modifier);
                } else {
                   skipped.add(modifier.getClass().getSimpleName());
                }
@@ -843,10 +937,15 @@ final class LodTrees {
                if (kinds.get(i).inner != null) {
                   trees.append(" then ").append(kinds.get(i).inner.stream().map(m -> m.getClass().getSimpleName()).toList());
                }
+
+               if (!kinds.get(i).innerFilters.isEmpty()) {
+                  trees.append(" with Lifeforged's terrain filter");
+               }
             }
 
             described.add(placed.getRegisteredName() + " [" + trees + "; counted by "
-               + placement.stream().map(m -> m.getClass().getSimpleName()).toList() + ", not checked " + skipped + "]");
+               + placement.stream().map(m -> m.getClass().getSimpleName()).toList() + (filters.isEmpty() ? "" : ", filtered by Lifeforged's terrain filter")
+               + ", not checked " + skipped + "]");
 
             float[] chance = new float[kinds.size()];
             for (int i = 0; i < chance.length; i++) {
@@ -854,7 +953,7 @@ final class LodTrees {
             }
 
             PlacementContext context = new PlacementContext(this.level, this.level.getChunkSource().getGenerator(), Optional.of(placed.value()));
-            found.add(new Source(index, List.copyOf(placement), chance, kinds.toArray(new Kind[0]), context, this.picks(placed.value())));
+            found.add(new Source(index, List.copyOf(placement), List.copyOf(filters), chance, kinds.toArray(new Kind[0]), context, this.picks(placed.value())));
          }
 
          this.runs.put(biome, runs.toArray(NO_RUNS));
@@ -885,10 +984,20 @@ final class LodTrees {
       }
 
       List<PlacementModifier> mine = new ArrayList<>();
+      List<PlacementModifier> mineFilters = new ArrayList<>();
       for (PlacementModifier modifier : placed.placement()) {
          if (this.counted(modifier)) {
             mine.add(modifier);
+         } else if (this.ftf && com.wgaccel.ftf.LifeforgedLod.terrainFilter(modifier)) {
+            mineFilters.add(modifier);
          }
+      }
+
+      for (int i = before; i < kinds.size() && !mineFilters.isEmpty(); i++) {
+         Kind kind = kinds.get(i);
+         List<PlacementModifier> filters = new ArrayList<>(mineFilters);
+         filters.addAll(kind.innerFilters);
+         kind.innerFilters = List.copyOf(filters);
       }
 
       Object[] patch = com.wgaccel.platform.Mc.patch(placed.feature().value().config());

@@ -166,6 +166,29 @@ public final class Mc {
       return new ProtoChunk(pos, UpgradeData.EMPTY, height, access.registryOrThrow(Registries.BIOME), null);
    }
 
+   /**
+    * An empty stand-in chunk whose noise biomes come from biomes (its sampler argument is null) instead of its own
+    * (there are none): the LOD columns' chunk that Lifeforged's ground cover and deep rock run on (ftf/LifeforgedLod).
+    */
+   public static ProtoChunk columnChunk(ChunkPos pos, LevelHeightAccessor height, RegistryAccess access,
+         net.minecraft.world.level.biome.BiomeResolver biomes) {
+      return new ColumnChunk(pos, height, access, biomes);
+   }
+
+   private static final class ColumnChunk extends ProtoChunk {
+      private final net.minecraft.world.level.biome.BiomeResolver biomes;
+
+      ColumnChunk(ChunkPos pos, LevelHeightAccessor height, RegistryAccess access, net.minecraft.world.level.biome.BiomeResolver biomes) {
+         super(pos, UpgradeData.EMPTY, height, access.registryOrThrow(Registries.BIOME), null);
+         this.biomes = biomes;
+      }
+
+      @Override
+      public Holder<Biome> getNoiseBiome(int x, int y, int z) {
+         return this.biomes.getNoiseBiome(x, y, z, null);
+      }
+   }
+
    /** A beardifier with no structures in it (adds nothing to the density). */
    public static Beardifier noStructures() {
       return new Beardifier(new it.unimi.dsi.fastutil.objects.ObjectArrayList<Beardifier.Rigid>().iterator(),

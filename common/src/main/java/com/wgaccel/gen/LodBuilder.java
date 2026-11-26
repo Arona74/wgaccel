@@ -117,6 +117,24 @@ public final class LodBuilder {
       final BlockState[] layers = new BlockState[GROUND_DEPTH];
       final SurfaceGpu.Job[] surfaceJobs = new SurfaceGpu.Job[BATCH];
       final Column column = new Column();
+      /**
+       * Lifeforged on the LOD columns (ftf/LifeforgedLod): the chunk being made; the launch's stand-in chunks by position
+       * and others made for their FreeTerraForged cells (the last 64), which its stand-in level hands out; the chunk's
+       * surfaced columns, held until its deep rock has run.
+       */
+      com.wgaccel.ftf.LifeforgedLod.Chunk lifeforged;
+      final java.util.HashMap<Long, net.minecraft.world.level.chunk.ChunkAccess> launchChunks = new java.util.HashMap<>();
+      final java.util.LinkedHashMap<Long, net.minecraft.world.level.chunk.ChunkAccess> cellChunks = new java.util.LinkedHashMap<>(64, 0.75F, true) {
+         @Override
+         protected boolean removeEldestEntry(java.util.Map.Entry<Long, net.minecraft.world.level.chunk.ChunkAccess> eldest) {
+            return this.size() > 64;
+         }
+      };
+      net.minecraft.world.level.WorldGenLevel cellsLevel;
+      int fastStride;
+      final Column[] held = new Column[256];
+      final int[] heldAt = new int[256];
+      int heldCount;
 
       Worker(GpuNoiseFill.StandIns standIns) {
          this.standIns = standIns;
@@ -204,6 +222,9 @@ public final class LodBuilder {
          SurfaceGpu.Job surfaceJob = out == null ? null : worker.surfaceJobs[at];
          Object[] cells = out == null || decor == null ? null : decor.cells(worker.standIns.proto(at));
          at++;
+         com.wgaccel.ftf.LifeforgedLod.Chunk lifeforged = cells == null ? null : this.lifeforged(worker, pos, cells, fastStride);
+         worker.heldCount = 0;
+         try {
          for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                int column = i * n + j;
@@ -260,12 +281,121 @@ public final class LodBuilder {
                c.layers = layers;
                c.groundTop = layers[0];
                c.below = surfaceProgram.defaultBlock();
+               if (lifeforged != null && c.ground != LodColumns.NONE) {
+                  // Held for Lifeforged's deep rock, which needs the chunk's columns all in.
+                  hold(worker, i * n + j, c);
+                  lifeforged.put(c.x, c.z, c.ground, c.layers, c.below, c.surface > c.ground ? c.top : null);
+                  continue;
+               }
+
                sink.column(pos, i, j, c);
+            }
+         }
+
+         if (lifeforged != null) {
+            lifeforged.deepRock(this.level);
+            for (int h = 0; h < worker.heldCount; h++) {
+               Column held = worker.held[h];
+               lifeforged.read(held.x, held.z, held.ground, held.layers);
+               held.groundTop = held.layers[0];
+               sink.column(pos, worker.heldAt[h] / n, worker.heldAt[h] % n, held);
+            }
+         }
+         } finally {
+            if (lifeforged != null) {
+               lifeforged.end();
+               worker.lifeforged = null;
             }
          }
       }
 
       worker.batch.clear();
+      worker.launchChunks.clear();
+   }
+
+   /** Column c of the chunk (its index i * n + j) copied to the worker's held columns. */
+   private static void hold(Worker worker, int index, Column c) {
+      int h = worker.heldCount++;
+      Column held = worker.held[h];
+      if (held == null) {
+         held = worker.held[h] = new Column();
+         held.layers = new BlockState[GROUND_DEPTH];
+      }
+
+      held.x = c.x;
+      held.z = c.z;
+      held.ground = c.ground;
+      held.surface = c.surface;
+      held.top = c.top;
+      held.groundTop = c.groundTop;
+      System.arraycopy(c.layers, 0, held.layers, 0, GROUND_DEPTH);
+      held.below = c.below;
+      held.snow = c.snow;
+      held.ice = c.ice;
+      held.biome = c.biome;
+      held.rough = c.rough;
+      worker.heldAt[h] = index;
+   }
+
+   /**
+    * Lifeforged (the Still Life FTF bridge 6) on chunk pos's columns, or null: its stand-in chunk with the stand-in's
+    * FreeTerraForged cells and the columns' biomes, its stand-in level (the chunks around from the launch's stand-ins,
+    * else made for their cells: fast ones at fastStride when the LODs use them).
+    */
+   private com.wgaccel.ftf.LifeforgedLod.Chunk lifeforged(Worker worker, ChunkPos pos, Object[] cells, int fastStride) {
+      if (!com.wgaccel.ftf.LifeforgedLod.available()) {
+         return null;
+      }
+
+      if (worker.cellsLevel == null) {
+         worker.cellsLevel = new FeatureSandbox(this.level).cellsLevel(key -> this.cellChunk(worker, key));
+      }
+
+      if (worker.launchChunks.isEmpty()) {
+         for (int i = 0; i < worker.done.size(); i++) {
+            ChunkPos done = worker.done.get(i);
+            worker.launchChunks.put(Mc.key(done), worker.standIns.proto(i));
+         }
+      }
+
+      worker.fastStride = fastStride;
+      ChunkGenerator generator = this.level.getChunkSource().getGenerator();
+      net.minecraft.world.level.biome.Climate.Sampler sampler = this.level.getChunkSource().randomState().sampler();
+      Column c = worker.column;
+      // The column being made's biome (worked out at its surface) when asked there, else the biome source's.
+      net.minecraft.world.level.biome.BiomeResolver biomes = (qx, qy, qz, unused) -> c.biome != null && qx == QuartPos.fromBlock(c.x)
+         && qz == QuartPos.fromBlock(c.z) && qy == QuartPos.fromBlock(c.surface) ? c.biome : generator.getBiomeSource().getNoiseBiome(qx, qy, qz, sampler);
+      worker.lifeforged = com.wgaccel.ftf.LifeforgedLod.begin(this.level, pos, cells, biomes, worker.cellsLevel);
+      return worker.lifeforged;
+   }
+
+   /** The chunk at key for the stand-in level: the one being made, a launch's stand-in, or one made for its cells. */
+   private net.minecraft.world.level.chunk.ChunkAccess cellChunk(Worker worker, long key) {
+      if (worker.lifeforged != null) {
+         ChunkPos current = worker.lifeforged.chunk.getPos();
+         if (Mc.key(current) == key) {
+            return worker.lifeforged.chunk;
+         }
+      }
+
+      net.minecraft.world.level.chunk.ChunkAccess chunk = worker.launchChunks.get(key);
+      if (chunk != null) {
+         return chunk;
+      }
+
+      chunk = worker.cellChunks.get(key);
+      if (chunk == null) {
+         ChunkPos at = Mc.chunk(key);
+         net.minecraft.world.level.chunk.ProtoChunk made = Mc.emptyChunk(at, this.level, this.level.registryAccess());
+         if (worker.fastStride > 0) {
+            com.wgaccel.ftf.FtfLodCells.prepare(this.level.getChunkSource().randomState(), made, worker.fastStride);
+         }
+
+         chunk = made;
+         worker.cellChunks.put(key, chunk);
+      }
+
+      return chunk;
    }
 
    /** The chunks' columns from the game's getBaseHeight (the ground block the generator's default block, water its fluid). */

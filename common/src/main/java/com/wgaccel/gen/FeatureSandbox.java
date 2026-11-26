@@ -235,6 +235,43 @@ final class FeatureSandbox {
       }
    }
 
+   /**
+    * A stand-in level for passes that ask the level only for the world's seed, its real level, biomes and the chunks
+    * around (their FreeTerraForged cells): Lifeforged's ground cover on the LOD columns (ftf/LifeforgedLod). Its chunks
+    * come from chunks (by Mc.key); its blocks are all air.
+    */
+   WorldGenLevel cellsLevel(java.util.function.LongFunction<net.minecraft.world.level.chunk.ChunkAccess> chunks) {
+      Columns none = new Columns() {
+         @Override
+         public int ground(int x, int z) {
+            return FeatureSandbox.this.minY - 1;
+         }
+
+         @Override
+         public int surface(int x, int z) {
+            return FeatureSandbox.this.minY - 1;
+         }
+
+         @Override
+         public BlockState layer(int x, int z, int k) {
+            return null;
+         }
+
+         @Override
+         public BlockState fluid(int x, int z) {
+            return null;
+         }
+
+         @Override
+         public Holder<Biome> biome(int x, int z) {
+            return null;
+         }
+      };
+      Stage stage = new Stage(none, RandomSource.create(this.seed));
+      stage.chunkSource = chunks;
+      return (WorldGenLevel)Proxy.newProxyInstance(WorldGenLevel.class.getClassLoader(), new Class<?>[]{WorldGenLevel.class}, stage);
+   }
+
    static String name(PlacedFeature placed) {
       return String.valueOf(net.minecraft.core.registries.BuiltInRegistries.FEATURE.getKey(placed.feature().value().feature()));
    }
@@ -253,6 +290,8 @@ final class FeatureSandbox {
       int cz;
       /** The stand-in chunks handed out for their step ({@code getChunk}), by position. */
       final java.util.HashMap<Long, net.minecraft.world.level.chunk.ProtoChunk> chunks = new java.util.HashMap<>();
+      /** Where getChunk's chunks come from instead ({@link #cellsLevel}), or null. */
+      java.util.function.LongFunction<net.minecraft.world.level.chunk.ChunkAccess> chunkSource;
 
       Stage(Columns columns, RandomSource random) {
          this.columns = columns;
@@ -406,6 +445,10 @@ final class FeatureSandbox {
                // second of two neighbours in the game, so Lithos's ground cover does the border columns between them
                // (with "none decorated" no run did them: a line at every chunk edge).
                if ((n == 2 || n == 4) && args[0] instanceof Integer cx && args[1] instanceof Integer cz) {
+                  if (this.chunkSource != null) {
+                     return this.chunkSource.apply(com.wgaccel.platform.Mc.key(cx, cz));
+                  }
+
                   return this.chunks.computeIfAbsent(com.wgaccel.platform.Mc.key(cx, cz), key -> {
                      net.minecraft.world.level.chunk.ProtoChunk chunk = com.wgaccel.platform.Mc.emptyChunk(
                         new net.minecraft.world.level.ChunkPos(cx, cz), FeatureSandbox.this.level, FeatureSandbox.this.level.registryAccess());

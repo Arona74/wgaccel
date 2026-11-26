@@ -224,7 +224,26 @@ public final class FtfLodDecor {
          }
 
          boolean snowTop = blocks[0].is(Blocks.SNOW_BLOCK) || blocks[0].is(Blocks.POWDER_SNOW);
-         boolean kept = StillLifeSnow.keep(this.scree, blocks[0], cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue);
+         float steepness = cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue;
+         LifeforgedLod.Chunk lifeforged = LifeforgedLod.current();
+         if (lifeforged != null) {
+            // Lifeforged 6 (its hook at erodeColumn's head): its snow caps, then its ground cover in place of FTF's erosion.
+            int took = LifeforgedLod.erode(lifeforged, this.scree, this.levels, this.noises.rand, cell, x, z, ground, blocks, defaultBlock, steepness);
+            if (snowTop) {
+               SNOW_TOPS.increment();
+               if (took == LifeforgedLod.KEPT) {
+                  SNOW_KEPT.increment();
+               }
+            }
+
+            if (took != LifeforgedLod.NONE) {
+               return;
+            }
+
+            snowTop = false;
+         }
+
+         boolean kept = lifeforged == null && StillLifeSnow.keep(this.scree, blocks[0], steepness);
          if (snowTop) {
             SNOW_TOPS.increment();
             if (kept) {
@@ -269,8 +288,7 @@ public final class FtfLodDecor {
             fill(blocks, 0, 4, material);
          }
 
-         // placeScree
-         float steepness = cell.gradient + this.noises.rand.compute(x, z, 1) * this.slopeModifierValue;
+         // placeScree (the steepness worked out above, the same)
          if (steepness < this.screeSteepnessValue) {
             return;
          }
