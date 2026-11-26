@@ -879,10 +879,10 @@ public final class Config {
       builder.pop();
       builder.pop();
       builder.comment("Voxy LOD generator (with Voxy installed): Voxy's distant terrain made from the GPU columns instead of generated",
-         "chunks, in rings around the players, nearest first. Terrain only (ground, surface blocks, water, snow and ice): no trees,",
-         "structures or other features; the chunks players really generate replace it in Voxy. Chunks already generated (in the",
-         "world's region files) are never written over. Overworld only; needs the GPU noise fill. /wgaccel lod voxy runs it once",
-         "by hand.").push("voxy");
+         "chunks, in rings around the players, nearest first: ground, surface blocks, water, snow and ice, plus the trees,",
+         "structures, terrain features and plants turned on in [voxy.features]; the chunks players really generate replace it in",
+         "Voxy. Chunks already generated (in the world's region files) are never written over. Overworld only; needs the GPU",
+         "noise fill. /wgaccel lod voxy runs it once by hand.").push("voxy");
       VOXY_GENERATOR = Setting.custom(builder
          .comment("The automatic Voxy LOD generator on or off (only does anything with Voxy installed). On by default since 0.70.3;",
             "a config written by an older version keeps its value.")

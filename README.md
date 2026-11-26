@@ -1,14 +1,14 @@
-# Worldgen Accelerator (`0.70.0`)
+# Worldgen Accelerator (`0.70.13`)
 
 > [!NOTE]
-> **Attribution:** Originally created by **`agneht26-dotcom`** (`v0.9.78`–`v0.11.5`), expanded by **Arona** up through `0.63.3` / `0.63.4`, and continued here from `0.63.4-lab.1` through **`0.64.1`** for **Minecraft 1.21.1 (NeoForge)** with **FreeTerraForged** (`1.0.0010`–`1.0.0032`), **C2ME**, and **OpenCL** as the default GPU backend.
+> **Attribution:** Originally created by **`agneht26-dotcom`** (`v0.9.78`–`v0.11.5`), expanded by **Arona** up through `0.63.3` / `0.63.4`, continued by **`agneht26-dotcom`** from `0.63.4-lab.1` through **`0.64.1`** for **Minecraft 1.21.1 (NeoForge)** with **FreeTerraForged** (`1.0.0010`–`1.0.0032`), **C2ME**, and **OpenCL** as the default GPU backend, then merged back into Arona's line from **`0.64.2`**, which builds for **Minecraft 1.21.1 and 26.1.2 on NeoForge and Fabric** again.
 
-Faster chunk generation for **Minecraft 1.21.1 NeoForge** — built primarily for **FreeTerraForged** and popular worldgen/biome mods. Worlds generate **block-for-block identical** to vanilla/FreeTerraForged: every acceleration runs periodic live checks against the standard path and automatically disables any component that differs.
+Faster chunk generation for **Minecraft 1.21.1 and 26.1.2 (NeoForge and Fabric)** — built primarily for **FreeTerraForged** (and **Conquest ReTerraForged** on Fabric 26.1.2) and popular worldgen/biome mods, plus GPU-made distant terrain for **Voxy**. Worlds generate **block-for-block identical** to vanilla/FreeTerraForged: every acceleration runs periodic live checks against the standard path and automatically disables any component that differs.
 
 > [!WARNING]
-> **AI-generated mod & authorship:** Worldgen Accelerator was originally created by **`agneht26-dotcom`** with **Claude** (`v0.9.78`–`v0.11.5`), later expanded by **Arona** up through **`0.63.3` / `0.63.4`**, and is now continued by **`agneht26-dotcom`** from **`0.63.4-lab.1`** through **`0.64.0`** and the current **`0.64.1`** using **Claude and Gemini**.
+> **AI-generated mod & authorship:** Worldgen Accelerator was originally created by **`agneht26-dotcom`** with **Claude** (`v0.9.78`–`v0.11.5`), later expanded by **Arona** up through **`0.63.3` / `0.63.4`**, continued by **`agneht26-dotcom`** from **`0.63.4-lab.1`** through **`0.64.1`** using **Claude and Gemini**, and by **Arona** from **`0.64.2`** to the current **`0.70.13`** using **Claude**.
 >
-> **What `0.64.1` is and does:** An OpenCL-default **Minecraft 1.21.1 (NeoForge)** build for **FreeTerraForged** (`1.0.0010`–`1.0.0032`) with **C2ME** that accelerates biome selection, 3D noise fill, surface rules, ores/disks/carvers, and Chunky pregeneration on GPU and CPU while staying block-for-block identical via live self-checks (adding OpenCL surface optimizations, Still Life/Terralith/Nature's Spirit/tall-world speedups, reloaded look-ahead cell alignment, and `[version_support]` checks). Always **back up your worlds** before testing, try it on a copy first, and include `logs/latest.log` with any bug reports.
+> **What it is and does:** An OpenCL-default build for **Minecraft 1.21.1 and 26.1.2 (NeoForge and Fabric)**, for **FreeTerraForged** (`1.0.0010`–`1.0.0034`) and **Conquest ReTerraForged** with **C2ME**. It accelerates biome selection, 3D noise fill, surface rules, ores/disks/carvers, and Chunky pregeneration on GPU and CPU while staying block-for-block identical via live self-checks, and builds **Voxy** LODs (and **Voxy Server Side** LODs on dedicated servers) from its GPU columns instead of generated chunks. Always **back up your worlds** before testing, try it on a copy first, and include `logs/latest.log` with any bug reports.
 
 > [!NOTE]
 > **OpenCL is the default GPU backend (`gpuBackend = OPENCL`) and is faster than CUDA.** OpenCL received the latest performance optimizations and works out of the box through your NVIDIA, AMD, or Intel GPU driver with no extra SDK required. CUDA and HIP remain selectable manually in Config. When you join a world, chat logs the active GPU and backend (`gpuTestedWarning = false` hides this).
@@ -19,11 +19,13 @@ Faster chunk generation for **Minecraft 1.21.1 NeoForge** — built primarily fo
 ## Contents
 
 - [What it does](#what-it-does)
-- [What changed from Arona's upstream](#what-changed-from-aronas-upstream)
+- [What changed from Arona's upstream (`0.64.1`)](#what-changed-from-aronas-upstream-0641)
+- [Since `0.64.1`](#since-0641)
 - [What runs on the CPU and what on the GPU](#what-runs-on-the-cpu-and-what-on-the-gpu)
 - [Benchmarks (`0.64.1` OpenCL)](#benchmarks-0641-opencl)
 - [Supported versions and mods](#supported-versions-and-mods)
 - [Dimensions](#dimensions)
+- [Distant terrain (Voxy LODs)](#distant-terrain-voxy-lods)
 - [Installation](#installation)
 - [Maxing pregeneration CPS](#maxing-pregeneration-cps)
 - [Config](#config)
@@ -39,17 +41,25 @@ Generating a chunk runs through several stages: biomes, 3D noise fill (stone, aq
 
 **Live parity checks:** Every 64th chunk (and sampled biome/ore/disk checks) is computed on the CPU too and verified against the GPU/fast path. Any mismatch disables only that optimization automatically and logs details. *(The GPU surface check logs race warnings only, since cross-chunk feature writes in mods like Still Life can race even without WGAccel.)*
 
-## What changed from Arona's upstream
+## What changed from Arona's upstream (`0.64.1`)
 
-Forked from Arona's `0.63.3` (incorporating `0.63.4` fixes) with the following scope and technical changes:
+`0.64.1` was forked from Arona's `0.63.3` (incorporating `0.63.4` fixes) with the following scope and technical changes:
 
-- **Minecraft `1.21.1` NeoForge only (no newer MC versions or Fabric):** Releases and testing target **Minecraft 1.21.1 NeoForge** exclusively. Newer Minecraft versions (`26.1.2+`), Fabric builds, and Conquest ReTerraForged are **not** supported or maintained here.
+- **Minecraft `1.21.1` NeoForge only:** `0.64.1` targeted **Minecraft 1.21.1 NeoForge** exclusively. Since `0.64.2`, Fabric, Minecraft `26.1.2` and Conquest ReTerraForged are built and supported again (see [Since `0.64.1`](#since-0641)).
 - **OpenCL is now the default GPU backend (`gpuBackend = OPENCL`):** OpenCL received the latest GPU kernel optimizations (including workgroup shared-memory surface prepass scans) and is faster than CUDA on this fork; CUDA and HIP remain manual fallbacks without the newer OpenCL-specific speedups.
 - **FreeTerraForged `1.0.0025`–`1.0.0032` parity & fixes:** Version-gated erosion `weirdness` formulas (`v25`–`v27`), river noise fade skips (`FtfRiverSkip`), `experimentalMountainFades` support, `NoiseBasedChunkGeneratorMixin` (`priority = 500`) alignment inner to FTF, and `FtfCellsGround.clampWrapCells` look-ahead cell-range alignment for reloaded chunks and `afterBiomes` structure chunks (`other cell range -> 0`).
 - **Biome-mod, feature & tall-terrain optimizations (`0.64.x`):**
   - **Still Life:** `ClimateColumns` + `StillLifeClimateBridge.apply` caching, whole-disk `DiskColumns` batching, and compiled `FastPredicates.RulePlan` indexed dispatch (`182.30 -> 370.61 CPS`).
   - **Terralith, Nature's Spirit & tall worlds:** `UndergroundBiomeBanding` `lastResult` tie parity, C2ME `CompiledDensityFunction`-wrapped `ClimateDepthFunction` column caching, `NaturesSpiritPillars`, `SculkSpreaderCursorMixin`, `BiomeRoles` column resets, `SectionBuilder` single-pass packing, and `GpuSurface` changed-section skipping.
 - **Diagnostics & version guardrails:** Added `[version_support]` warnings for untested worldgen mod versions or standalone Lithosphere, moved WGAccel logs under `logs/wgaccel/`, fixed `GpuNoiseFill` `preparedUsed` stat counting, and fixed Windows NVRTC library loading when CUDA is selected.
+
+## Since `0.64.1`
+
+- **`0.64.2`:** `0.64.1` merged back into Arona's line: NeoForge and Fabric jars for Minecraft `1.21.1` and `26.1.2` again; crash fixed in worlds without FreeTerraForged.
+- **`0.70.x` distant terrain:** a GPU LOD generator for **Voxy** (automatic rings around the players, on by default), with trees, structures, terrain features, plants and modded ground (Arborea, Lithos, AronaLayers, Lifeforged); **Voxy Server Side** LODs on dedicated servers (`0.70.8`); an experimental **Distant Horizons** generator (off by default). See [Distant terrain (Voxy LODs)](#distant-terrain-voxy-lods).
+- **GPU surface:** Oh The Biomes We've Gone's surface rules and TerraBlender's namespaced rules run on the GPU (`0.70.1`).
+- **Mod support:** FreeTerraForged up to `1.0.0034`, Still Life FTF up to `0.3.8-ftf`, Lifeforged (Still Life x FTF bridge) `5.5.0`, `5.6.0` and `6.0.0`, Still Life: Naturalized `1.3.2-ftf`; Conquest ReTerraForged keeps Arborea's forest cells and Lithos's rock types (`0.70.11`).
+- **Servers & Linux:** a server-only LWJGL jar turns the GPU on for dedicated servers without editing launch files (`0.70.13`); README steps for AMD GPUs on Linux through ROCm (`0.70.9`).
 
 ## What runs on the CPU and what on the GPU
 
@@ -87,21 +97,24 @@ WGAccel includes `[version_support]` checks (`warnUnsupportedVersions = true` by
 
 | Mod | Verified Version(s) | Notes |
 | --- | --- | --- |
-| **Minecraft / NeoForge** | `1.21.1` (`21.1.x`) | `wgaccel-neoforge-<version>+mc1.21.1.jar` |
-| **FreeTerraForged** | `1.0.0010` – `1.0.0032` | Full support including tileless chunk cells and `experimentalMountainFades` (`1.0.0027+`) |
+| **Minecraft / loader** | `1.21.1` NeoForge (`21.1.x`) and Fabric; `26.1.2` NeoForge and Fabric | `wgaccel-neoforge-<version>+mc<minecraft>.jar` or `wgaccel-fabric-...` (Fabric needs Fabric API). On `26.1.2` the GPU runs through OpenCL (no CUDA) |
+| **FreeTerraForged** | `1.0.0010` – `1.0.0034` | Full support including tileless chunk cells and `experimentalMountainFades` (`1.0.0027+`) |
 | **C2ME** | `0.4.0-alpha.0.122` – `0.124` | Recommended. Do **not** install `c2me-opts-accel-opencl` |
 | **Lithium / ScalableLux / FerriteCore** | `0.15.4` / `0.3.0-alpha.0.8` / `7.0.3` | Strongly recommended (`ScalableLux` prevents heavy chunk lighting stalls on servers) |
 | **Chunky** | `1.4.23` | Supported; WGAccel tunes `chunky.maxWorkingCount` automatically when `0` |
-| **Still Life + Bridge** | `0.3-ftf` + `stilllife_ftf_bridge 3.3.0` (`0.3`–`0.3.5`) | Exact parity (`ClimateColumns` bridge + `DiskColumns` + compiled `RulePlan`). Works without Lithosphere |
+| **Conquest ReTerraForged** | `0.1.0` (Fabric `26.1.2` only) | GPU noise fill through its `cell` function; Arborea's forest cells and Lithos's rock types kept |
+| **Still Life + Lifeforged (bridge)** | Still Life FTF `0.3-ftf` – `0.3.8-ftf` + Lifeforged (`stilllife_ftf_bridge`) `3.3.0`, `5.5.0`, `5.6.0`, `6.0.0`; Still Life: Naturalized `1.3.2-ftf`; or Still Life `0.3`–`0.3.5` with Lithosphere `1.8.2` | Exact parity (`ClimateColumns` bridge + `DiskColumns` + compiled `RulePlan`). Lifeforged `6.0.0`'s ground cover, deep rock and terrain filter also run in the Voxy LODs |
 | **Terralith** | `2.6.2` | Exact parity (`NoiseFill` auto-adjusts for `ClimateDepthFunction`, GPU surface & fast biome search active) |
 | **Biomes O' Plenty + TerraBlender** | `21.1.0.14` / `4.1.0.8` | Exact parity |
-| **Regions Unexplored** | `0.6.2` | Exact parity |
+| **Regions Unexplored** | `0.6.2` – `0.6.3` | Exact parity |
+| **Oh The Biomes We've Gone** | `2.6.3` | Surface rules on the GPU |
 | **WWOO (William Wythers')** | `2.6.7` | Exact parity |
 | **Nature's Spirit + Lithostitched** | `2.3.1`–`2.3.2` / `1.8.0`–`1.8.1` | Exact parity (`NaturesSpiritPillars` accelerates pillar biomes) |
 | **No Man's Land + Biolith** | `1.6.2` / `3.0.14` | Exact parity |
-| **RoadWeaver** | `2.3.2` | Exact parity (road cut-and-fill chunks fall back cleanly to CPU; shaded LWJGL avoids clashes) |
+| **RoadWeaver** | `2.3.x` (`2.3.2` tested) | Exact parity (road cut-and-fill chunks fall back cleanly to CPU; shaded LWJGL avoids clashes) |
 | **VanillaBackport / Streams Reflowing / Worldgen Patches** | `1.2.1`–`1.2.2` / `2.15.2` / `1.1.0` | Compatible |
-| **Shaders / Client Performance (Iris, Sodium, Voxy, DH)** | Works in gameplay | **Disable shaders, Voxy, and Distant Horizons while pregenerating** for max CPS |
+| **Voxy / Voxy Server Side / Distant Horizons** | Voxy, Voxy Server Side (LOD Server Support) `0.23.0-beta.1`, DH API `3.3.3` | LODs from the GPU columns: see [Distant terrain (Voxy LODs)](#distant-terrain-voxy-lods) |
+| **Shaders / Client Performance (Iris, Sodium)** | Works in gameplay | **Disable shaders, Voxy, and Distant Horizons while pregenerating with Chunky** for max CPS |
 
 ## Dimensions
 
@@ -111,11 +124,22 @@ WGAccel includes `[version_support]` checks (`warnUnsupportedVersions = true` by
 | **Nether / The End** | Ores, carvers, surface reads, compression | Noise fill off by default (C2ME CPU is faster in Nether/End; configurable via `gpuNoiseFillCpuDimensions`) |
 | **Modded dimensions** | General CPU passes | Controlled via `gpuNoiseFillOtherDimensions` (auto-falls back to CPU if unsupported) |
 
+## Distant terrain (Voxy LODs)
+
+With **Voxy** installed, Worldgen Accelerator builds Voxy's distant terrain from its GPU columns instead of generating chunks: in rings around the players, nearest first, far faster than real generation (about 1,000 chunks/s at full detail and 9,000+ far out on an RX 9070 XT).
+
+- **On by default** (`voxyGenerator`). Default rings (`voxyRings`): full detail to 64 chunks, one column per 2 x 2 chunks to 192 chunks, one per 4 x 4 chunks to 512 chunks. A progress panel shows in a corner (`voxyProgress`: overlay, F3 lines, both or off).
+- **What the LODs show:** ground, surface blocks, water, snow and ice, plus trees, structures, terrain features and plants, and modded ground (Arborea forests, Lithos rock, AronaLayers layers, Lifeforged ground cover). Each can be turned off in `[voxy.features]`.
+- **Real chunks win:** chunks already generated are never written over, and a chunk players generate later replaces its LOD. Overworld only; needs the GPU noise fill.
+- **Commands:** `/wgaccel lod voxy [radius] [threads] [stride] [from]` runs it once by hand, `/wgaccel lod voxy stop` stops it, `/wgaccel lod voxy reset` makes the automatic generator do its rings again (e.g. after changing `[voxy.features]`).
+- **Dedicated servers with Voxy Server Side:** with `voxyForVss` (and VSS's own generation on), the chunks VSS would generate for its players' LODs are made from the GPU columns instead, at full detail by default (`voxyVssRings`; `voxyVssRealRadius` keeps real generation near the players). Needs the [server-only LWJGL jar](#dedicated-server).
+- **Distant Horizons:** an experimental generator (`distantHorizonsGenerator`, off by default): ground heights, water and biomes only, the ground shows as stone.
+
 ## Installation
 
 ### Client
-1. Install **NeoForge 1.21.1** along with **FreeTerraForged**, **C2ME**, **Lithium**, **ScalableLux**, and **FerriteCore**.
-2. Drop `wgaccel-neoforge-<version>+mc1.21.1.jar` into `mods/`.
+1. Install **NeoForge** or **Fabric** (with **Fabric API**) for Minecraft **1.21.1** or **26.1.2**, along with **FreeTerraForged** (or Conquest ReTerraForged on Fabric 26.1.2), **C2ME**, **Lithium**, **ScalableLux**, and **FerriteCore**.
+2. Drop the matching `wgaccel-neoforge-<version>+mc<minecraft>.jar` or `wgaccel-fabric-<version>+mc<minecraft>.jar` into `mods/`.
 3. Keep your GPU driver up to date (NVIDIA, AMD Adrenalin, or Intel). OpenCL works with **no extra SDK**.
 4. Join a world and check `logs/latest.log` for `WGA GPU backend: OpenCL`, `WGA GPU self-test: BIT-IDENTICAL`, and `WGA GPU noise fill: ready`.
 
@@ -140,7 +164,7 @@ The jar depends only on the Minecraft version: download it once and keep it when
 <details>
 <summary>Optional backends: CUDA, HIP, Linux AMD / ROCm & weak/integrated GPUs</summary>
 
-- **OpenCL is faster than CUDA** on this branch and needs no SDK. To override manually, use the in-game Settings screen or `-Dwgaccel.gpuBackend=opencl|cuda|hip`:
+- **OpenCL is faster than CUDA** on this branch and needs no SDK. To override manually, use the in-game Settings screen or `-Dwgaccel.gpuBackend=opencl|cuda|hip` (CUDA is not available on Minecraft `26.1.2`):
   - **CUDA (NVIDIA):** Requires CUDA Toolkit `12.x` (`12.8+` for RTX 50xx) or `13.x` (`nvrtc64_*.dll`). Override via `-Dwgaccel.nvrtc=<path>`.
   - **HIP (AMD Windows / Linux ROCm):** Requires HIP SDK `6.4+` on Windows (`-Dwgaccel.hiprtc=<path>`) or ROCm (`hip-runtime-amd` + `rocm-opencl-runtime`, user in `render,video` groups; older integrated RDNA2 like 680M/660M may need `HSA_OVERRIDE_GFX_VERSION=10.3.0`).
 - **Linux with an AMD GPU (OpenCL through ROCm):** Mesa's default drivers bring no usable OpenCL, so the log shows `CL_PLATFORM_NOT_FOUND_KHR` and the mod runs on the CPU only. Tested on MX Linux 25 / Debian 13 with an RX 6700 XT:
@@ -189,21 +213,24 @@ Generated at `config/wgaccel-common.toml`:
 - `[version_support]`: `warnUnsupportedVersions` (`true` by default).
 - `[cpu]` & `[gpu]`: Master switches (`cpuImprovements`, `gpuImprovements`) plus per-pass toggles (`fillToGround`, `tileCacheTiles`, `fasterBiomeChoice`, `fastClimateSearch`, `fastClimateColumns`, `fastOres`, `fastSurfaceReads`, `fastBlockPredicates`, `gpuBackend`, `gpuNoiseFill`, `gpuLookAhead`, `gpuSurface`, etc.). GPU steps accept `OFF`, `CHECK` (runs GPU + CPU and compares every chunk), or `ON` (uses GPU, checks every 64th chunk).
 - `[gpu.tuning]`: Queue limits, batch sizes, threads, and check frequencies (`gpuFillCheckEvery = 64`).
+- `[voxy]`: the Voxy LOD generator (`voxyGenerator`, `voxyRings`, `voxyPerformance`, `voxyThreads`, Voxy World Gen V2 and Chunky hand-offs, Voxy Server Side: `voxyForVss`, `voxyVssRings`, `voxyVssRealRadius`, progress panel); `[voxy.visuals]` and `[voxy.features]` for how the LODs look and what they include.
 
-In-game commands: `/wgaccel` (summary, step timings, CPS, GPU check counts) and `/wgaccel profile [seconds]` (60s thread sampler).
+In-game commands: `/wgaccel` (summary, step timings, CPS, GPU check counts), `/wgaccel reset` (starts a new measurement), `/wgaccel profile [seconds]` (60s thread sampler), and `/wgaccel lod voxy ...` (see [Distant terrain](#distant-terrain-voxy-lods)).
 
 ## Building from source
 
-Requires **Java 21 JDK** (`1.21.1` NeoForge target). Place compile-time mod dependencies into `libs/`:
-- `libs/freeterraforged-*.jar` (verified against `1.0.0032`)
+Requires **Java 21** (Minecraft `1.21.1`) and **Java 25** (`26.1.2`) JDKs. Place compile-time mod dependencies into `libs/`:
+- `libs/freeterraforged-1.0.0010.jar` and `libs/freeterraforged-1.0.0032.jar`
 - `libs/nomansland-1.6.2.jar`
-- C2ME inner jars from C2ME's `META-INF/jars/` (`base-*-all`, `rewrites-chunk-system-*`, `rxjava-*`, `reactive-streams-*`) in `libs/c2me/`
+- `libs/lod-server-support-neoforge-0.23.0-beta.1+1.21.1.jar` (Voxy Server Side) and `libs/distanthorizons-api-3.3.3.jar`
+- C2ME inner jars from C2ME's `META-INF/jars/` (`base-*-all`, `rewrites-chunk-system-*`, `rxjava-*`, `reactive-streams-*`) in `libs/c2me/` (1.21.1) and `libs/c2me-26.1.2/`
 
-Build the NeoForge `1.21.1` jar:
+Build every jar (both Minecraft versions, NeoForge and Fabric) into `build/libs/`, or one with `-Pmc`:
 ```bash
+./gradlew build
 ./gradlew -Pmc=1.21.1 :1.21.1:neoforge:build
 ```
-Outputs to `versions/1.21.1/neoforge/build/libs/wgaccel-neoforge-<version>+mc1.21.1.jar`.
+The server-only LWJGL jars (`wgaccel-lwjgl-server-<lwjgl>.jar`, see [Dedicated server](#dedicated-server)) are built with `./gradlew lwjglServerJars`.
 
 ## Licence
 

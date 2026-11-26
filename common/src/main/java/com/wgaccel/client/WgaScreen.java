@@ -292,7 +292,8 @@ public final class WgaScreen extends CanvasScreen {
       int left = this.left();
       int y = 0;
       y += this.text(Component.literal("Voxy's distant terrain made on the GPU instead of generated chunks, in rings around you, nearest first: the ground,"
-         + " its surface blocks, water, snow and ice; no trees, structures or other features (the chunks you really generate replace it in Voxy)."
+         + " its surface blocks, water, snow and ice, plus the trees, structures, terrain features and plants set in the config's [voxy.features]"
+         + " (the chunks you really generate replace it in Voxy)."
          + " Chunks already generated are never written over. Overworld only."), left, y, this.width - left - 8, GREY) + 6;
       if (!com.wgaccel.platform.Platform.get().isModLoaded("voxy")) {
          y += this.text(Component.literal("Voxy is not installed: these settings do nothing until it is."), left, y, this.width - left - 8, YELLOW) + 6;
